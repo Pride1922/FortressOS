@@ -23,6 +23,8 @@ pub struct Terminal {
     pub cursor_row: usize,
     pub cursor_visible: bool,
     pub grid: Vec<[u8; TERM_MAX_COLS]>,
+    pub sel_anchor: Option<(usize, usize)>,
+    pub sel_end: Option<(usize, usize)>,
     ansi_state: u8,
     ansi_params: [usize; 4],
     ansi_param_count: usize,
@@ -45,6 +47,8 @@ impl Terminal {
             cursor_row: 0,
             cursor_visible: true,
             grid,
+            sel_anchor: None,
+            sel_end: None,
             ansi_state: 0,
             ansi_params: [0; 4],
             ansi_param_count: 0,
@@ -53,6 +57,104 @@ impl Terminal {
             dirty_max_row: 14,
             full_dirty: true,
         }
+    }
+
+    fn cell_at(&self, px: usize, py: usize) -> (usize, usize) {
+        let col = (px.saturating_sub(10) / 8).min(self.cols.saturating_sub(1));
+        let row = (py.saturating_sub(8) / 16).min(self.rows.saturating_sub(1));
+        (row, col)
+    }
+
+    pub fn handle_click(&mut self, px: usize, py: usize) -> bool {
+        let had_sel = self.sel_end.is_some();
+        self.sel_anchor = Some(self.cell_at(px, py));
+        self.sel_end = None;
+        if had_sel {
+            self.full_dirty = true;
+        }
+        had_sel
+    }
+
+    pub fn handle_drag(&mut self, px: usize, py: usize) -> bool {
+        let pos = self.cell_at(px, py);
+        if self.sel_anchor.is_none() {
+            self.sel_anchor = Some(pos);
+        }
+        if self.sel_end != Some(pos) {
+            self.sel_end = Some(pos);
+            self.full_dirty = true;
+            return true;
+        }
+        false
+    }
+
+    pub fn clear_selection(&mut self) {
+        if self.sel_anchor.is_some() || self.sel_end.is_some() {
+            self.sel_anchor = None;
+            self.sel_end = None;
+            self.full_dirty = true;
+        }
+    }
+
+    fn ordered_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let a = self.sel_anchor?;
+        let b = self.sel_end?;
+        if a == b {
+            return None;
+        }
+        if a.0 < b.0 || (a.0 == b.0 && a.1 <= b.1) {
+            Some((a, b))
+        } else {
+            Some((b, a))
+        }
+    }
+
+    pub fn is_cell_selected(&self, row: usize, col: usize) -> bool {
+        let Some(((r0, c0), (r1, c1))) = self.ordered_selection() else {
+            return false;
+        };
+        if row < r0 || row > r1 {
+            return false;
+        }
+        if r0 == r1 {
+            col >= c0 && col <= c1
+        } else if row == r0 {
+            col >= c0
+        } else if row == r1 {
+            col <= c1
+        } else {
+            true
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<alloc::string::String> {
+        let ((r0, c0), (r1, c1)) = self.ordered_selection()?;
+        let mut out = alloc::string::String::new();
+        for r in r0..=r1.min(self.rows.saturating_sub(1)) {
+            let start_c = if r == r0 { c0 } else { 0 };
+            let end_c = if r == r1 {
+                c1.min(self.cols.saturating_sub(1))
+            } else {
+                self.cols.saturating_sub(1)
+            };
+            if start_c <= end_c {
+                let slice = &self.grid[r][start_c..=end_c];
+                let trimmed_end = slice
+                    .iter()
+                    .rposition(|&b| b != b' ')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                for &b in &slice[..trimmed_end] {
+                    if (32..=126).contains(&b) {
+                        out.push(b as char);
+                    }
+                }
+            }
+            if r < r1 {
+                out.push('\n');
+            }
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     pub fn set_dimensions(&mut self, new_cols: usize, new_rows: usize) {
@@ -343,10 +445,16 @@ impl Terminal {
                     break;
                 }
                 let ch = self.grid[row][col];
+                let selected = self.is_cell_selected(row, col);
+                let cell_bg = if selected { 0xff264f78 } else { TERM_BG };
+                let cell_fg = if selected { 0xffffffff } else { TERM_FG };
+                if selected {
+                    c.fill_rect(px, py, 8, 16, cell_bg);
+                }
                 let is_cursor =
                     self.cursor_visible && row == self.cursor_row && col == self.cursor_col;
                 if ch != b' ' {
-                    c.glyph(px, py, ch, TERM_FG, TERM_BG);
+                    c.glyph(px, py, ch, cell_fg, cell_bg);
                 }
                 if is_cursor {
                     c.fill_rect(px, py + 13, 8, 3, TERM_CURSOR);

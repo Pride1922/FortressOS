@@ -132,13 +132,17 @@ pub fn text_pixel_bold(text: &str, mut x: usize, y: usize, fg: u32, bg: u32) -> 
 
 /// Row form of `desktop_pixel()`: the vertical term is computed once.
 pub fn desktop_row(x0: usize, y: usize, width: usize, height: usize, out: &mut [u32]) {
-    let dy = ((y * 1024 / height.max(1)) as i32 - 640).abs();
+    let ny = (y * 1024 / height.max(1)) as i32;
+    let dy = ny - 380;
+    let dy2 = dy * dy;
     for (i, p) in out.iter_mut().enumerate() {
         let nx = ((x0 + i) * 1024 / width.max(1)) as i32;
-        let glow = (900 - ((nx - 760).abs() + dy)).max(0) as u32;
-        let r = 24 + glow * 8 / 900;
-        let g = 26 + glow * 8 / 900;
-        let b = 28 + glow * 10 / 900;
+        let dx = nx - 580;
+        let dist2 = (dx * dx + dy2) / 1024;
+        let glow = (900 - dist2).max(0) as u32;
+        let r = 11 + glow * 26 / 900;
+        let g = 15 + glow * 47 / 900;
+        let b = 23 + glow * 82 / 900;
         *p = 0xff000000 | r << 16 | g << 8 | b;
     }
 }
@@ -148,10 +152,12 @@ pub fn desktop_row(x0: usize, y: usize, width: usize, height: usize, out: &mut [
 pub fn desktop_pixel(x: usize, y: usize, width: usize, height: usize) -> u32 {
     let nx = (x * 1024 / width.max(1)) as i32;
     let ny = (y * 1024 / height.max(1)) as i32;
-    let distance = (nx - 760).abs() + (ny - 640).abs();
-    let glow = (900 - distance).max(0) as u32;
-    let r = 24 + glow * 8 / 900;
-    let g = 26 + glow * 8 / 900;
-    let b = 28 + glow * 10 / 900;
+    let dx = nx - 580;
+    let dy = ny - 380;
+    let dist2 = (dx * dx + dy * dy) / 1024;
+    let glow = (900 - dist2).max(0) as u32;
+    let r = 11 + glow * 26 / 900;
+    let g = 15 + glow * 47 / 900;
+    let b = 23 + glow * 82 / 900;
     0xff000000 | r << 16 | g << 8 | b
 }

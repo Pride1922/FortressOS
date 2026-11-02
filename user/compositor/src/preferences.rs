@@ -130,13 +130,13 @@ impl<const N: usize> Text<N> {
         self.len = 0;
     }
     /// Standard text-input key handler with built-in clipboard routing:
-    /// - `Ctrl+C` (3): copies field contents to system clipboard
+    /// - `Ctrl+A` (1) / `Ctrl+C` (3): copies field contents to system clipboard
     /// - `Ctrl+X` (24): cuts field contents to system clipboard and clears field
     /// - `Ctrl+V` (22): pastes from system clipboard up to capacity `N`
     /// - `Backspace` (8 | 127) and printable ASCII (`32..=126`)
     pub fn edit(&mut self, b: u8) -> bool {
         match b {
-            3 => {
+            1 | 3 => {
                 let _ = crate::clipboard::set(self.as_str());
                 false
             }
@@ -169,7 +169,7 @@ impl<const N: usize> Text<N> {
     /// blocking `Ctrl+C` and `Ctrl+X` so masked secrets cannot be copied out.
     pub fn edit_secret(&mut self, b: u8) -> bool {
         match b {
-            3 | 24 => false,
+            1 | 3 | 24 => false,
             22 => crate::clipboard::get()
                 .map(|clip| self.paste(&clip))
                 .unwrap_or(false),

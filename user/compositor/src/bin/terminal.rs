@@ -132,17 +132,44 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
     loop {
         match app.wait(master) {
             Wait::Event(Event::Configure) => resize(&mut app, &mut term, master),
-            // Ctrl+V pastes from the system clipboard; all other bytes (including
-            // Ctrl+C / 0x03 SIGINT) are forwarded to the PTY master unchanged.
+            // Ctrl+C: if text is selected on screen, copy selection to clipboard and clear
+            // highlight; otherwise forward 0x03 (SIGINT) to the PTY master.
+            Wait::Event(Event::Key(3)) => {
+                if let Some(sel) = term.selected_text() {
+                    let _ = clipboard::set(&sel);
+                    term.clear_selection();
+                    if let Some((y, h)) = term.render_dirty(&mut app.canvas()) {
+                        app.damage(0, y, app.width, h);
+                    }
+                } else {
+                    let _ = sys::write(master, &[3]);
+                }
+            }
+            // Ctrl+V pastes from the system clipboard; all other bytes are forwarded unchanged.
             Wait::Event(Event::Key(22)) => {
+                term.clear_selection();
                 if let Some(clip) = clipboard::get() {
                     let _ = sys::write_all(master, clip.as_bytes());
                 }
             }
             Wait::Event(Event::Key(b)) => {
+                term.clear_selection();
                 let _ = sys::write(master, &[b]);
             }
-            Wait::Event(Event::Click(..)) => {}
+            Wait::Event(Event::Click(x, y)) => {
+                if term.handle_click(x, y) {
+                    if let Some((y, h)) = term.render_dirty(&mut app.canvas()) {
+                        app.damage(0, y, app.width, h);
+                    }
+                }
+            }
+            Wait::Event(Event::Drag(x, y)) => {
+                if term.handle_drag(x, y) {
+                    if let Some((y, h)) = term.render_dirty(&mut app.canvas()) {
+                        app.damage(0, y, app.width, h);
+                    }
+                }
+            }
             Wait::Event(Event::Close) => break, // closing master hangs up the shell
             Wait::Hangup => break,
             Wait::Ready => {

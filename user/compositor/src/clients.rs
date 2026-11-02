@@ -427,6 +427,15 @@ impl Clients {
         true
     }
 
+    /// A left-button drag motion in an app window's content area (`c = 1`).
+    pub fn drag(&mut self, window_id: u32, x: usize, y: usize) -> bool {
+        let Some(slot) = self.slot_of(window_id) else {
+            return false;
+        };
+        let _ = self.send(slot, &Msg::new(proto::EV_CLICK, x as u32, y as u32, 1, 0));
+        true
+    }
+
     /// After a resize or maximize: the app redraws at the new size.
     pub fn resized(
         &mut self,

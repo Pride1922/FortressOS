@@ -123,9 +123,8 @@ pub fn set(text: &str) -> bool {
     #[cfg(not(test))]
     {
         let _ = crate::sys::mkdir(CLIPBOARD_DIR, 0o777);
-        if crate::sys::clipboard_write(CLIPBOARD_CURRENT, clean.as_bytes()).is_err() {
-            let _ = crate::sys::clipboard_write(CLIPBOARD_FALLBACK, clean.as_bytes());
-        }
+        let _ = crate::sys::clipboard_write(CLIPBOARD_CURRENT, clean.as_bytes());
+        let _ = crate::sys::clipboard_write(CLIPBOARD_FALLBACK, clean.as_bytes());
     }
     true
 }
@@ -134,7 +133,7 @@ pub fn set(text: &str) -> bool {
 pub fn get() -> Option<String> {
     #[cfg(not(test))]
     {
-        let mut buf = [0u8; CLIPBOARD_MAX];
+        let mut buf = [0u8; CLIPBOARD_MAX + 1];
         for path in [CLIPBOARD_CURRENT, CLIPBOARD_FALLBACK] {
             if let Ok(n) = crate::sys::read_file(path, &mut buf) {
                 if n > 0 {

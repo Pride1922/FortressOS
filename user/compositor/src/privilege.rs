@@ -181,7 +181,10 @@ fn zone_name_ok(name: &[u8]) -> bool {
             .all(|&c| c.is_ascii_alphanumeric() || b"/_+-".contains(&c))
 }
 
+static BROKER_NTP_PID: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
 fn handle(kind: u8, payload: &[u8]) -> isize {
+    use core::sync::atomic::Ordering::Relaxed;
     match kind {
         sys::SETTING_PREFERENCES => {
             // Re-encode the parsed value: only canonical bytes reach /etc.
@@ -205,8 +208,16 @@ fn handle(kind: u8, payload: &[u8]) -> isize {
                 0
             };
             match core::str::from_utf8(name) {
-                Ok(zone) if zone_name_ok(name) && sys::zone_valid(zone, utc) => {
-                    write(kind, payload)
+                Ok(raw) => {
+                    let norm = crate::desktop::normalize_timezone(raw);
+                    let zone = if !norm.is_empty() { norm } else { raw };
+                    if zone_name_ok(zone.as_bytes()) && sys::zone_valid(zone, utc) {
+                        let mut text = Text::<128>::default();
+                        let _ = writeln!(text, "{}", zone);
+                        write(kind, text.as_bytes())
+                    } else {
+                        sys::EINVAL
+                    }
                 }
                 _ => sys::EINVAL,
             }
@@ -216,6 +227,51 @@ fn handle(kind: u8, payload: &[u8]) -> isize {
                 return sys::EINVAL;
             }
             write(kind, payload)
+        }
+        sys::SETTING_CLOCK_SYNC_START => {
+            let server = if payload.is_empty() {
+                "pool.ntp.org"
+            } else {
+                match core::str::from_utf8(payload) {
+                    Ok(s)
+                        if !s.is_empty()
+                            && s.len() <= 63
+                            && s.bytes().all(|b| {
+                                b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
+                            }) =>
+                    {
+                        s
+                    }
+                    _ => return sys::EINVAL,
+                }
+            };
+            let current = BROKER_NTP_PID.load(Relaxed) as isize;
+            if current > 0 && sys::child_status(current).is_none() {
+                return 0; // already in progress
+            }
+            let pid = sys::spawn_ntpd(server);
+            if pid <= 0 {
+                return if pid < 0 { pid } else { sys::EINVAL };
+            }
+            BROKER_NTP_PID.store(pid as i64, Relaxed);
+            0
+        }
+        sys::SETTING_CLOCK_SYNC_STATUS => {
+            let pid = BROKER_NTP_PID.load(Relaxed) as isize;
+            if pid <= 0 {
+                return -2;
+            }
+            match sys::child_status(pid) {
+                None => 1,
+                Some(Ok(())) => {
+                    BROKER_NTP_PID.store(0, Relaxed);
+                    0
+                }
+                Some(Err(e)) => {
+                    BROKER_NTP_PID.store(0, Relaxed);
+                    if e < 0 { e } else { -1 }
+                }
+            }
         }
         _ => sys::EINVAL,
     }

@@ -110,8 +110,8 @@ fn sanitize_into(src: &[u8], dst: &mut [u8; CLIPBOARD_MAX]) -> usize {
 fn ensure_dir_and_file() {
     let _ = sys::mkdir(CLIPBOARD_DIR, 0o777);
     let _ = sys::chmod(CLIPBOARD_DIR, 0o777);
-    let mut probe = [0u8; 4];
-    if sys::read_file(CLIPBOARD_CURRENT, &mut probe).is_err() {
+    let mut st = sys::StatExtV1::default();
+    if sys::stat_ext(CLIPBOARD_CURRENT, &mut st) != 0 {
         let _ = sys::clipboard_write(CLIPBOARD_CURRENT, b"");
     }
     let _ = sys::chmod(CLIPBOARD_CURRENT, 0o666);
@@ -125,7 +125,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
     if let Some(cmd) = arg_str(argc, argv, 1) {
         match cmd {
             "--get" | "get" => {
-                let mut buf = [0u8; CLIPBOARD_MAX];
+                let mut buf = [0u8; CLIPBOARD_MAX + 1];
                 for path in [CLIPBOARD_CURRENT, CLIPBOARD_FALLBACK] {
                     if let Ok(n) = sys::read_file(path, &mut buf) {
                         if n > 0 {
@@ -142,10 +142,10 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                 };
                 let mut clean = [0u8; CLIPBOARD_MAX];
                 let len = sanitize_into(val.as_bytes(), &mut clean);
-                if sys::clipboard_write(CLIPBOARD_CURRENT, &clean[..len]).is_err() {
-                    let _ = sys::clipboard_write(CLIPBOARD_FALLBACK, &clean[..len]);
-                }
+                let _ = sys::clipboard_write(CLIPBOARD_CURRENT, &clean[..len]);
+                let _ = sys::clipboard_write(CLIPBOARD_FALLBACK, &clean[..len]);
                 let _ = sys::chmod(CLIPBOARD_CURRENT, 0o666);
+                let _ = sys::chmod(CLIPBOARD_FALLBACK, 0o666);
                 return 0;
             }
             "--clear" | "clear" => {
@@ -171,7 +171,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
         tv_sec: 1,
         tv_nsec: 0,
     };
-    let mut raw = [0u8; CLIPBOARD_MAX];
+    let mut raw = [0u8; CLIPBOARD_MAX + 1];
     let mut clean = [0u8; CLIPBOARD_MAX];
 
     loop {
@@ -187,8 +187,9 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
             }
         }
         if len > 0 {
-            let clean_len = sanitize_into(&raw[..len.min(CLIPBOARD_MAX)], &mut clean);
-            if clean_len != len {
+            let capped = len.min(CLIPBOARD_MAX);
+            let clean_len = sanitize_into(&raw[..capped], &mut clean);
+            if clean_len != capped {
                 let _ = sys::clipboard_write(CLIPBOARD_CURRENT, &clean[..clean_len]);
                 let _ = sys::chmod(CLIPBOARD_CURRENT, 0o666);
             }

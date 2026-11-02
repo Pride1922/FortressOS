@@ -103,6 +103,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
             Event::Configure => true,
             Event::Key(b) => np.handle_key(b),
             Event::Click(x, y) => np.handle_click(x, y),
+            Event::Drag(x, y) => np.handle_drag(x, y),
             Event::Close => return 0,
         };
         if changed {

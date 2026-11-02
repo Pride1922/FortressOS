@@ -253,17 +253,39 @@ impl KeyEvent {
     }
 
     /// Synthesizes VT100/ANSI bytes for navigation keys that have `ascii == 0`.
+    /// When `MOD_SHIFT` is held, emits lowercase final letters (`a..f`, `h`) so
+    /// text editors can extend selection (`Shift + Arrow / Home / End`).
+    /// When `MOD_CTRL` is held with `Left` / `Right`, emits `\x1b[Q` / `\x1b[W`
+    /// (`\x1b[q` / `\x1b[w` with `MOD_SHIFT`) for word-by-word selection.
     pub const fn vt100_sequence(&self) -> &'static [u8] {
         if !self.is_press_or_repeat() {
             return &[];
         }
+        let shifted = (self.modifiers & MOD_SHIFT) != 0;
+        let ctrl = (self.modifiers & MOD_CTRL) != 0;
         match self.keycode {
-            KEY_UP => b"\x1b[A",
-            KEY_DOWN => b"\x1b[B",
-            KEY_RIGHT => b"\x1b[C",
-            KEY_LEFT => b"\x1b[D",
-            KEY_HOME => b"\x1b[H",
-            KEY_END => b"\x1b[F",
+            KEY_UP => if shifted { b"\x1b[a" } else { b"\x1b[A" },
+            KEY_DOWN => if shifted { b"\x1b[b" } else { b"\x1b[B" },
+            KEY_RIGHT => {
+                if ctrl {
+                    if shifted { b"\x1b[w" } else { b"\x1b[W" }
+                } else if shifted {
+                    b"\x1b[c"
+                } else {
+                    b"\x1b[C"
+                }
+            }
+            KEY_LEFT => {
+                if ctrl {
+                    if shifted { b"\x1b[q" } else { b"\x1b[Q" }
+                } else if shifted {
+                    b"\x1b[d"
+                } else {
+                    b"\x1b[D"
+                }
+            }
+            KEY_HOME => if shifted { b"\x1b[h" } else { b"\x1b[H" },
+            KEY_END => if shifted { b"\x1b[f" } else { b"\x1b[F" },
             KEY_INSERT => b"\x1b[2~",
             KEY_DELETE => b"\x1b[3~",
             KEY_PAGEUP => b"\x1b[5~",

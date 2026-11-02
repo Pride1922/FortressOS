@@ -23,6 +23,7 @@ pub enum Event {
     Configure,
     Key(u8),
     Click(usize, usize),
+    Drag(usize, usize),
     /// Window closed or compositor gone: save if needed and exit.
     Close,
 }
@@ -119,7 +120,13 @@ impl App {
                 }
                 None
             }
-            proto::EV_CLICK => Some(Event::Click(m.a as usize, m.b as usize)),
+            proto::EV_CLICK => {
+                if m.c == 1 {
+                    Some(Event::Drag(m.a as usize, m.b as usize))
+                } else {
+                    Some(Event::Click(m.a as usize, m.b as usize))
+                }
+            }
             proto::EV_CLOSE => Some(Event::Close),
             _ => None, // newer compositor: ignore unknown events
         }

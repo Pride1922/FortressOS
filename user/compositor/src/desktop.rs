@@ -63,7 +63,7 @@ const NETWORK: [Control; 12] = [
     control(22, 196, 268, 540, 24),
     control(23, 196, 294, 540, 24),
 ];
-const CLOCK: [Control; 7] = [
+const CLOCK: [Control; 8] = [
     control(1, 196, 152, 270, 28),
     control(2, 474, 152, 140, 28),
     control(3, 196, 206, 70, 26),
@@ -71,6 +71,7 @@ const CLOCK: [Control; 7] = [
     control(5, 378, 206, 96, 26),
     control(6, 482, 206, 70, 26),
     control(7, 196, 286, 180, 28),
+    control(8, 624, 64, 102, 28),
 ];
 impl Builtin {
     #[cfg(test)]
@@ -187,7 +188,129 @@ pub struct AppHost {
     connecting_until: Option<i64>,
     wifi_prepare_pid: Option<isize>,
     wifi_prepared: bool,
+    pub clock_sync_in_progress: bool,
+    pub clock_sync_until: Option<i64>,
+    pub clock_synced: bool,
 }
+pub fn normalize_timezone(raw: &str) -> &'static str {
+    let s = raw.trim();
+    if s.is_empty() {
+        return "";
+    }
+    // Brussels / Belgium / CET / CEST (covers common misspellings like "Brussles")
+    if s.eq_ignore_ascii_case("brussels")
+        || s.eq_ignore_ascii_case("europe/brussels")
+        || s.eq_ignore_ascii_case("europe brussels")
+        || s.eq_ignore_ascii_case("europe/brussles")
+        || s.eq_ignore_ascii_case("europe brussles")
+        || s.eq_ignore_ascii_case("brussles")
+        || s.eq_ignore_ascii_case("belgium")
+        || s.eq_ignore_ascii_case("cet")
+        || s.eq_ignore_ascii_case("cest")
+    {
+        return "Europe/Brussels";
+    }
+    // UTC / GMT / Zulu
+    if s.eq_ignore_ascii_case("utc")
+        || s.eq_ignore_ascii_case("gmt")
+        || s.eq_ignore_ascii_case("zulu")
+    {
+        return "UTC";
+    }
+    // New York / Eastern Time
+    if s.eq_ignore_ascii_case("new york")
+        || s.eq_ignore_ascii_case("america/new_york")
+        || s.eq_ignore_ascii_case("america new_york")
+        || s.eq_ignore_ascii_case("america/new york")
+        || s.eq_ignore_ascii_case("america new york")
+        || s.eq_ignore_ascii_case("nyc")
+        || s.eq_ignore_ascii_case("est")
+        || s.eq_ignore_ascii_case("edt")
+    {
+        return "America/New_York";
+    }
+    // Tokyo / Japan / JST
+    if s.eq_ignore_ascii_case("tokyo")
+        || s.eq_ignore_ascii_case("asia/tokyo")
+        || s.eq_ignore_ascii_case("asia tokyo")
+        || s.eq_ignore_ascii_case("japan")
+        || s.eq_ignore_ascii_case("jst")
+    {
+        return "Asia/Tokyo";
+    }
+    // London / UK
+    if s.eq_ignore_ascii_case("london")
+        || s.eq_ignore_ascii_case("europe/london")
+        || s.eq_ignore_ascii_case("europe london")
+        || s.eq_ignore_ascii_case("uk")
+        || s.eq_ignore_ascii_case("bst")
+    {
+        return "Europe/London";
+    }
+    // Paris / France
+    if s.eq_ignore_ascii_case("paris")
+        || s.eq_ignore_ascii_case("europe/paris")
+        || s.eq_ignore_ascii_case("europe paris")
+    {
+        return "Europe/Paris";
+    }
+    // Berlin / Germany
+    if s.eq_ignore_ascii_case("berlin")
+        || s.eq_ignore_ascii_case("europe/berlin")
+        || s.eq_ignore_ascii_case("europe berlin")
+    {
+        return "Europe/Berlin";
+    }
+    // Rome / Italy
+    if s.eq_ignore_ascii_case("rome")
+        || s.eq_ignore_ascii_case("europe/rome")
+        || s.eq_ignore_ascii_case("europe rome")
+    {
+        return "Europe/Rome";
+    }
+    // Madrid / Spain
+    if s.eq_ignore_ascii_case("madrid")
+        || s.eq_ignore_ascii_case("europe/madrid")
+        || s.eq_ignore_ascii_case("europe madrid")
+    {
+        return "Europe/Madrid";
+    }
+    // Amsterdam / Netherlands
+    if s.eq_ignore_ascii_case("amsterdam")
+        || s.eq_ignore_ascii_case("europe/amsterdam")
+        || s.eq_ignore_ascii_case("europe amsterdam")
+    {
+        return "Europe/Amsterdam";
+    }
+    // Los Angeles / Pacific Time
+    if s.eq_ignore_ascii_case("los angeles")
+        || s.eq_ignore_ascii_case("america/los_angeles")
+        || s.eq_ignore_ascii_case("america los_angeles")
+        || s.eq_ignore_ascii_case("la")
+        || s.eq_ignore_ascii_case("pst")
+        || s.eq_ignore_ascii_case("pdt")
+    {
+        return "America/Los_Angeles";
+    }
+    // Chicago / Central Time
+    if s.eq_ignore_ascii_case("chicago")
+        || s.eq_ignore_ascii_case("america/chicago")
+        || s.eq_ignore_ascii_case("america chicago")
+        || s.eq_ignore_ascii_case("cst")
+        || s.eq_ignore_ascii_case("cdt")
+    {
+        return "America/Chicago";
+    }
+    // Sao Paulo / Brazil
+    if s.eq_ignore_ascii_case("sao paulo")
+        || s.eq_ignore_ascii_case("america/sao_paulo")
+        || s.eq_ignore_ascii_case("america sao_paulo")
+    {
+        return "America/Sao_Paulo";
+    }
+    ""
+}
+
 impl AppHost {
     pub fn new(preferences: Preferences) -> Self {
         Self {
@@ -244,6 +367,9 @@ impl AppHost {
             connecting_until: None,
             wifi_prepare_pid: None,
             wifi_prepared: false,
+            clock_sync_in_progress: false,
+            clock_sync_until: None,
+            clock_synced: false,
         }
     }
     #[inline(never)]
@@ -574,16 +700,49 @@ impl AppHost {
             },
             _ => match command {
                 2 => self.save_zone(),
-                3 => self.zone = Text::from_str("UTC"),
-                4 => self.zone = Text::from_str("Europe/Brussels"),
-                5 => self.zone = Text::from_str("America/New_York"),
-                6 => self.zone = Text::from_str("Asia/Tokyo"),
+                3 => {
+                    self.zone = Text::from_str("UTC");
+                    self.save_zone();
+                }
+                4 => {
+                    self.zone = Text::from_str("Europe/Brussels");
+                    self.save_zone();
+                }
+                5 => {
+                    self.zone = Text::from_str("America/New_York");
+                    self.save_zone();
+                }
+                6 => {
+                    self.zone = Text::from_str("Asia/Tokyo");
+                    self.save_zone();
+                }
                 7 => {
                     self.draft.clock_24h = !self.draft.clock_24h;
                     self.save_preferences();
                 }
+                8 => self.sync_clock(),
                 _ => (),
             },
+        }
+    }
+    #[inline(never)]
+    pub fn sync_clock(&mut self) {
+        if self.clock_sync_in_progress {
+            self.message_page = 2;
+            self.message("Clock synchronization is already in progress.");
+            return;
+        }
+        match sys::clock_sync_start("pool.ntp.org") {
+            Ok(()) => {
+                self.clock_sync_in_progress = true;
+                self.clock_sync_until = sys::monotonic_seconds().map(|s| s.saturating_add(8));
+                self.message_page = 2;
+                self.message("Synchronizing clock with pool.ntp.org via NTP...");
+            }
+            Err(e) => {
+                self.message_page = 2;
+                self.error("Clock sync failed to start", e);
+            }
         }
     }
     #[inline(never)]
@@ -612,8 +771,13 @@ impl AppHost {
             }
         }
     }
+
     #[inline(never)]
     fn save_zone(&mut self) {
+        let norm = normalize_timezone(self.zone.as_str());
+        if !norm.is_empty() {
+            self.zone = Text::from_str(norm);
+        }
         if !sys::zone_valid(self.zone.as_str(), self.utc) {
             self.message("Unknown timezone; enter an installed Region/City name.");
             return;
@@ -624,6 +788,12 @@ impl AppHost {
             Ok(()) => {
                 sys::invalidate_clock();
                 self.last_tick = -1;
+                if let Some((local, calendar)) = sys::local_clock(self.utc) {
+                    self.local_seconds = Some(local);
+                    self.calendar = Some(calendar);
+                } else if self.utc > 0 {
+                    self.local_seconds = Some(self.utc);
+                }
                 self.message("System timezone saved; daylight-saving rules apply automatically.");
             }
             Err(error) => self.error("Timezone was not saved", error),
@@ -842,16 +1012,43 @@ impl AppHost {
                         .is_some_and(|idx| self.apps[idx].kind == 1))
         })
     }
-    pub fn refresh(&mut self, utc: i64, wm: &mut WindowManager, s: &mut Surface) {
+    pub fn refresh(&mut self, mut utc: i64, wm: &mut WindowManager, s: &mut Surface) {
         if !self.wifi_window_open(wm, false) {
             self.password.clear();
             self.show_password = false;
             self.scan_after = None;
         }
-        if self.last_tick == utc {
+        if self.last_tick == utc && !self.clock_sync_in_progress {
             return;
         }
         self.last_tick = utc;
+        if self.clock_sync_in_progress {
+            let status = sys::clock_sync_status();
+            let now = sys::monotonic_seconds().unwrap_or(0);
+            let timed_out = self.clock_sync_until.is_some_and(|until| now >= until);
+            if status == 0 {
+                self.clock_sync_in_progress = false;
+                self.clock_sync_until = None;
+                self.clock_synced = true;
+                sys::invalidate_clock();
+                let mut now_ts = sys::Timespec::default();
+                let effective_utc = if sys::clock_gettime(0, &mut now_ts) == 0 {
+                    now_ts.tv_sec
+                } else {
+                    utc
+                };
+                utc = effective_utc;
+                self.last_tick = effective_utc;
+                wm.force_clock_damage(s);
+                self.message_page = 2;
+                self.message("Clock synchronized successfully via NTP (pool.ntp.org).");
+            } else if status < 0 || timed_out {
+                self.clock_sync_in_progress = false;
+                self.clock_sync_until = None;
+                self.message_page = 2;
+                self.message("NTP sync failed: check network connection or NTP server.");
+            }
+        }
         if let Some(pid) = self.wifi_prepare_pid {
             if let Some(result) = sys::child_status(pid) {
                 if self.finish_wifi_preparation(result) && self.wifi_window_open(wm, false) {
@@ -864,6 +1061,14 @@ impl AppHost {
         if let Some((local, calendar)) = sys::local_clock(utc) {
             self.local_seconds = Some(local);
             self.calendar = Some(calendar);
+        } else if utc > 0 {
+            self.local_seconds = Some(utc);
+            let mut cal = sys::Calendar::default();
+            let s_mod = utc.rem_euclid(86400) as i32;
+            cal.second = s_mod % 60;
+            cal.minute = (s_mod / 60) % 60;
+            cal.hour = s_mod / 3600;
+            self.calendar = Some(cal);
         } else {
             self.local_seconds = None;
             self.calendar = None;
@@ -889,7 +1094,8 @@ impl AppHost {
             .unwrap_or(0);
         wm.set_network_state(s, state);
         wm.clock_24h = self.preferences.clock_24h;
-        wm.update_clock(s, self.local_seconds.unwrap_or(-1));
+        let clock_val = self.local_seconds.unwrap_or(if utc > 0 { utc } else { -1 });
+        wm.update_clock(s, clock_val);
         for app in ui::APPS {
             self.render(app.id, wm, s);
         }
@@ -1062,7 +1268,7 @@ impl AppHost {
                 c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, 0xff2c313c);
 
                 c.label_bold(196, 138, 520, 18, "Desktop Background", 0xffffffff, theme::PANEL);
-                c.label_h(196, 156, 520, 18, "Choose wallpaper image or solid minimalist background", theme::SUBTEXT, theme::PANEL);
+                c.label_h(196, 156, 520, 18, "Choose wallpaper artwork or ambient radial glow", theme::SUBTEXT, theme::PANEL);
                 c.wallpaper_card(
                     APPEARANCE[3].rect,
                     "Hello World",
@@ -1072,7 +1278,7 @@ impl AppHost {
                 );
                 c.wallpaper_card(
                     APPEARANCE[4].rect,
-                    "Plain Black",
+                    "Radial Glow",
                     false,
                     !self.draft.wallpaper,
                     focus == 4,
@@ -1124,15 +1330,28 @@ impl AppHost {
                     let _ = write!(text, "Clock awaiting RTC synchronization");
                 }
                 c.label_bold(246, 58, 360, 18, text.as_str(), 0xffffffff, 0xff282828);
-                c.label_h(246, 78, 360, 18, "Hardware RTC clock synchronized", theme::SUBTEXT, 0xff282828);
-                c.badge_on(
-                    Rect { x: 632, y: 66, w: 92, h: 22 },
-                    "RTC Sync",
-                    0xff4ade80,
-                    0xff133223,
-                    0xff22c55e,
-                    0xff282828,
-                );
+                let (sublabel, subcolor) = if self.clock_sync_in_progress {
+                    ("Synchronizing clock via NTP...", 0xfffacc15)
+                } else if self.clock_synced {
+                    ("Clock synchronized via NTP (pool.ntp.org)", 0xff4ade80)
+                } else {
+                    ("Hardware RTC clock synchronized", theme::SUBTEXT)
+                };
+                c.label_h(246, 78, 360, 18, sublabel, subcolor, 0xff282828);
+                if self.clock_sync_in_progress {
+                    c.button(CLOCK[7].rect, "Syncing...", true, focus == 7);
+                } else if self.clock_synced {
+                    c.badge_on(
+                        CLOCK[7].rect,
+                        "NTP Synced",
+                        0xff4ade80,
+                        0xff133223,
+                        0xff22c55e,
+                        0xff282828,
+                    );
+                } else {
+                    c.button_accent(CLOCK[7].rect, "Sync Clock", focus == 7);
+                }
 
                 c.label_bold(196, 114, 520, 18, "System Timezone", 0xffffffff, theme::PANEL);
                 c.label_h(196, 132, 520, 18, "Enter an installed IANA Region/City name", theme::SUBTEXT, theme::PANEL);

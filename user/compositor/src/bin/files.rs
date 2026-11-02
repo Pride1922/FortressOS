@@ -103,6 +103,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
         let changed = match app.next_event() {
             Event::Configure => true,
             Event::Close => return 0,
+            Event::Drag(..) => false,
             Event::Click(x, y) => match fm.handle_click(x, y) {
                 Some(FileAction::OpenPath(path)) => {
                     open(&app, &path);

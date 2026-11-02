@@ -393,18 +393,24 @@ impl Window {
                             + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
                             >= 36);
                 if is_border {
-                    if y == 0 {
-                        return 0xff555555; // 1px top highlight bevel
+                    if self.is_focused {
+                        if y == 0 || y < 8 {
+                            return 0xff38bdf8; // 1px bright sky-blue active top rim
+                        } else if x == 0 || x == self.rect.w - 1 {
+                            return 0xff2563eb; // crisp cobalt active side border
+                        } else {
+                            return 0xff1d4ed8; // active bottom rim
+                        }
+                    } else if y == 0 || y < 8 {
+                        return 0xff3b404c; // muted inactive top rim
                     } else if x == 0 {
-                        return 0xff484848; // 1px left highlight bevel
+                        return 0xff2b303b;
                     } else if y == self.rect.h - 1 {
-                        return 0xff141414; // 1px bottom dark shadow bevel
+                        return 0xff14171d;
                     } else if x == self.rect.w - 1 {
-                        return 0xff181818; // 1px right dark shadow bevel
-                    } else if y < 8 {
-                        return 0xff505050; // top rounded arc highlight
+                        return 0xff232730;
                     } else {
-                        return 0xff161616; // bottom rounded arc shadow
+                        return 0xff181b22;
                     }
                 }
 
@@ -414,19 +420,29 @@ impl Window {
                 if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
                     return if hover == Some(Hit::Resize) {
                         theme::ACCENT
+                    } else if self.is_focused {
+                        0xff38bdf8
                     } else {
                         0xff484848
                     };
                 }
             } else {
-                if y == 0 {
-                    return 0xff555555;
+                if self.is_focused {
+                    if y == 0 {
+                        return 0xff38bdf8;
+                    } else if x == 0 || x == self.rect.w - 1 {
+                        return 0xff2563eb;
+                    } else if y == self.rect.h - 1 {
+                        return 0xff1d4ed8;
+                    }
+                } else if y == 0 {
+                    return 0xff3b404c;
                 } else if x == 0 {
-                    return 0xff484848;
+                    return 0xff2b303b;
                 } else if y == self.rect.h - 1 {
-                    return 0xff141414;
+                    return 0xff14171d;
                 } else if x == self.rect.w - 1 {
-                    return 0xff181818;
+                    return 0xff232730;
                 }
             }
 
@@ -435,9 +451,9 @@ impl Window {
             }
 
             let title_bg = if self.is_focused {
-                0xff2d2d2d // macOS dark mode window surface
+                0xff222b3a // rich sapphire-tinted active titlebar
             } else {
-                0xff242424 // inactive window surface
+                0xff1c1f26 // muted inactive titlebar
             };
 
             // Modern top-right traffic-light window controls (Close, Maximize/Restore, Minimize)
@@ -526,14 +542,15 @@ impl Window {
 
             // Titlebar top 1px subtle glass highlight for non-button title area
             if y == 1 {
-                return 0xff404040;
+                return if self.is_focused { 0xff33435c } else { 0xff282c36 };
             }
 
             // Left-aligned clean title with Windows styling
             let title_len = theme::text_width(&self.title);
             let title_max_x = self.rect.w.saturating_sub(116);
             if x >= 12 && x < (12 + title_len).min(title_max_x) && (3..21).contains(&y) {
-                return theme::text_pixel(&self.title, x - 12, y - 3, theme::TEXT, title_bg);
+                let title_fg = if self.is_focused { 0xffffffff } else { 0xff8b949e };
+                return theme::text_pixel(&self.title, x - 12, y - 3, title_fg, title_bg);
             }
 
             return title_bg;
@@ -868,6 +885,20 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
     }
 }
 
+fn render_dock_icon_scaled(item: usize, dx: usize, dy: usize, size: usize, dock_bg: u32) -> u32 {
+    if size == 28 {
+        return render_dock_icon(item, dx, dy, dock_bg);
+    }
+    let cov = theme::rounded_coverage(dx, dy, size, size, (size / 5).max(5));
+    if cov == 0 {
+        return dock_bg;
+    }
+    let ix = (dx * 28 / size.max(1)).clamp(2, 25);
+    let iy = (dy * 28 / size.max(1)).clamp(2, 25);
+    let color = render_dock_icon(item, ix, iy, dock_bg);
+    theme::blend_coverage(color, dock_bg, cov)
+}
+
 fn window_icon_kind(w: &Window) -> usize {
     if w.id == 5 || w.title.starts_with("Files") {
         0
@@ -943,6 +974,7 @@ pub enum Action {
     OpenDesktopApp(u32),
     WindowResized(u32),
     ClientClick(u32, usize, usize),
+    ClientDrag(u32, usize, usize),
     Exit,
 }
 
@@ -1255,6 +1287,10 @@ impl WindowManager {
         }
     }
 
+    pub fn force_clock_damage(&mut self, s: &mut Surface) {
+        s.damage(Self::clock_rect(s.width, s.height));
+    }
+
     pub fn cycle_focus(&mut self, s: &mut Surface) {
         if self.windows.is_empty() {
             return;
@@ -1306,8 +1342,8 @@ impl WindowManager {
     pub fn switcher_card_rect(width: usize, height: usize, count: usize) -> Rect {
         let scale = theme::scale(height);
         let n = count.clamp(1, 8);
-        let cw = (n * 68 + 20).max(180) * scale;
-        let ch = 104 * scale;
+        let cw = (n * 140 + 28).max(300) * scale;
+        let ch = 192 * scale;
         Rect {
             x: width.saturating_sub(cw) / 2,
             y: height.saturating_sub(ch) / 2,
@@ -1318,8 +1354,8 @@ impl WindowManager {
 
     pub fn switcher_damage_rect(width: usize, height: usize) -> Rect {
         let scale = theme::scale(height);
-        let max_w = (8 * 68 + 28) * scale;
-        let max_h = 114 * scale;
+        let max_w = (8 * 140 + 36) * scale;
+        let max_h = 204 * scale;
         Rect {
             x: width.saturating_sub(max_w) / 2,
             y: height.saturating_sub(max_h) / 2,
@@ -1492,8 +1528,10 @@ impl WindowManager {
         let mut ret_action = Action::None;
         // Capture survives leaving the titlebar/window. Apply final release motion.
         if self.buttons & 1 != 0 {
+            let mut any_moving = false;
             for w in &mut self.windows {
                 if w.is_dragging {
+                    any_moving = true;
                     let old = w.damage_rect();
                     w.rect.x = x.saturating_sub(w.drag_offset.0).min(s.width - 1);
                     w.rect.y = y.saturating_sub(w.drag_offset.1).min(s.height - 1);
@@ -1507,6 +1545,7 @@ impl WindowManager {
                         }
                     }
                 } else if w.is_resizing {
+                    any_moving = true;
                     let min_w = 160;
                     let min_h = 100;
                     let max_w = s.width.saturating_sub(w.rect.x);
@@ -1519,6 +1558,17 @@ impl WindowManager {
                             s.damage(old.union(w.damage_rect()));
                             ret_action = Action::WindowResized(w.id);
                         }
+                    }
+                }
+            }
+            if !any_moving && (buttons & 1 != 0) {
+                if let Some(w) = self.windows.last().filter(|w| !w.is_minimized && w.id >= 3) {
+                    if x > w.rect.x
+                        && y > w.rect.y + 25
+                        && x + 1 < w.rect.x + w.rect.w
+                        && y + 1 < w.rect.y + w.rect.h
+                    {
+                        ret_action = Action::ClientDrag(w.id, x - (w.rect.x + 1), y - (w.rect.y + 25));
                     }
                 }
             }
@@ -1592,12 +1642,15 @@ impl WindowManager {
                 let card = Self::switcher_card_rect(s.width, s.height, count);
                 if card.contains(x, y) && count > 0 {
                     let scale = theme::scale(s.height);
+                    let bw = card.w / scale;
+                    let tiles_total_w = count * 140 - 12;
+                    let tiles_start_x = bw.saturating_sub(tiles_total_w) / 2;
                     let px = (x - card.x) / scale;
                     let py = (y - card.y) / scale;
-                    if (22..74).contains(&py) && px >= 10 {
-                        let idx = (px - 10) / 68;
-                        let in_tile_x = (px - 10) % 68;
-                        if idx < count && in_tile_x < 56 {
+                    if (32..148).contains(&py) && px >= tiles_start_x {
+                        let idx = (px - tiles_start_x) / 140;
+                        let in_tile_x = (px - tiles_start_x) % 140;
+                        if idx < count && in_tile_x < 128 {
                             let target_id = ids[idx];
                             self.close_switcher(s);
                             self.unminimize_and_raise(target_id, s);
@@ -2204,6 +2257,19 @@ impl WindowManager {
                     h: w.rect.h + 16,
                 };
                 if let Some(clip) = shadow_r.intersection(r) {
+                    let (max_d, mult) = if w.is_focused { (8usize, 26u32) } else { (3usize, 10u32) };
+                    let apply_shadow = |under: u32, d: usize, focused: bool| -> u32 {
+                        let factor = ((max_d + 1 - d) as u32) * mult;
+                        let darkened = blend_darken(under, factor);
+                        if focused && d <= 4 {
+                            // Subtle electric-sapphire outer elevation halo so the active
+                            // window pops clearly even over a dark wallpaper.
+                            let glow_cov = (5 - d) as u32 * 2;
+                            theme::blend_coverage(0xff2563eb, darkened, glow_cov)
+                        } else {
+                            darkened
+                        }
+                    };
                     for y in clip.y..clip.y + clip.h {
                         let in_vert_body = y >= w.rect.y + 3 && y < w.rect.y + w.rect.h + 3;
                         if in_vert_body {
@@ -2211,20 +2277,18 @@ impl WindowManager {
                             let left_end = (w.rect.x).min(clip.x + clip.w);
                             for x in clip.x..left_end {
                                 let d = w.rect.x - x;
-                                if d <= 8 {
-                                    let factor = ((9 - d) * 14) as u32;
+                                if d <= max_d {
                                     s.pixels[y * s.width + x] =
-                                        blend_darken(s.pixels[y * s.width + x], factor);
+                                        apply_shadow(s.pixels[y * s.width + x], d, w.is_focused);
                                 }
                             }
                             // Right shadow fringe
                             let right_start = (w.rect.x + w.rect.w).max(clip.x);
                             for x in right_start..clip.x + clip.w {
                                 let d = x - (w.rect.x + w.rect.w - 1);
-                                if d <= 8 {
-                                    let factor = ((9 - d) * 14) as u32;
+                                if d <= max_d {
                                     s.pixels[y * s.width + x] =
-                                        blend_darken(s.pixels[y * s.width + x], factor);
+                                        apply_shadow(s.pixels[y * s.width + x], d, w.is_focused);
                                 }
                             }
                         } else {
@@ -2243,10 +2307,9 @@ impl WindowManager {
                                     0
                                 };
                                 let d = dx.max(dy);
-                                if d > 0 && d <= 8 {
-                                    let factor = ((9 - d) * 14) as u32;
+                                if d > 0 && d <= max_d {
                                     s.pixels[y * s.width + x] =
-                                        blend_darken(s.pixels[y * s.width + x], factor);
+                                        apply_shadow(s.pixels[y * s.width + x], d, w.is_focused);
                                 }
                             }
                         }
@@ -2272,8 +2335,11 @@ impl WindowManager {
                             let end = b.min(w.rect.x + w.rect.w - 1);
                             if client_row && start < end {
                                 if a <= w.rect.x {
-                                    s.pixels[y * s.width + w.rect.x] =
-                                        if w.id >= 3 { 0xff484848 } else { 0xff30363d };
+                                    s.pixels[y * s.width + w.rect.x] = if w.id >= 3 {
+                                        if w.is_focused { 0xff2563eb } else { 0xff2b303b }
+                                    } else {
+                                        0xff30363d
+                                    };
                                 }
                                 let src_off = (wy - 25) * (w.rect.w - 2) + (start - (w.rect.x + 1));
                                 let len = end - start;
@@ -2281,8 +2347,11 @@ impl WindowManager {
                                 s.pixels[dst_off..dst_off + len]
                                     .copy_from_slice(&w.content[src_off..src_off + len]);
                                 if b >= w.rect.x + w.rect.w {
-                                    s.pixels[y * s.width + w.rect.x + w.rect.w - 1] =
-                                        if w.id >= 3 { 0xff181818 } else { 0xff30363d };
+                                    s.pixels[y * s.width + w.rect.x + w.rect.w - 1] = if w.id >= 3 {
+                                        if w.is_focused { 0xff2563eb } else { 0xff232730 }
+                                    } else {
+                                        0xff30363d
+                                    };
                                 }
                                 return;
                             }
@@ -2356,17 +2425,33 @@ impl WindowManager {
                             dock_r.h,
                             18 * scale,
                         );
-                        if coverage < 16 {
-                            let under = s.pixels[y * s.width + x];
-                            s.pixels[y * s.width + x] =
-                                theme::blend_coverage(theme::PANEL, under, coverage);
+                        if coverage == 0 {
                             continue;
                         }
-                        let dock_bg = theme::PANEL;
+                        let under = s.pixels[y * s.width + x];
+                        let dock_w = dock_r.w / scale;
+                        let dock_h = dock_r.h / scale;
+                        // Frosted glass vibrancy: micro-diffused dark slate over darkened background
+                        let frost_tint = if ((px ^ py) & 1) == 0 {
+                            0xff1c212b
+                        } else {
+                            0xff181c25
+                        };
+                        let glass_bg = theme::blend_coverage(frost_tint, blend_darken(under, 76), 13);
+                        let is_dock_rim = px == 0 || px + 1 == dock_w || py == 0 || py + 1 == dock_h;
+                        let dock_bg = if py == 0 {
+                            0xff4e5c75
+                        } else if is_dock_rim {
+                            0xff313a4b
+                        } else if py == 1 {
+                            theme::blend_coverage(0xff384357, glass_bg, 10)
+                        } else {
+                            glass_bg
+                        };
                         let item_idx = px / 64;
                         let in_item_x = px % 64;
 
-                        if item_idx < 4 {
+                        let pixel = if item_idx < 4 {
                             let is_running = match item_idx {
                                 0 => has_win5,
                                 1 => has_win3,
@@ -2377,49 +2462,74 @@ impl WindowManager {
 
                             let app_id = [5, 3, 4, if self.demo_mode { 1 } else { 6 }][item_idx];
                             let focused = self.focused_window_id() == Some(app_id);
-                            if self.dock_hover == Some(item_idx)
-                                && (6..52).contains(&py)
-                                && (8..56).contains(&in_item_x)
-                            {
-                                let is_corner = (in_item_x < 12 && py < 10)
-                                    || (in_item_x > 52 && py < 10)
-                                    || (in_item_x < 12 && py > 48)
-                                    || (in_item_x > 52 && py > 48);
-                                if !is_corner {
-                                    s.pixels[y * s.width + x] = theme::SURFACE;
+                            let is_hovered = self.dock_hover == Some(item_idx);
+                            let is_neighbor = self
+                                .dock_hover
+                                .filter(|&h| h < 4)
+                                .is_some_and(|h| h.abs_diff(item_idx) == 1);
+
+                            // Dock magnification: hovered icon grows +71% (28->48, ~3x area!) and lifts
+                            // right to the top of the Dock; adjacent icons grow +36% (28->38).
+                            let (icon_size, icon_y) = if is_hovered {
+                                (48usize, 1usize)
+                            } else if is_neighbor {
+                                (38usize, 7usize)
+                            } else {
+                                (28usize, 14usize)
+                            };
+                            let icon_x = (64 - icon_size) / 2;
+
+                            let mut slot_bg = dock_bg;
+                            if is_hovered && (1..53).contains(&py) && (4..60).contains(&in_item_x) {
+                                let tile_cov =
+                                    theme::rounded_coverage(in_item_x - 4, py - 1, 56, 52, 12);
+                                if tile_cov > 0 {
+                                    let is_tile_edge = in_item_x == 4
+                                        || in_item_x == 59
+                                        || py == 1
+                                        || py == 52;
+                                    let tile_col = if py == 1 {
+                                        0xff38bdf8 // 1px bright sky-blue top specular rim
+                                    } else if is_tile_edge {
+                                        0xff2563eb
+                                    } else {
+                                        0xff1e3352
+                                    };
+                                    slot_bg = theme::blend_coverage(tile_col, dock_bg, tile_cov);
                                 }
                             }
-                            // Graphical icon tile: 28x28 centered in 64x58 item: in_item_x = 18..46, py = 12..40
-                            if in_item_x >= 18 && in_item_x < 46 && (12..40).contains(&py) {
-                                s.pixels[y * s.width + x] =
-                                    render_dock_icon(item_idx, in_item_x - 18, py - 12, dock_bg);
-                            } else if is_running && (49..=51).contains(&py) {
-                                // Windows 11 Running App Accent Pill (16px active, 8px background)
+
+                            if in_item_x >= icon_x
+                                && in_item_x < icon_x + icon_size
+                                && py >= icon_y
+                                && py < icon_y + icon_size
+                            {
+                                render_dock_icon_scaled(
+                                    item_idx,
+                                    in_item_x - icon_x,
+                                    py - icon_y,
+                                    icon_size,
+                                    slot_bg,
+                                )
+                            } else if is_running && (52..=54).contains(&py) {
+                                // Running App Accent Pill (16px active, 8px background)
                                 let in_pill = if focused {
                                     (24..=39).contains(&in_item_x)
                                 } else {
                                     (28..=35).contains(&in_item_x)
                                 };
                                 if in_pill {
-                                    s.pixels[y * s.width + x] =
-                                        if focused { theme::ACCENT } else { theme::MUTED };
-                                } else if self.dock_hover != Some(item_idx)
-                                    || !(6..52).contains(&py)
-                                    || !(8..56).contains(&in_item_x)
-                                {
-                                    s.pixels[y * s.width + x] = dock_bg;
+                                    if focused { theme::ACCENT } else { theme::MUTED }
+                                } else {
+                                    slot_bg
                                 }
                             } else {
-                                if self.dock_hover != Some(item_idx)
-                                    || !(6..52).contains(&py)
-                                    || !(8..56).contains(&in_item_x)
-                                {
-                                    s.pixels[y * s.width + x] = dock_bg;
-                                }
+                                slot_bg
                             }
                         } else {
-                            s.pixels[y * s.width + x] = dock_bg;
-                        }
+                            dock_bg
+                        };
+                        s.pixels[y * s.width + x] = theme::blend_coverage(pixel, under, coverage);
                     }
                 }
             }
@@ -2824,7 +2934,7 @@ impl WindowManager {
                         .unwrap_or("Desktop");
                     let title_w = theme::text_width(selected_title);
                     let title_x = bw.saturating_sub(title_w) / 2;
-                    let tiles_total_w = count * 68 - 12;
+                    let tiles_total_w = count * 140 - 12;
                     let tiles_start_x = bw.saturating_sub(tiles_total_w) / 2;
 
                     for y in clip.y..clip.y + clip.h {
@@ -2834,79 +2944,106 @@ impl WindowManager {
                                 y - card.y,
                                 card.w,
                                 card.h,
-                                12 * scale,
+                                14 * scale,
                             );
                             if cov == 0 {
                                 continue;
                             }
                             let under = s.pixels[y * s.width + x];
-                            // Semi-transparent glass backdrop: darken underlying scene and tint with dark slate
-                            let glass_base = theme::blend_coverage(0xff161b24, blend_darken(under, 96), 13);
                             let px = (x - card.x) / scale;
                             let py = (y - card.y) / scale;
+                            // Semi-transparent frosted glass backdrop: micro-grain diffusion over darkened scene
+                            let frost_tint = if ((px ^ py) & 1) == 0 {
+                                0xff181e29
+                            } else {
+                                0xff141922
+                            };
+                            let glass_base = theme::blend_coverage(frost_tint, blend_darken(under, 110), 14);
                             let is_border = px == 0 || px == bw - 1 || py == 0 || py == bh - 1;
 
-                            let pixel = if is_border {
+                            let pixel = if py == 0 {
+                                0xff60a5fa
+                            } else if is_border {
                                 0xff3b475e
                             } else if py == 1 {
                                 0xff2b3548
-                            } else if (4..20).contains(&py) {
-                                if px >= 12 && px < bw.saturating_sub(12) {
-                                    theme::text_pixel("Switch Windows", px - 12, py - 4, theme::MUTED, glass_base)
+                            } else if (8..26).contains(&py) {
+                                if px >= 16 && px < bw.saturating_sub(16) {
+                                    theme::text_pixel_bold(
+                                        "Switch Windows  (Alt + Tab)",
+                                        px - 16,
+                                        py - 8,
+                                        0xffd5deeb,
+                                        glass_base,
+                                    )
                                 } else {
                                     glass_base
                                 }
-                            } else if (22..74).contains(&py) && px >= tiles_start_x {
+                            } else if (32..148).contains(&py) && px >= tiles_start_x {
                                 let rel_x = px - tiles_start_x;
-                                let idx = rel_x / 68;
-                                let tx = rel_x % 68;
-                                let ty = py - 22;
-                                if idx < count && tx < 56 {
+                                let idx = rel_x / 140;
+                                let tx = rel_x % 140;
+                                let ty = py - 32;
+                                if idx < count && tx < 128 {
                                     let wid = ids[idx];
                                     let is_sel = wid == selected_id;
-                                    let tile_cov = theme::rounded_coverage(tx, ty, 56, 52, 8);
+                                    let tile_cov = theme::rounded_coverage(tx, ty, 128, 116, 12);
                                     if tile_cov == 0 {
                                         glass_base
                                     } else {
-                                        let tile_border = tx == 0 || tx == 55 || ty == 0 || ty == 51;
-                                        let tile_bg = if is_sel { 0xff1e385b } else { 0xff1e2430 };
-                                        let inner = if tile_border {
+                                        let tile_border = tx <= 1 || tx >= 126 || ty <= 1 || ty >= 114;
+                                        let tile_bg = if is_sel { 0xff1e3a5f } else { 0xff1d2330 };
+                                        let icon_kind = self
+                                            .windows
+                                            .iter()
+                                            .find(|w| w.id == wid)
+                                            .map(window_icon_kind)
+                                            .unwrap_or(4);
+                                        let inner = if ty == 0 {
+                                            if is_sel { 0xff7dd3fc } else { 0xff3b475c }
+                                        } else if tile_border {
                                             if is_sel { 0xff38bdf8 } else { 0xff2d3646 }
-                                        } else if (14..42).contains(&tx) && (6..34).contains(&ty) {
-                                            let icon_kind = self
-                                                .windows
-                                                .iter()
-                                                .find(|w| w.id == wid)
-                                                .map(window_icon_kind)
-                                                .unwrap_or(4);
-                                            render_dock_icon(icon_kind, tx - 14, ty - 6, tile_bg)
-                                        } else if (35..51).contains(&ty) && (6..50).contains(&tx) {
-                                            let short = match self
-                                                .windows
-                                                .iter()
-                                                .find(|w| w.id == wid)
-                                                .map(window_icon_kind)
-                                                .unwrap_or(4)
-                                            {
+                                        } else if (36..92).contains(&tx) && (12..68).contains(&ty) {
+                                            render_dock_icon_scaled(
+                                                icon_kind,
+                                                tx - 36,
+                                                ty - 12,
+                                                56,
+                                                tile_bg,
+                                            )
+                                        } else if (78..96).contains(&ty) && (8..120).contains(&tx) {
+                                            let app_label = match icon_kind {
                                                 0 => "Files",
-                                                1 => "Shell",
-                                                2 => "Notes",
-                                                3 => "SysInfo",
-                                                _ => "Config",
+                                                1 => "Terminal",
+                                                2 => "Notepad",
+                                                3 => "System Info",
+                                                _ => "Settings",
                                             };
-                                            let sw = theme::text_width(short);
-                                            let sx = 28usize.saturating_sub(sw / 2);
+                                            let sw = theme::text_width(app_label);
+                                            let sx = 64usize.saturating_sub(sw / 2).max(8);
                                             if tx >= sx {
-                                                theme::text_pixel(
-                                                    short,
-                                                    tx - sx,
-                                                    ty - 35,
-                                                    if is_sel { 0xffffffff } else { theme::MUTED },
-                                                    tile_bg,
-                                                )
+                                                if is_sel {
+                                                    theme::text_pixel_bold(
+                                                        app_label,
+                                                        tx - sx,
+                                                        ty - 78,
+                                                        0xffffffff,
+                                                        tile_bg,
+                                                    )
+                                                } else {
+                                                    theme::text_pixel(
+                                                        app_label,
+                                                        tx - sx,
+                                                        ty - 78,
+                                                        0xffb8c7dc,
+                                                        tile_bg,
+                                                    )
+                                                }
                                             } else {
                                                 tile_bg
                                             }
+                                        } else if is_sel && (104..107).contains(&ty) && (44..84).contains(&tx) {
+                                            0xff38bdf8
                                         } else {
                                             tile_bg
                                         };
@@ -2915,13 +3052,13 @@ impl WindowManager {
                                 } else {
                                     glass_base
                                 }
-                            } else if py == 78 && px >= 12 && px < bw.saturating_sub(12) {
+                            } else if py == 156 && px >= 16 && px < bw.saturating_sub(16) {
                                 0xff2a3344
-                            } else if (82..98).contains(&py) && px >= title_x.max(10) && px < bw.saturating_sub(10) {
-                                theme::text_pixel(
+                            } else if (164..182).contains(&py) && px >= title_x.max(16) && px < bw.saturating_sub(16) {
+                                theme::text_pixel_bold(
                                     selected_title,
-                                    px - title_x.max(10),
-                                    py - 82,
+                                    px - title_x.max(16),
+                                    py - 164,
                                     0xffffffff,
                                     glass_base,
                                 )

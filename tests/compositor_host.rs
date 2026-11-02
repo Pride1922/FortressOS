@@ -2590,3 +2590,247 @@ fn alt_tab_window_switcher_hud_lifecycle_and_rendering() {
     assert!(!wm.switcher_open);
     assert_eq!(wm.focused_window_id(), Some(5));
 }
+
+#[test]
+fn active_shadow_dock_vibrancy_and_magnification() {
+    let mut s = Surface::new(800, 600).unwrap();
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+    let mut wm = WindowManager::desktop();
+
+    let w_inactive = window::Window::new(
+        3,
+        "Inactive",
+        Rect {
+            x: 60,
+            y: 80,
+            w: 240,
+            h: 160,
+        },
+    )
+    .unwrap();
+    let mut w_active = window::Window::new(
+        4,
+        "Active",
+        Rect {
+            x: 420,
+            y: 80,
+            w: 240,
+            h: 160,
+        },
+    )
+    .unwrap();
+    w_active.is_focused = true;
+    wm.windows.push(w_inactive);
+    wm.windows.push(w_active);
+
+    s.damage(full);
+    wm.render(&mut s);
+    flush(&mut s);
+
+    // 1. At distance d=6 below each window (y = 80 + 160 + 2 + 6), the active window casts a
+    //    shadow whereas the inactive window's tight 4px shadow has already ended.
+    let y_d6 = 80 + 160 + 2 + 6;
+    let inactive_d6 = s.pixels[y_d6 * s.width + 180];
+    let inactive_bg = window::theme::desktop_pixel(180, y_d6, s.width, s.height);
+    assert_eq!(inactive_d6, inactive_bg, "inactive window shadow should stop at 4px");
+
+    let active_d6 = s.pixels[y_d6 * s.width + 540];
+    let active_bg = window::theme::desktop_pixel(540, y_d6, s.width, s.height);
+    assert_ne!(active_d6, active_bg, "active window should cast an 8px shadow");
+
+    // 2. Hover Dock slot 0 and verify both slot 0 (hovered) and slot 1 (neighbor) magnify,
+    //    and incremental hover repair matches full composition.
+    let dock = WindowManager::dock_rect(s.width, s.height);
+    let slot0_icon_top_y = dock.y + 7;
+    let slot0_center_x = dock.x + 32;
+    let slot1_neighbor_y = dock.y + 10;
+    let slot1_center_x = dock.x + 64 + 32;
+    let before_slot0 = s.pixels[slot0_icon_top_y * s.width + slot0_center_x];
+    let before_slot1 = s.pixels[slot1_neighbor_y * s.width + slot1_center_x];
+
+    wm.mouse(slot0_center_x, dock.y + 24, 0, &mut s);
+    wm.render(&mut s);
+    flush(&mut s);
+
+    assert_ne!(
+        s.pixels[slot0_icon_top_y * s.width + slot0_center_x],
+        before_slot0,
+        "hovered dock icon should magnify upward into y=7"
+    );
+    assert_ne!(
+        s.pixels[slot1_neighbor_y * s.width + slot1_center_x],
+        before_slot1,
+        "adjacent dock icon should magnify upward into y=10"
+    );
+
+    let mut full_ref = Surface::new(800, 600).unwrap();
+    full_ref.damage(full);
+    wm.render(&mut full_ref);
+    assert_eq!(s.pixels, full_ref.pixels, "incremental dock magnification must match full render");
+}
+
+#[test]
+fn notepad_and_terminal_text_selection_copy_cut_paste() {
+    let mut np = notepad::Notepad::new("/tmp/sel.txt");
+    np.text = b"Hello Fortress World\nSecond Line\n".to_vec();
+    np.cursor = 0;
+
+    // 1. Mouse click at col 6 ("Fortress") and drag to col 14
+    assert!(np.handle_click(48 + 6 * 8, 28));
+    assert_eq!(np.selected_range(), None);
+    assert!(np.handle_drag(48 + 14 * 8, 28));
+    assert_eq!(np.selected_range(), Some((6, 14)));
+
+    // Copy only the selected range ("Fortress")
+    assert!(np.handle_key(3)); // Ctrl+C
+    assert_eq!(clipboard::get().as_deref(), Some("Fortress"));
+
+    // 2. Shift+Right (\x1b[c) extends selection by 6 more chars (" World")
+    for &b in b"\x1b[c\x1b[c\x1b[c\x1b[c\x1b[c\x1b[c" {
+        let _ = np.handle_key(b);
+    }
+    assert_eq!(np.selected_range(), Some((6, 20)));
+
+    // Cut selected range ("Fortress World")
+    assert!(np.handle_key(24)); // Ctrl+X
+    assert_eq!(clipboard::get().as_deref(), Some("Fortress World"));
+    assert_eq!(np.text, b"Hello \nSecond Line\n");
+
+    // 3. Ctrl+A (1) selects all, and Ctrl+V (22) replaces selection with clipboard
+    assert!(np.handle_key(1)); // Ctrl+A
+    assert_eq!(np.selected_range(), Some((0, np.text.len())));
+    assert!(np.handle_key(22)); // Ctrl+V
+    assert_eq!(np.text, b"Fortress World");
+
+    // 4. Ctrl+Right (\x1b[W) and Ctrl+Left (\x1b[Q) word-by-word selection, plus Ctrl+W (23) and double-click
+    np.cursor = 0;
+    np.selection_anchor = None;
+    for &b in b"\x1b[W" {
+        let _ = np.handle_key(b);
+    }
+    assert_eq!(np.selected_range(), Some((0, 8))); // "Fortress"
+    assert!(np.handle_key(3)); // Ctrl+C
+    assert_eq!(clipboard::get().as_deref(), Some("Fortress"));
+
+    // Double-click on "World" (col 10) selects the entire word "World"
+    assert!(np.handle_click(48 + 10 * 8, 28));
+    assert!(np.handle_click(48 + 10 * 8, 28));
+    assert_eq!(np.selected_range(), Some((9, 14))); // "World"
+    assert!(np.handle_key(3)); // Ctrl+C
+    assert_eq!(clipboard::get().as_deref(), Some("World"));
+
+    // Ctrl+W (23) at col 3 selects "Fortress"
+    np.cursor = 3;
+    np.selection_anchor = None;
+    assert!(np.handle_key(23));
+    assert_eq!(np.selected_range(), Some((0, 8)));
+
+    // 5. Terminal mouse click-and-drag text selection
+    let mut term = terminal::Terminal::new();
+    term.write_bytes(b"fortress$ uname -a\r\nFortressOS x86_64\r\n");
+    assert!(!term.handle_click(10 + 0 * 8, 8 + 1 * 16)); // row 1, col 0 ("FortressOS")
+    assert!(term.handle_drag(10 + 9 * 8, 8 + 1 * 16)); // row 1, col 9
+    assert_eq!(term.selected_text().as_deref(), Some("FortressOS"));
+    term.clear_selection();
+    assert_eq!(term.selected_text(), None);
+}
+
+#[test]
+fn settings_clock_sync_lifecycle_and_status() {
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+
+    // Open Time & Language (id 9)
+    host.open(9, &mut wm, &mut s);
+    assert_eq!(wm.focused_window_id(), Some(9));
+    assert_eq!(host.apps[2].kind, 2);
+    assert!(!host.clock_synced);
+    assert!(!host.clock_sync_in_progress);
+
+    // Initial render
+    host.render(9, &mut wm, &mut s);
+    flush(&mut s);
+
+    // 1. Click "Sync Clock" button (control 8 at x = 650, y = 78)
+    host.pointer(9, 650, 78, &mut wm, &mut s);
+    assert!(host.clock_sync_in_progress);
+    assert!(host.status.as_str().contains("Synchronizing clock"));
+
+    // 2. Refresh while sync is in progress (sys state = 1)
+    sys::test_set_clock_sync_state(1);
+    host.refresh(1761508800, &mut wm, &mut s);
+    assert!(host.clock_sync_in_progress);
+    assert!(!host.clock_synced);
+
+    // 3. Refresh when sync completes successfully (sys state = 0)
+    sys::test_set_clock_sync_state(0);
+    host.refresh(1761508801, &mut wm, &mut s);
+    assert!(!host.clock_sync_in_progress);
+    assert!(host.clock_synced);
+    assert!(host.status.as_str().contains("Clock synchronized successfully"));
+
+    // Render updated card showing green "NTP Synced" badge
+    host.render(9, &mut wm, &mut s);
+    flush(&mut s);
+
+    // 4. Trigger failure path
+    sys::test_set_clock_sync_state(-1);
+    host.sync_clock();
+    assert!(host.clock_sync_in_progress);
+    host.refresh(1761508802, &mut wm, &mut s);
+    assert!(!host.clock_sync_in_progress);
+    assert!(host.status.as_str().contains("NTP sync failed"));
+}
+
+#[test]
+fn settings_timezone_preset_autosave_normalization_and_clock_fallback() {
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+
+    // 1. Verify timezone normalization
+    assert_eq!(desktop::normalize_timezone("Europe Brussles"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("Europe/Brussles"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("brussels"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("Brussels"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("belgium"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("CET"), "Europe/Brussels");
+    assert_eq!(desktop::normalize_timezone("utc"), "UTC");
+    assert_eq!(desktop::normalize_timezone("new york"), "America/New_York");
+    assert_eq!(desktop::normalize_timezone("tokyo"), "Asia/Tokyo");
+
+    // 2. Open Time & Language (id 9)
+    host.open(9, &mut wm, &mut s);
+
+    // 3. Click Brussels preset (command 4, control 4)
+    // Control 4 is at x=274..370, y=206..232
+    host.pointer(9, 300, 215, &mut wm, &mut s);
+    assert_eq!(host.zone.as_str(), "Europe/Brussels");
+
+    // Click Tokyo preset (command 6, control 6 at x=482..552, y=206..232)
+    host.pointer(9, 500, 215, &mut wm, &mut s);
+    assert_eq!(host.zone.as_str(), "Asia/Tokyo");
+
+    // Click Brussels preset again
+    host.pointer(9, 300, 215, &mut wm, &mut s);
+    assert_eq!(host.zone.as_str(), "Europe/Brussels");
+
+    // 4. Clock fallback: when local clock is unavailable (as in test harness),
+    // refresh with a valid timestamp (1761508800 = 20:00:00 UTC) must fallback to UTC
+    // and NOT leave local_seconds as None or clock_sec as -1.
+    host.refresh(1761508800, &mut wm, &mut s);
+    assert!(host.local_seconds.is_some());
+    assert_eq!(host.local_seconds.unwrap(), 1761508800);
+    assert_eq!(wm.clock_sec, 1761508800);
+    assert!(host.calendar.is_some());
+    let cal = host.calendar.unwrap();
+    assert_eq!(cal.hour, 20);
+    assert_eq!(cal.minute, 0);
+    assert_eq!(cal.second, 0);
+}

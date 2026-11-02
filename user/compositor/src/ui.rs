@@ -527,12 +527,19 @@ impl<'a> Canvas<'a> {
         let text_x = 22;
         let ic_x = 12isize;
         let ic_y = (r.h / 2) as isize;
+        let top_hi = if focused {
+            0xff60a5fa
+        } else if selected {
+            0xff475973
+        } else {
+            0
+        };
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
                 let base = if selected || focused {
-                    Self::rounded_frame_pixel(lx, ly, r.w, r.h, 6, outer_bg, bg, border, 0)
+                    Self::rounded_frame_pixel(lx, ly, r.w, r.h, 6, outer_bg, bg, border, top_hi)
                 } else {
                     outer_bg
                 };
@@ -644,6 +651,13 @@ impl<'a> Canvas<'a> {
         } else {
             0xff2a3648
         };
+        let top_hi = if selected {
+            0xff60a5fa
+        } else if focused {
+            0xff7dd3fc
+        } else {
+            0xff3a4a63
+        };
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -657,7 +671,7 @@ impl<'a> Canvas<'a> {
                     theme::PANEL,
                     bg,
                     border,
-                    0,
+                    top_hi,
                 );
                 let p = if lx >= 6 && lx < 28 && ly >= 4 && ly < 24 {
                     let sx = lx - 6;
@@ -678,7 +692,16 @@ impl<'a> Canvas<'a> {
                             0xff09111c
                         }
                     } else {
-                        0xff080a0e
+                        let dx = sx as i32 - 11;
+                        let dy = sy as i32 - 9;
+                        let d2 = dx * dx + dy * dy;
+                        if d2 <= 18 {
+                            0xff254370
+                        } else if d2 <= 48 {
+                            0xff182b49
+                        } else {
+                            0xff0d1524
+                        }
                     }
                 } else if selected && lx >= 20 && lx <= 25 && ly >= 6 && ly <= 11 {
                     0xff3b82f6
@@ -758,6 +781,15 @@ impl<'a> Canvas<'a> {
         let sec_pill_w = sec_tw + 14;
         let sec_pill_x = r.w.saturating_sub(sec_pill_w + 8);
         let sec_text_x = sec_pill_x + 7;
+        let top_hi = if !enabled {
+            0
+        } else if selected {
+            0xff60a5fa
+        } else if focused {
+            0xff7dd3fc
+        } else {
+            0xff3b4c66
+        };
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -771,7 +803,7 @@ impl<'a> Canvas<'a> {
                     theme::PANEL,
                     bg,
                     border,
-                    0,
+                    top_hi,
                 );
                 let p = if lx >= 10 && lx < 22 && ly >= 6 && ly < 18 {
                     let bar_idx = (lx - 10) / 3;

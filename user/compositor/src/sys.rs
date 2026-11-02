@@ -443,8 +443,140 @@ pub fn clipboard_write(path: &str, bytes: &[u8]) -> Result<(), isize> {
 pub const SETTING_PREFERENCES: u8 = 1;
 pub const SETTING_TIMEZONE: u8 = 2;
 pub const SETTING_WLAN: u8 = 3;
+pub const SETTING_CLOCK_SYNC_START: u8 = 4;
+pub const SETTING_CLOCK_SYNC_STATUS: u8 = 5;
 /// Largest request payload; preferences::MAX_BYTES, timezone names, and wlan config fit.
 pub const SETTING_MAX: usize = 2048;
+
+static NTP_SYNC_PID: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+#[cfg(test)]
+static TEST_CLOCK_SYNC_STATE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+#[cfg(test)]
+pub fn test_set_clock_sync_state(state: isize) {
+    TEST_CLOCK_SYNC_STATE.store(state as i64, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+pub fn spawn_ntpd(server: &str) -> isize {
+    let s = if server.is_empty() { "pool.ntp.org" } else { server };
+    let mut server_buf = [0u8; 64];
+    if s.len() >= server_buf.len() {
+        return EINVAL;
+    }
+    server_buf[..s.len()].copy_from_slice(s.as_bytes());
+    server_buf[s.len()] = 0;
+
+    let argv = [
+        c"/sbin/ntpd".as_ptr(),
+        c"--once".as_ptr(),
+        server_buf.as_ptr() as *const _,
+        core::ptr::null(),
+    ];
+    let actions = [0, 1, 2].map(|fd| SpawnFdAction {
+        action_type: 1, // OPEN
+        dst_fd: fd,
+        flags: VFS_O_RDWR,
+        path: c"/dev/null".as_ptr() as u64,
+        ..Default::default()
+    });
+    let opts = SpawnOpts {
+        size: core::mem::size_of::<SpawnOpts>() as u32,
+        version: 2,
+        argv: argv.as_ptr() as u64,
+        fd_actions: actions.as_ptr() as u64,
+        action_count: 3,
+        ..Default::default()
+    };
+    spawn_ext("/sbin/ntpd", &opts)
+}
+#[cfg(test)]
+pub fn spawn_ntpd(_server: &str) -> isize {
+    -1
+}
+
+pub fn clock_sync_start(server: &str) -> Result<(), isize> {
+    #[cfg(test)]
+    {
+        let _ = server;
+        return Ok(());
+    }
+    #[cfg(not(test))]
+    {
+        use core::sync::atomic::Ordering::{Acquire, Relaxed};
+        let (request, reply) = (BROKER_FDS[0].load(Acquire), BROKER_FDS[1].load(Acquire));
+        if request >= 0 && reply >= 0 {
+            let bytes = server.as_bytes();
+            if bytes.len() > 63 {
+                return Err(EINVAL);
+            }
+            let mut msg = [0u8; 3 + 64];
+            msg[0] = SETTING_CLOCK_SYNC_START;
+            msg[1..3].copy_from_slice(&(bytes.len() as u16).to_le_bytes());
+            if !bytes.is_empty() {
+                msg[3..3 + bytes.len()].copy_from_slice(bytes);
+            }
+            if !write_all(request, &msg[..3 + bytes.len()]) {
+                return Err(EPIPE);
+            }
+            let mut status = [0u8; 8];
+            if !read_exact(reply, &mut status) {
+                return Err(EPIPE);
+            }
+            match i64::from_le_bytes(status) {
+                0 => Ok(()),
+                err => Err(err as isize),
+            }
+        } else {
+            let pid = spawn_ntpd(server);
+            if pid <= 0 {
+                return Err(if pid < 0 { pid } else { EINVAL });
+            }
+            NTP_SYNC_PID.store(pid as i64, Relaxed);
+            Ok(())
+        }
+    }
+}
+
+pub fn clock_sync_status() -> isize {
+    #[cfg(test)]
+    {
+        return TEST_CLOCK_SYNC_STATE.load(core::sync::atomic::Ordering::Relaxed) as isize;
+    }
+    #[cfg(not(test))]
+    {
+        use core::sync::atomic::Ordering::{Acquire, Relaxed};
+        let (request, reply) = (BROKER_FDS[0].load(Acquire), BROKER_FDS[1].load(Acquire));
+        if request >= 0 && reply >= 0 {
+            let msg = [SETTING_CLOCK_SYNC_STATUS, 0, 0];
+            if !write_all(request, &msg) {
+                return EPIPE;
+            }
+            let mut status = [0u8; 8];
+            if !read_exact(reply, &mut status) {
+                return EPIPE;
+            }
+            i64::from_le_bytes(status) as isize
+        } else {
+            let pid = NTP_SYNC_PID.load(Relaxed) as isize;
+            if pid <= 0 {
+                return -2;
+            }
+            match child_status(pid) {
+                None => 1,
+                Some(Ok(())) => {
+                    NTP_SYNC_PID.store(0, Relaxed);
+                    0
+                }
+                Some(Err(e)) => {
+                    NTP_SYNC_PID.store(0, Relaxed);
+                    if e < 0 { e } else { -1 }
+                }
+            }
+        }
+    }
+}
 
 /// (target, exclusive temporary) for each setting.
 pub fn setting_paths(kind: u8) -> Option<(&'static str, &'static str)> {

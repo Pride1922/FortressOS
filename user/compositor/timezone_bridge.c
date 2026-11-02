@@ -24,10 +24,24 @@ bool desktop_clock(int64_t seconds, int64_t *local, tz_calendar_t *calendar) {
     if (seconds % 60 < 0) --minute;
     if (minute != cached_minute) {
         cached_valid = tz_resolve(NULL, seconds, &cached_zone);
+        if (!cached_valid) {
+            /* Fall back to UTC if resolved zone is invalid or unavailable */
+            cached_valid = tz_posix("UTC", seconds, &cached_zone);
+        }
         cached_minute = minute;
     }
+    if (!cached_valid) {
+        cached_valid = tz_posix("UTC", seconds, &cached_zone);
+    }
     if (!cached_valid || (cached_zone.offset > 0 && seconds > INT64_MAX-cached_zone.offset)
-        || (cached_zone.offset < 0 && seconds < INT64_MIN-cached_zone.offset)) return false;
+        || (cached_zone.offset < 0 && seconds < INT64_MIN-cached_zone.offset)) {
+        *local = seconds;
+        return tz_calendar(seconds, calendar);
+    }
     *local = seconds + cached_zone.offset;
-    return tz_calendar(*local, calendar);
+    if (!tz_calendar(*local, calendar)) {
+        *local = seconds;
+        return tz_calendar(seconds, calendar);
+    }
+    return true;
 }

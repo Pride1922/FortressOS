@@ -14,6 +14,8 @@ pub struct Notepad {
     pub path: String,
     pub text: Vec<u8>,
     pub cursor: usize,
+    pub selection_anchor: Option<usize>,
+    last_click_idx: Option<usize>,
     #[allow(dead_code)]
     pub scroll_line: usize,
     pub modified: bool,
@@ -59,6 +61,8 @@ impl Notepad {
             path: path_str,
             text,
             cursor: 0,
+            selection_anchor: None,
+            last_click_idx: None,
             scroll_line: 0,
             modified: false,
             status: None,
@@ -67,7 +71,99 @@ impl Notepad {
         }
     }
 
+    #[inline]
+    fn is_word_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+    }
+
+    pub fn move_cursor_word_left(&mut self) {
+        let mut i = self.cursor.min(self.text.len());
+        while i > 0 && !Self::is_word_byte(self.text[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && Self::is_word_byte(self.text[i - 1]) {
+            i -= 1;
+        }
+        self.cursor = i;
+    }
+
+    pub fn move_cursor_word_right(&mut self) {
+        let len = self.text.len();
+        let mut i = self.cursor.min(len);
+        while i < len && !Self::is_word_byte(self.text[i]) {
+            i += 1;
+        }
+        while i < len && Self::is_word_byte(self.text[i]) {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
+    pub fn select_word_at(&mut self, idx: usize) -> bool {
+        let len = self.text.len();
+        if len == 0 {
+            return false;
+        }
+        let mut pos = idx.min(len);
+        if pos == len || !Self::is_word_byte(self.text[pos]) {
+            if pos > 0 && Self::is_word_byte(self.text[pos - 1]) {
+                pos -= 1;
+            } else {
+                return false;
+            }
+        }
+        let mut start = pos;
+        while start > 0 && Self::is_word_byte(self.text[start - 1]) {
+            start -= 1;
+        }
+        let mut end = pos;
+        while end < len && Self::is_word_byte(self.text[end]) {
+            end += 1;
+        }
+        if start < end {
+            self.selection_anchor = Some(start);
+            self.cursor = end;
+            self.status = Some("Selected word");
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn selected_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?.min(self.text.len());
+        let cur = self.cursor.min(self.text.len());
+        if anchor != cur {
+            Some((anchor.min(cur), anchor.max(cur)))
+        } else {
+            None
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        if !self.text.is_empty() {
+            self.selection_anchor = Some(0);
+            self.cursor = self.text.len();
+            self.status = Some("Selected all");
+        }
+    }
+
+    fn delete_selection(&mut self) -> bool {
+        if let Some((start, end)) = self.selected_range() {
+            self.text.drain(start..end);
+            self.cursor = start;
+            self.selection_anchor = None;
+            self.modified = true;
+            self.status = None;
+            true
+        } else {
+            self.selection_anchor = None;
+            false
+        }
+    }
+
     pub fn insert_char(&mut self, c: u8) {
+        let _ = self.delete_selection();
         if self.text.len() >= 4096 {
             return;
         }
@@ -79,6 +175,9 @@ impl Notepad {
     }
 
     pub fn delete_back(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.cursor > 0 && !self.text.is_empty() {
             self.cursor -= 1;
             let pos = self.cursor.min(self.text.len().saturating_sub(1));
@@ -89,6 +188,9 @@ impl Notepad {
     }
 
     pub fn delete_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.cursor < self.text.len() {
             self.text.remove(self.cursor);
             self.modified = true;
@@ -179,28 +281,44 @@ impl Notepad {
             }
             2 => {
                 self.ansi_state = 0;
+                let extend_sel = matches!(b, b'a'..=b'd' | b'f' | b'h' | b'q' | b'w' | b'Q' | b'W');
+                if extend_sel {
+                    if self.selection_anchor.is_none() {
+                        self.selection_anchor = Some(self.cursor);
+                    }
+                } else if matches!(b, b'A'..=b'D' | b'F' | b'H') {
+                    self.selection_anchor = None;
+                }
                 match b {
-                    b'A' => {
+                    b'A' | b'a' => {
                         self.move_cursor_up();
                         return true;
                     }
-                    b'B' => {
+                    b'B' | b'b' => {
                         self.move_cursor_down();
                         return true;
                     }
-                    b'C' => {
+                    b'C' | b'c' => {
                         self.move_cursor_right();
                         return true;
                     }
-                    b'D' => {
+                    b'D' | b'd' => {
                         self.move_cursor_left();
                         return true;
                     }
-                    b'H' => {
+                    b'W' | b'w' => {
+                        self.move_cursor_word_right();
+                        return true;
+                    }
+                    b'Q' | b'q' => {
+                        self.move_cursor_word_left();
+                        return true;
+                    }
+                    b'H' | b'h' => {
                         self.move_cursor_home();
                         return true;
                     }
-                    b'F' => {
+                    b'F' | b'f' => {
                         self.move_cursor_end();
                         return true;
                     }
@@ -231,14 +349,21 @@ impl Notepad {
             // Ctrl+S / Ctrl+R
             self.save();
             true
+        } else if b == 1 {
+            // Ctrl+A: Select all text
+            self.select_all();
+            true
+        } else if b == 23 || b == 4 {
+            // Ctrl+W / Ctrl+D: Select word under cursor
+            self.select_word_at(self.cursor)
         } else if b == 3 {
-            // Ctrl+C: Copy current line (or buffer) to clipboard
+            // Ctrl+C: Copy selection (or current line) to clipboard
             self.copy_current_line()
         } else if b == 24 {
-            // Ctrl+X: Cut current line to clipboard
+            // Ctrl+X: Cut selection (or current line) to clipboard
             self.cut_current_line()
         } else if b == 22 {
-            // Ctrl+V: Paste from clipboard at cursor
+            // Ctrl+V: Paste from clipboard at cursor (replacing selection if any)
             self.paste_clipboard()
         } else if b == 0x08 || b == 127 {
             // Backspace
@@ -277,6 +402,15 @@ impl Notepad {
     }
 
     pub fn copy_current_line(&mut self) -> bool {
+        if let Some((start, end)) = self.selected_range() {
+            if let Ok(s) = core::str::from_utf8(&self.text[start..end]) {
+                if clipboard::set(s) {
+                    self.status = Some("Copied selection");
+                    return true;
+                }
+            }
+            return false;
+        }
         let (start, end) = self.current_line_bounds();
         let slice = if start < end {
             &self.text[start..end]
@@ -296,6 +430,17 @@ impl Notepad {
         if self.text.is_empty() {
             return false;
         }
+        if let Some((start, end)) = self.selected_range() {
+            if let Ok(s) = core::str::from_utf8(&self.text[start..end]) {
+                let _ = clipboard::set(s);
+            }
+            self.text.drain(start..end);
+            self.cursor = start.min(self.text.len());
+            self.selection_anchor = None;
+            self.modified = true;
+            self.status = Some("Cut selection");
+            return true;
+        }
         let (start, mut end) = self.current_line_bounds();
         let slice = &self.text[start..end];
         if let Ok(s) = core::str::from_utf8(slice) {
@@ -307,6 +452,7 @@ impl Notepad {
         if start < end {
             self.text.drain(start..end);
             self.cursor = start.min(self.text.len());
+            self.selection_anchor = None;
             self.modified = true;
             self.status = Some("Cut to clipboard");
             return true;
@@ -318,7 +464,7 @@ impl Notepad {
         let Some(clip) = clipboard::get() else {
             return false;
         };
-        let mut inserted = false;
+        let mut inserted = self.delete_selection();
         for &b in clip.as_bytes() {
             if self.text.len() >= 4096 {
                 break;
@@ -337,22 +483,7 @@ impl Notepad {
         inserted
     }
 
-    /// Handles mouse clicks in client coordinates. Returns true if re-render is needed.
-    pub fn handle_click(&mut self, cx: usize, cy: usize) -> bool {
-        self.cursor_visible = true;
-        if cy <= 20 {
-            // Clicked header toolbar
-            if (8..=72).contains(&cx) {
-                self.save();
-                return true;
-            } else if (78..=130).contains(&cx) {
-                return self.copy_current_line();
-            } else if (136..=196).contains(&cx) {
-                return self.paste_clipboard();
-            }
-            return false;
-        }
-
+    fn index_at_pixel(&self, cx: usize, cy: usize) -> usize {
         let target_line = (cy.saturating_sub(24)) / 16;
         let target_col = cx.saturating_sub(48) / 8;
 
@@ -372,9 +503,59 @@ impl Notepad {
                 cur_col = 0;
             }
         }
+        target_idx.min(self.text.len())
+    }
 
-        self.cursor = target_idx.min(self.text.len());
+    /// Handles mouse clicks in client coordinates. Returns true if re-render is needed.
+    pub fn handle_click(&mut self, cx: usize, cy: usize) -> bool {
+        self.cursor_visible = true;
+        if cy <= 20 {
+            // Clicked header toolbar
+            if (8..=72).contains(&cx) {
+                self.save();
+                return true;
+            } else if (78..=130).contains(&cx) {
+                return self.copy_current_line();
+            } else if (136..=196).contains(&cx) {
+                return self.paste_clipboard();
+            } else if (202..=266).contains(&cx) {
+                self.select_all();
+                return true;
+            } else if (272..=318).contains(&cx) {
+                return self.cut_current_line();
+            }
+            return false;
+        }
+
+        let idx = self.index_at_pixel(cx, cy);
+        if self.last_click_idx == Some(idx) && self.selected_range().is_none() {
+            self.last_click_idx = None;
+            if self.select_word_at(idx) {
+                return true;
+            }
+        }
+        self.last_click_idx = Some(idx);
+        self.cursor = idx;
+        self.selection_anchor = Some(idx);
         true
+    }
+
+    /// Handles mouse drag motion while left button is held down to select text.
+    pub fn handle_drag(&mut self, cx: usize, cy: usize) -> bool {
+        if cy <= 20 {
+            return false;
+        }
+        let idx = self.index_at_pixel(cx, cy);
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        if self.cursor != idx {
+            self.last_click_idx = None;
+            self.cursor = idx;
+            self.cursor_visible = true;
+            return true;
+        }
+        false
     }
 
     #[allow(dead_code)]
@@ -423,10 +604,12 @@ impl Notepad {
         c.pill_button(8, 2, 64, 18, "Save", 0xffffffff, 0xff1e385b, 0xff3b82f6, hdr_bg);
         c.pill_button(78, 2, 52, 18, "Copy", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
         c.pill_button(136, 2, 60, 18, "Paste", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
-        if width > 310 {
-            let path_w = width.saturating_sub(304);
-            c.rounded_box(202, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
-            c.text(210, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
+        c.pill_button(202, 2, 64, 18, "Select", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        c.pill_button(272, 2, 46, 18, "Cut", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        if width > 426 {
+            let path_w = width.saturating_sub(420);
+            c.rounded_box(324, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
+            c.text(332, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
         }
         if self.modified && width >= 170 {
             c.pill_button(
@@ -487,12 +670,17 @@ impl Notepad {
         };
 
         let mut cur_row_bg = draw_row_chrome(c, cur_y, line_idx);
+        let sel_range = self.selected_range();
 
         for (idx, &b) in self.text.iter().enumerate() {
             if idx == self.cursor {
                 cursor_px = (48 + col_idx * 8, cur_y);
             }
+            let is_selected = sel_range.is_some_and(|(s, e)| idx >= s && idx < e);
             if b == b'\n' {
+                if is_selected && col_idx < max_cols && row_count < max_rows {
+                    c.fill_rect(48 + col_idx * 8, cur_y, 8, 16, 0xff264f78);
+                }
                 line_idx += 1;
                 col_idx = 0;
                 row_count += 1;
@@ -503,7 +691,12 @@ impl Notepad {
                 cur_row_bg = draw_row_chrome(c, cur_y, line_idx);
             } else if (32..=126).contains(&b) {
                 if col_idx < max_cols && row_count < max_rows {
-                    c.glyph(48 + col_idx * 8, cur_y, b, NOTEPAD_FG, cur_row_bg);
+                    let cell_bg = if is_selected { 0xff264f78 } else { cur_row_bg };
+                    let cell_fg = if is_selected { 0xffffffff } else { NOTEPAD_FG };
+                    if is_selected {
+                        c.fill_rect(48 + col_idx * 8, cur_y, 8, 16, cell_bg);
+                    }
+                    c.glyph(48 + col_idx * 8, cur_y, b, cell_fg, cell_bg);
                 }
                 col_idx += 1;
             }

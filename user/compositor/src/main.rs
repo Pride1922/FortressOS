@@ -286,7 +286,12 @@ fn run(
         tv_nsec: 0,
     };
     if sys::clock_gettime(0, &mut ts) == 0 {
-        windows.update_clock(&mut scene, ts.tv_sec);
+        let initial_clock = if let Some((local, _)) = sys::local_clock(ts.tv_sec) {
+            local
+        } else {
+            ts.tv_sec
+        };
+        windows.update_clock(&mut scene, initial_clock);
     }
     windows.monitor(
         &mut scene,
@@ -527,6 +532,10 @@ fn event_loop(
                     }
                     window::Action::ClientClick(id, x, y) if clients.owns(id) => {
                         clients.click(id, x, y, windows, scene);
+                        true
+                    }
+                    window::Action::ClientDrag(id, x, y) if clients.owns(id) => {
+                        clients.drag(id, x, y);
                         true
                     }
                     window::Action::WindowResized(id) if clients.owns(id) => {
@@ -787,7 +796,7 @@ fn handle_action(
     match action {
         window::Action::OpenDesktopApp(_) => {}
         window::Action::Exit => return true,
-        window::Action::ClientClick(..) => {}
+        window::Action::ClientClick(..) | window::Action::ClientDrag(..) => {}
         window::Action::SpawnTerminal => {
             open_terminal(clients, scene);
         }
