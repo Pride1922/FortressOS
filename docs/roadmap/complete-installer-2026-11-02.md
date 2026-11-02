@@ -1,5 +1,23 @@
 # Single complete installer — 2026-11-02
 
+## Current replacement: Wi-Fi interface-flapping fix
+
+The sole current image is `bin/fortress-base-installer.img`, 528 MiB, SHA-256
+`98bf2b01b2d9085e3859bd2e0afab81b61512eb9662a622c3b6a3459d3f38df6`. It replaces the earlier image described below.
+It includes `1c2b880`: disconnected Ethernet no longer evicts recovering Wi-Fi,
+and automatic retries no longer restart an authorized/in-flight connection.
+[Cause, before/after regressions and physical limits](wifi-interface-flapping.md).
+The kernel and C tools were force-rebuilt through the Ubuntu container; the
+bootstrap was regenerated after correcting ownership of an old generated
+firmware directory. The image receipt records a clean committed source tree.
+Host regressions PASS; BIOS/UEFI × SMP=1/4 mock-radio ownership tests PASS 4/4.
+Raw-image BIOS/UEFI SMP=4 boot checks PASS 2/2; results are in
+`build/wifi-handover-evidence/raw-smoke/`. Physical
+verification of this replacement remains pending. The image is not deployed
+merely by rebuilding it.
+
+## Earlier installer evidence (superseded image)
+
 Use `bin/fortress-base-installer.img` (553648128 bytes, 528 MiB).
 SHA-256: `8afbab95e23d05360d45a53bf3e45dd16d16a5de2beff6e5164de53cf6b5736b`.
 The build receipt is `bin/fortress-base-installer.manifest.json`.

@@ -67,3 +67,18 @@ handover loop, DHCP/DNS ready, inbound ARP/ping while idle and after reboot,
 without a manual reconnect. Do not claim the old installation is fixed by
 changing this checkout. Kernel CPU-0 ownership, ranks, polling and hardware power
 settings are preserved; no speculative driver timing or radio reset was added.
+
+## Replacement installer
+
+The sole retained installer has SHA-256 `98bf2b01b2d9085e3859bd2e0afab81b61512eb9662a622c3b6a3459d3f38df6`,
+528 MiB, and records clean source commit `1c2b88051bf9fe87d89134d95e5b300082acd5c6`.
+The full kernel/C-tool rebuild, refreshed bootstrap and package/filesystem/media
+audits passed. The updated CLI loadable ELF matches its bootstrap member, and
+the release kernel contains no `net_test_service_active_interface` hook.
+BIOS/UEFI × SMP=1/4 owner guest matrix PASS 4/4 (`qemu-1ye871x0`).
+Raw-image boot evidence and final cleanup inventory are retained under
+`build/wifi-handover-evidence/`. No physical Wi-Fi PASS is claimed.
+
+Final raw-image BIOS/UEFI SMP=4 read-only boot checks PASS 2/2, reaching the
+installer with no target disk attached; image SHA-256 stayed unchanged. The new
+disposable guest ISO was removed afterward, leaving exactly one disk image.
