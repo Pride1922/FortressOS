@@ -12,6 +12,7 @@ static void fixture_copy(char *dst, const char *src) { memcpy(dst, src, strlen(s
 static char disk[8192], temporary[8192];
 static size_t temporary_len, read_offset;
 static unsigned connects, spawns, syncs;
+static unsigned radio_state = WIFI_STATUS_IDLE;
 static bool short_write, fail_write, fail_rename;
 static long fixture_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (nr == SYS_OPEN) {
@@ -58,11 +59,11 @@ static long fixture_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         if (a == WIFI_CMD_CONNECT) {
             wifi_connect_req_t *req = (void *)b;
             assert(!strcmp(req->ssid, "Halloween"));
-            assert(!strcmp(req->passphrase, "SavedSecret2026")); connects++; return 0;
+            assert(!strcmp(req->passphrase, "SavedSecret2026")); connects++; radio_state=WIFI_STATUS_CONNECTED; return 0;
         }
         assert(a == WIFI_CMD_STATUS);
         wifi_status_t *st = (void *)b; memset(st, 0, sizeof(*st));
-        st->state = WIFI_STATUS_CONNECTED; st->link_online = 1; return 0;
+        st->state = radio_state; st->link_online = radio_state == WIFI_STATUS_CONNECTED; return 0;
     }
     if (nr == SYS_SPAWN_EXT) {
         assert(!strcmp((char *)a, "/sbin/dhcpc")); spawns++; return 7;
@@ -88,7 +89,15 @@ int main(void) {
     assert(!strcmp(s_saved_nets[0].ssid, "Halloween"));
     assert(!strcmp(s_saved_nets[0].psk, "SavedSecret2026"));
     /* The same save runs again next boot, without wiping its own inputs. */
+    radio_state=WIFI_STATUS_IDLE; /* A second real boot has no radio association. */
     assert(!wifi_main(2, argv)); assert(connects == 2 && spawns == 2);
+    /* A supervisor/DHCP retry on a live link must not tear it down. */
+    assert(!wifi_main(2, argv)); assert(connects == 2 && spawns == 2);
+    for (unsigned state=WIFI_STATUS_AUTHENTICATING;state<=WIFI_STATUS_HANDSHAKE;++state) {
+        radio_state=state;
+        assert(wifi_main(2, argv)==1); assert(connects == 2 && spawns == 2);
+    }
+    radio_state=WIFI_STATUS_CONNECTED;
     char before[8192]; fixture_copy(before, disk);
     fail_write = true;
     assert(do_save("Halloween", "ReplacementSecret", NULL, NULL, NULL));

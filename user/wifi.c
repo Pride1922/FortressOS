@@ -1070,6 +1070,18 @@ static int do_connect(const char *ssid, const char *passphrase,
 }
 
 static int do_auto(void) {
+    /* Watchtower retries and DHCP fallback may both invoke this command.
+     * They must not tear down an established link or reset another attempt. */
+    wifi_status_t current;
+    if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &current, sizeof(current)) == 0) {
+        if (current.state == WIFI_STATUS_CONNECTED && current.link_online) return 0;
+        if (current.state == WIFI_STATUS_AUTHENTICATING ||
+            current.state == WIFI_STATUS_ASSOCIATING ||
+            current.state == WIFI_STATUS_HANDSHAKE) {
+            write_str(2, "[wifi] Connection already in progress; leaving it running\n");
+            return 1; /* Supervisor may retry later without resetting the radio. */
+        }
+    }
     if (!ensure_firmware_loaded()) {
         return 1;
     }

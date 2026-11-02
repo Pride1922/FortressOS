@@ -99,20 +99,51 @@ int main(void) {
     assert(net_ipv4_ping_take(&result) && result.outcome==NETPING_TX_FAILED);
     before=sends; net_ipv4_tick(1200); assert(sends==before && net_ipv4_idle());
 
+    /* No outgoing ping or cached neighbor: a peer's first echo request must
+     * schedule its own ARP lookup, then reply after resolution. */
+    net_ipv4_init(&dev, &cfg);
+    cached_ip = 0;
+    ticks = 2000;
+    unsigned cold_sends = sends, cold_requests = requests;
+    uint32_t cold_peer = htonl(0x0a000203);
+    echo(cold_peer, cfg.local_ip, 9);
+    net_ipv4_input(rx, 37);
+    net_ipv4_tick(ticks);
+    assert(sends == cold_sends && requests == cold_requests + 1);
+    cached_ip = cold_peer;
+    net_ipv4_tick(++ticks);
+    assert(sends == cold_sends + 1);
+    assert(!ipv4_decode(frame + 14, frame_len - 14, &ip, &payload, &len));
+    assert(ip.dst_ip == cold_peer && ip.src_ip == cfg.local_ip);
+    assert(!icmp_echo_decode(payload, len, &e, &data, &n));
+    assert(e.type == ICMP_ECHO_REPLY && n == 9 && !memcmp(data, "123456789", 9));
+    /* Idle time must not require an application to wake the reply path. */
+    ticks += 6000;
+    echo(cold_peer, cfg.local_ip, 9);
+    net_ipv4_input(rx, 37);
+    net_ipv4_tick(ticks);
+    assert(sends == cold_sends + 2 && requests == cold_requests + 1);
+
     /* Broadcast routing tests */
     uint32_t bcast_hop = 0;
     assert(net_ipv4_route(0xffffffffu, &bcast_hop) && bcast_hop == 0xffffffffu);
     assert(!net_ipv4_route(0, &bcast_hop));
     assert(!net_ipv4_route(htonl(0xe0000001), &bcast_hop)); /* 224.0.0.1 multicast */
 
-    /* Broadcast RX vs non-local unicast drop */
+    /* Normal non-local UDP is rejected; DHCP port 68 is an explicit
+     * pre-configuration exception and must not share that negative fixture. */
     uint8_t udp_rx[64];
     memset(udp_rx, 0, sizeof(udp_rx));
-    assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway, htonl(0xc0a80101), 67, 68, "dhcp", 4));
+    assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway, htonl(0xc0a80101), 67, 1068, "dhcp", 4));
     assert(!ipv4_encode(udp_rx, sizeof(udp_rx), cfg.gateway, htonl(0xc0a80101), 17, 12, 64, NULL));
     unsigned inputs_before = s_socket_inputs;
     net_ipv4_input(udp_rx, 32);
     assert(s_socket_inputs == inputs_before); /* Non-local unicast dropped */
+    assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway,
+                      htonl(0xc0a80101), 67, 68, "dhcp", 4));
+    net_ipv4_input(udp_rx, 32);
+    assert(s_socket_inputs == inputs_before + 1); /* Offered-IP unicast DHCP accepted. */
+    inputs_before = s_socket_inputs;
 
     memset(udp_rx, 0, sizeof(udp_rx));
     assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway, 0xffffffffu, 67, 68, "dhcp", 4));

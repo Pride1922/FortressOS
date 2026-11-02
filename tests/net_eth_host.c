@@ -4,6 +4,9 @@
 #include <setjmp.h>
 #include "../src/net/net.h"
 #include "arp.h"
+#include "net_ipv4.h"
+#include "ipv4.h"
+#include "icmp.h"
 #include "thread.h"
 #include "net_udp_owner.h"
 /* This control/worker-only fixture has no socket subsystem. */
@@ -15,6 +18,63 @@ bool net_udp_owner_work(void) { return false; }
 
 static net_dev_t dev;
 static bool carrier=true;
+static net_dev_t wireless, usb;
+static bool wireless_present, usb_present;
+static unsigned wireless_disconnects;
+net_dev_t *wlan_get_net_device(void) { return wireless_present ? &wireless : NULL; }
+net_dev_t *rtl8153_get_net_device(void) { return usb_present ? &usb : NULL; }
+int wlan_mgr_disconnect(void) {
+    ++wireless_disconnects;
+    wireless.flags &= ~NET_RUNNING;
+    return 0;
+}
+bool net_test_service_active_interface(uint64_t now, uint64_t freq);
+static bool mock_link(net_dev_t *d, uint64_t now, uint64_t hz) {
+    (void)now; (void)hz;
+    return (d->flags & (NET_UP | NET_RUNNING)) == (NET_UP | NET_RUNNING);
+}
+static void test_interface_handover(net_config_t cfg) {
+    cfg.is_dhcp=true; cfg.is_static=false;
+    carrier=false;
+    wireless=(net_dev_t){.name="wlan0",.mac_addr={2,0,0,0,0,1},.mtu=1500,
+        .flags=NET_UP|NET_RUNNING,.service_link=mock_link};
+    usb=(net_dev_t){.name="eth1",.mac_addr={2,0,0,0,0,2},.mtu=1500,
+        .flags=NET_UP,.service_link=mock_link};
+    wireless_present=true; usb_present=true; wireless_disconnects=0;
+    net_init(&dev,&cfg);
+    assert(net_test_service_active_interface(100,100));
+    net_set_config(&cfg); /* Simulate the successful Wi-Fi DHCP commit. */
+    wireless.flags &= ~NET_RUNNING; /* Reauthentication/roaming/link interruption. */
+    for (unsigned i=0;i<100;++i) {
+        assert(!net_test_service_active_interface(101+i,100));
+        netctl_ifget_t st;
+        assert(!net_get_ifconfig(&st));
+        assert(!memcmp(st.mac,wireless.mac_addr,6));
+        assert(st.local_ipv4==cfg.local_ip && !wireless_disconnects);
+    }
+    wireless.flags |= NET_RUNNING;
+    assert(net_test_service_active_interface(201,100));
+    assert(!wireless_disconnects);
+    carrier=true; /* Real wired carrier still has priority. */
+    assert(net_test_service_active_interface(202,100));
+    netctl_ifget_t st; assert(!net_get_ifconfig(&st));
+    assert(!memcmp(st.mac,dev.mac_addr,6) && st.local_ipv4==0);
+    assert(wireless_disconnects==1);
+    carrier=false;
+    assert(!net_test_service_active_interface(203,100));
+    assert(wireless_disconnects==1);
+    wireless.flags |= NET_RUNNING;
+    assert(net_test_service_active_interface(204,100));
+    net_set_config(&cfg);
+    usb.flags |= NET_RUNNING; /* A genuinely online dock NIC also wins. */
+    assert(net_test_service_active_interface(205,100));
+    assert(!net_get_ifconfig(&st));
+    assert(!memcmp(st.mac,usb.mac_addr,6) && st.local_ipv4==0);
+    assert(wireless_disconnects==2);
+    wireless_present=usb_present=false; carrier=true;
+    net_init(&dev,&cfg);
+    puts("Interface handover PASS: offline Ethernet/dock cannot evict Wi-Fi; 100 down turns; real wired/USB takeover retained");
+}
 static unsigned link_checks, rx_polls;
 static bool test_poll_hint;
 static bool test_rx_burst;
@@ -38,6 +98,7 @@ void net_tcp_set_local_ip(uint32_t ip) { (void)ip; }
 /* Phase 3 isolation: sockets are tested separately with actual implementation. */
 void net_socket_init(net_dev_t *d, const net_config_t *cfg) { (void)d; (void)cfg; }
 void net_socket_enable(void) {}
+void net_socket_set_dev(net_dev_t *d) { (void)d; }
 void net_socket_set_local(uint32_t ip) { (void)ip; }
 void net_socket_worker_tick(uint64_t now, bool online) { (void)now; (void)online; }
 void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
@@ -111,7 +172,7 @@ static void make_arp(const uint8_t *dest, bool reply, uint32_t target) {
 }
 int main(void) {
     net_config_t cfg;
-    dev=(net_dev_t){.mac_addr={0x52,0x54,0,0x12,0x34,0x56},.flags=NET_UP|NET_RUNNING,
+    dev=(net_dev_t){.mac_addr={0x52,0x54,0,0x12,0x34,0x56},.flags=NET_UP|NET_RUNNING,.mtu=1500,
         .send_packet=send_packet,.poll_rx=poll_rx,.recycle_rx=recycle,
         .network_online=e1000_network_online,.service_link=e1000_service_link};
     net_parse_config(NULL,0,&cfg);
@@ -138,8 +199,13 @@ int main(void) {
     assert(!arp_decode(payload,len,&arp) && arp.opcode==ARP_OP_REPLY);
     assert(arp.sender_ip==cfg.local_ip && arp.target_ip==cfg.gateway);
     assert(!memcmp(eth.dest,arp.target_mac,6) && !memcmp(eth.src,dev.mac_addr,6));
-    uint8_t mac[6]; assert(arp_resolve(&dev,cfg.gateway,mac)==1 && sends==2); /* requests not cached */
-    assert(!arp_decode(sent+14,46,&arp) && arp.opcode==ARP_OP_REQUEST && arp.target_ip==cfg.gateway);
+    /* RFC 826: the first incoming targeted request taught us the sender.
+     * It must not require an outgoing ping to populate the neighbor cache. */
+    uint8_t mac[6];
+    assert(!arp_resolve(&dev,cfg.gateway,mac) && sends==1 && mac[0]==2);
+    uint32_t cold_peer=htonl(0x0a000203);
+    assert(arp_resolve(&dev,cold_peer,mac)==1 && sends==2);
+    assert(!arp_decode(sent+14,46,&arp) && arp.opcode==ARP_OP_REQUEST && arp.target_ip==cold_peer);
     assert(eth_is_broadcast(sent));
     make_arp(dev.mac_addr,true,cfg.local_ip); input();
     assert(!arp_resolve(&dev,cfg.gateway,mac) && sends==2 && mac[0]==2);
@@ -262,6 +328,36 @@ int main(void) {
         size_t n=net_poll_profile_format(profile,cap);
         assert(n<=cap && profile[cap]==0x5a);
     }
+    /* End-to-end actual Ethernet/ARP/IPv4/ICMP path, mocked NIC only.
+     * Repeat from a cleared ARP cache with no application-originated traffic. */
+    for (unsigned cycle=0;cycle<3;++cycle) {
+        net_init(&dev,&cfg);
+        unsigned cold_before=sends;
+        make_arp(broadcast,false,cfg.local_ip);
+        input();
+        assert(sends==cold_before+1);
+        assert(!arp_decode(sent+14,46,&arp) && arp.opcode==ARP_OP_REPLY);
+        static const uint8_t peer_mac[6]={2,3,4,5,6,7};
+        memset(packet.data,0,60); packet.payload=packet.data; packet.length=60;
+        assert(!eth_encode(packet.data,60,dev.mac_addr,peer_mac,ETHERTYPE_IPV4,NULL));
+        assert(!icmp_echo_encode(packet.data+34,26,ICMP_ECHO_REQUEST,0x1234,
+                                 (uint16_t)cycle,"cold",4));
+        assert(!ipv4_encode(packet.data+14,46,cfg.gateway,cfg.local_ip,1,12,64,NULL));
+        ticks+=6000; /* Idle before peer arrival; no application activity. */
+        input();
+        net_ipv4_tick(ticks);
+        assert(sends==cold_before+2);
+        ipv4_header_t response; const uint8_t *body,*echo_data; size_t body_len,echo_len;
+        icmp_echo_t returned;
+        assert(!ipv4_decode(sent+14,46,&response,&body,&body_len));
+        assert(response.src_ip==cfg.local_ip && response.dst_ip==cfg.gateway);
+        assert(!memcmp(sent,peer_mac,6));
+        assert(!icmp_echo_decode(body,body_len,&returned,&echo_data,&echo_len));
+        assert(returned.type==ICMP_ECHO_REPLY && returned.identifier==0x1234 &&
+               returned.sequence==cycle && echo_len==4 && !memcmp(echo_data,"cold",4));
+    }
+    puts("Cold inbound LAN PASS: broadcast ARP, immediate neighbor learning, echo replies without outgoing ping (3 fresh-cache cycles)");
+    test_interface_handover(cfg);
     printf("NET 3 host PASS: dispatch/recycle, cache/resolve, bounded config, timer deadline (mock scheduler); %u inputs recycled\n",recycles);
     return 0;
 }

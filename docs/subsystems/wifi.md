@@ -2,6 +2,13 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-02 installed idle/reboot follow-up: reproduced the production selector
+evicting Wi-Fi for a disconnected Ethernet device during transient offline
+states. The selector now retains Wi-Fi until another link is actually online,
+and repeated `wifi auto` no longer restarts live/in-flight authentication.
+Host regressions exercise the actual selection path that previous fixtures
+bypassed. [Cause, tests and physical boundary](../roadmap/wifi-interface-flapping.md).
+
 2026-11-02 installed-root reconnect fix: missing credentials no longer turn a
 protected beacon into an open link; CLI save/reconnect snapshots prevent
 self-erasure of saved SSIDs/passwords, and checked atomic profile writes retain

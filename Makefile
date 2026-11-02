@@ -2129,7 +2129,7 @@ test-net-icmp: $(BOOTABLE_ISO) test-net-icmp-host test-net-ipv4-host test-net-pi
 .PHONY: test-net-icmp
 test-net-eth-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_eth_host.c tests/net_lock_host.c src/net/net.c src/net/net_control.c src/kernel/handoff.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_eth_host
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -DNET_MULTI_IF_HOST -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_eth_host.c tests/net_lock_host.c src/net/net.c src/net/net_control.c src/kernel/handoff.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_eth_host
 	@$(BUILD_DIR)/net_eth_host
 
 .PHONY: test-net-eth-host test-net-eth

@@ -234,7 +234,7 @@ static inline void net_dev_get_stats(const net_dev_t *dev, uint64_t *rx, uint64_
     else { if (rx) *rx = 0; if (tx) *tx = 0; }
 }
 
-#ifndef TEST_SMP_MEMORY
+#if !defined(TEST_SMP_MEMORY) || defined(NET_MULTI_IF_HOST)
 static bool net_service_active_interface(uint64_t now, uint64_t freq) {
     bool online = s_if ? net_dev_service_link(s_if, now, freq) : false;
 
@@ -256,7 +256,11 @@ static bool net_service_active_interface(uint64_t now, uint64_t freq) {
         target = cand_eth;
     } else if (wlan_online) {
         target = cand_wlan;
-    } else if (!online) {
+    } else if (!s_if) {
+        /* No candidate has carrier. Retain an existing interface while it
+         * reconnects; an installed but unplugged Ethernet NIC is not a
+         * handover target. Moving wlan0 here also deauthenticated it and
+         * discarded its DHCP configuration on every transient Wi-Fi loss. */
         if (cand_eth) target = cand_eth;
         else if (cand_usb) target = cand_usb;
         else if (cand_wlan) target = cand_wlan;
@@ -269,8 +273,10 @@ static bool net_service_active_interface(uint64_t now, uint64_t freq) {
         serial_puts(target->name);
         serial_puts("\n");
 
-        /* If switching to a wired interface, disconnect wlan to save power and avoid dual leases */
-        if (target != cand_wlan && s_if == cand_wlan) {
+        /* Only a working wired link may evict Wi-Fi. Device presence alone
+         * must never abort an association/reconnection already in progress. */
+        if (s_if == cand_wlan && ((target == cand_eth && eth_online) ||
+                                  (target == cand_usb && usb_online))) {
             (void)wlan_mgr_disconnect();
         }
 
@@ -291,6 +297,12 @@ static bool net_service_active_interface(uint64_t now, uint64_t freq) {
 
     return online;
 }
+#ifdef NET_MULTI_IF_HOST
+/* Actual selection path, reachable by the host regression without scheduling. */
+bool net_test_service_active_interface(uint64_t now, uint64_t freq) {
+    return net_service_active_interface(now, freq);
+}
+#endif
 #else
 static inline bool net_service_active_interface(uint64_t now, uint64_t freq) {
     return s_if ? net_dev_service_link(s_if, now, freq) : false;
