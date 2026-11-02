@@ -1,6 +1,17 @@
 # Live USB with latest ACPI work — 2026-11-02
 
-Current diagnostic media: `bin/fortress-live.img`, 136314880 bytes (130 MiB).
+Current published live image: `bin/fortress-live.img` (130 MiB), SHA-256
+`bcac8b695122ac0a2b9356adee7b94df4aae2f337f1aab70377f8bb4d1b626db`; production source `d9a682d`.
+The predecessor below physically reported false battery/AC readings. The current
+image explicitly reports telemetry unavailable; actual battery/adapter/thermal
+support is **incomplete**. [Failure, production regression and correction](battery-telemetry-unavailable.md).
+BIOS/UEFI live login and explicit unsupported CLI output PASS 2/2, with Wi-Fi
+diagnostics and desktop version checks retained. No new flash is needed merely
+to continue the ongoing Wi-Fi test.
+
+## Earlier live image (superseded, false hardware readings)
+
+Earlier diagnostic media: `bin/fortress-live.img`, 136314880 bytes (130 MiB).
 SHA-256: `16a06a3475f13b71558bca6f91281a2adb8a240c5cfac8a5d598c068df7913b4`.
 Receipt/checksum: `bin/fortress-live.manifest.json` and
 `bin/fortress-live.img.sha256`. This is live-only media, booting the ordinary

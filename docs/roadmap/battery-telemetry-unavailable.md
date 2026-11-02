@@ -39,6 +39,11 @@ the driver **without HOST_TEST**. The production test verifies repeated unsuppor
 reads, untouched output, null-output validation and no timer/EC polling. It uses
 ASan/UBSan where available. It exercises the previously excluded production
 branch; passing fixture tests alone did not validate the removed hardware path.
+An SSDT containing device presence and literal _PSR/_TMP returns, with no battery
+status method and an unavailable EC, reproduces 100%/Full/AC connected/25 C in
+the predecessor production driver. The new regression fails against that driver
+and passes after the correction. This is a synthetic reproduction of the code
+fault, not a capture of the laptop's actual firmware execution.
 
 Accurate telemetry remains unimplemented. It requires a real namespace-aware
 AML execution backend, validated EC OperationRegion access/serialization and
@@ -47,3 +52,18 @@ with explicit unavailable/error handling and physical charger/capacity checks.
 The current correction fixes false reporting, not laptop battery support. A
 QEMU battery command test cannot establish the physical laptop's charge or AC
 state. No further reflash is necessary merely to continue Wi-Fi diagnostics.
+
+## Corrected published artifact
+
+`bin/fortress-live.img`, 130 MiB, production source `d9a682d`, SHA-256
+`bcac8b695122ac0a2b9356adee7b94df4aae2f337f1aab70377f8bb4d1b626db`. The clean isolated checkout is
+`.codex-remote-attachments/acpi-telemetry-correction`. The corrected image replaces
+the known-failing predecessor; one published disk image remains. Evidence is in
+`build/battery-unavailable-evidence/`, including the old production driver's
+synthetic 100%/Full/AC/25 C reproduction, sanitizer/production tests, source and
+payload audit, and BIOS/UEFI SMP=4 live-USB results. Both guests execute the real
+CLI and require its explicit unsupported message without Battery/Power readings;
+Wi-Fi diagnostic rows, desktop version and ordinary shell execution also pass.
+These are regular-file USB snapshots without installation targets or physical
+I/O, and the source image checksum stays unchanged. This fixes misleading output,
+not the missing real telemetry backend.

@@ -3,9 +3,10 @@
 ## Current diagnostic media: live USB
 
 Use `bin/fortress-live.img` (130 MiB), SHA-256
-`16a06a3475f13b71558bca6f91281a2adb8a240c5cfac8a5d598c068df7913b4`.
-This boots the ordinary live login and includes the latest committed ACPI battery
-multi-table fix, desktop changes and Wi-Fi diagnostics. BIOS/UEFI live USB tests
+`bcac8b695122ac0a2b9356adee7b94df4aae2f337f1aab70377f8bb4d1b626db`.
+This boots the ordinary live login with desktop changes and Wi-Fi diagnostics.
+Battery hardware telemetry is explicitly unavailable after withdrawing fabricated
+readings; [physical failure and correction](battery-telemetry-unavailable.md). BIOS/UEFI live USB tests
 PASS 2/2. The installer-only file below has been retired, leaving one published
 image. [Live commands, source identity and evidence](acpi-live-usb.md).
 
