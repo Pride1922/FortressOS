@@ -489,6 +489,19 @@ static int load_saved_networks(void) {
     return s_saved_count;
 }
 
+/* Operation and numeric errno only: never profile contents or credentials. */
+static bool save_error(const char *operation, long error) {
+    size_t n = 0;
+    append_str(s_out, &n, "wifi save: ");
+    append_str(s_out, &n, operation);
+    append_str(s_out, &n, " failed (code ");
+    append_int(s_out, &n, (int)error);
+    append_str(s_out, &n, ")\n");
+    s_out[n] = 0;
+    (void)write_str(2, s_out);
+    return false;
+}
+
 static bool save_all_networks(void) {
     (void)WIFI_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
 
@@ -536,18 +549,24 @@ static bool save_all_networks(void) {
 
     const char *temporary = "/etc/network/.wlan-cli.new";
     int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)temporary, 0x800c1, 0600);
-    if (fd < 0) return false;
-    bool ok = WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0) == 0;
+    if (fd < 0) return save_error("create temporary profile", fd);
+    long rc = WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
+    bool ok = rc == 0;
+    if (!ok) (void)save_error("set private permissions", rc);
     size_t off = 0;
     while (ok && off < pos) {
         long wr = WIFI_SYSCALL(SYS_WRITE, fd, content + off, pos - off);
-        if (wr <= 0 || (size_t)wr > pos - off) ok = false;
+        if (wr <= 0 || (size_t)wr > pos - off) ok = save_error("write temporary profile", wr);
         else off += (size_t)wr;
     }
     long flushed = WIFI_SYSCALL(SYS_FSYNC, fd, 0, 0);
     /* Live ETCFS is volatile and has no fsync operation. */
-    if (flushed != 0 && flushed != SYSCALL_EOPNOTSUPP) ok = false;
-    if (WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0) != 0) ok = false;
+    if (flushed != 0 && flushed != SYSCALL_EOPNOTSUPP) {
+        if (ok) (void)save_error("flush temporary profile", flushed);
+        ok = false;
+    }
+    rc = WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+    if (rc) { if (ok) (void)save_error("close temporary profile", rc); ok = false; }
     if (ok) {
         long rc = WIFI_SYSCALL(SYS_RENAME_REPLACE, (uintptr_t)temporary,
                                (uintptr_t)"/etc/network/wlan.conf", 0);
@@ -555,9 +574,12 @@ static bool save_all_networks(void) {
             rc = WIFI_SYSCALL(SYS_RENAME, (uintptr_t)temporary,
                               (uintptr_t)"/etc/network/wlan.conf", 0);
         ok = rc == 0;
+        if (!ok) (void)save_error("replace profile", rc);
     }
     if (!ok) (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)temporary, 0, 0);
-    return ok && WIFI_SYSCALL(SYS_SYNC, 0, 0, 0) == 0;
+    if (!ok) return false;
+    rc = WIFI_SYSCALL(SYS_SYNC, 0, 0, 0);
+    return rc == 0 ? true : save_error("sync filesystems", rc);
 }
 
 static int do_list(void) {

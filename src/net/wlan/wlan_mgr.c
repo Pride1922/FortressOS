@@ -827,7 +827,9 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     if (s_wpa2_sm.handshake_step == 2) {
                         serial_puts("[WLAN] EAPOL M1 received, sent M2\n");
                     } else if (s_wpa2_sm.handshake_step == 4) {
-                        serial_puts("[WLAN] EAPOL M3 received, sent M4\n");
+                        serial_puts("[WLAN] EAPOL M3 received, sent M4; GTK bytes=");
+                        serial_print_dec(s_wpa2_sm.gtk_len);
+                        serial_puts("\n");
                     }
                     /* Encapsulate response EAPOL frame into 802.11 QoS Data frame and transmit */
                     memcpy(s_tx_eapol_eth, s_target_bssid, 6);
@@ -843,7 +845,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                         s_hw_ops->send_raw_80211(s_tx_eapol_wlan, (size_t)tx_len);
                     }
                 } else if (resp_len < 0 && s_wpa2_sm.handshake_step >= 2) {
-                    serial_puts("[WLAN] EAPOL MIC verification FAILED (wrong passphrase or corrupt frame)\n");
+                    serial_puts("[WLAN] EAPOL rejected (MIC/replay/GTK key-data validation failed)\n");
                     /* EAPOL rejection (e.g. Message 3 MIC failure) -> fail authentication cleanly */
                     s_wlan_state = WLAN_STATE_FAILED;
                     s_wlan_net_dev.flags &= ~NET_RUNNING;

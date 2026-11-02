@@ -235,8 +235,11 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
         sm->last_replay_counter = replay;
 
         /* Unpack GTK if present (16 bytes for CCMP, up to 32 bytes for TKIP) */
+        bool gtk_found = false;
         uint16_t key_data_len = wlan_ntohs(kd->key_data_len);
-        if (key_data_len > 0 && len >= min_len + key_data_len) {
+        if (key_data_len > eapol_total_len - min_len) return -1;
+        if ((key_info & EAPOL_KEY_INFO_ENCR_KEY_DATA) && !key_data_len) return -1;
+        if (key_data_len > 0) {
             const uint8_t *key_data = eapol_frame + min_len;
             uint8_t plain_data[256];
             const uint8_t *kde_buf = NULL;
@@ -244,11 +247,11 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
 
             if (key_info & EAPOL_KEY_INFO_ENCR_KEY_DATA) {
                 if (key_data_len >= 16 && key_data_len <= sizeof(plain_data) && (key_data_len % 8 == 0)) {
-                    if (wlan_aes_unwrap(sm->kek, key_data, key_data_len, plain_data) == 0) {
-                        kde_buf = plain_data;
-                        kde_total = (size_t)(key_data_len - 8);
-                    }
-                }
+                    if (wlan_aes_unwrap(sm->kek, key_data, key_data_len, plain_data) != 0)
+                        return -1; /* Never authorize failed authenticated key delivery. */
+                    kde_buf = plain_data;
+                    kde_total = (size_t)(key_data_len - 8);
+                } else return -1;
             } else {
                 kde_buf = key_data;
                 kde_total = key_data_len;
@@ -268,10 +271,12 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
                         if (kde_len >= 6 + 16) {
                             sm->gtk_idx = kde_buf[off + 6] & 0x03;
                             size_t gtk_bytes = (size_t)(kde_len - 6);
-                            if (gtk_bytes > WLAN_GTK_MAX_LEN) gtk_bytes = WLAN_GTK_MAX_LEN;
+                            size_t expected_gtk = sm->group_cipher == 0x02 ? 32u : 16u;
+                            if (gtk_bytes != expected_gtk) return -1;
                             memset(sm->gtk, 0, sizeof(sm->gtk));
                             memcpy(sm->gtk, &kde_buf[off + 8], gtk_bytes);
                             sm->gtk_len = (uint8_t)gtk_bytes;
+                            gtk_found = true;
                         }
                         break;
                     }
@@ -279,6 +284,7 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
                 }
             }
         }
+        if (!gtk_found) return -1; /* Full link authorization requires the group key. */
 
         /* Construct Message 4 */
         size_t resp_len = sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);

@@ -87,7 +87,8 @@ void wlan_derive_ptk(const uint8_t pmk[WLAN_PMK_LEN],
                      const uint8_t nonce1[32], const uint8_t nonce2[32],
                      uint8_t ptk[WLAN_PTK_LEN]);
 
-/* NIST AES Key Wrap (RFC 3394) for GTK unwrapping */
+/* NIST AES Key Wrap (RFC 3394), bounded wrapped input 24..256 bytes.
+ * Caller supplies at least wrapped_len-8 output bytes. */
 int wlan_aes_unwrap(const uint8_t kek[16],
                     const uint8_t *wrapped, size_t wrapped_len,
                     uint8_t *plain);

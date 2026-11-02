@@ -89,7 +89,7 @@ static void test_full_4way_handshake(void) {
     eapol_hdr_t *h3 = (eapol_hdr_t *)msg3;
     h3->version = EAPOL_VERSION_1;
     h3->type = EAPOL_TYPE_KEY;
-    h3->length = t_htons((uint16_t)sizeof(eapol_key_desc_t));
+    h3->length = t_htons((uint16_t)(sizeof(eapol_key_desc_t)+24));
 
     eapol_key_desc_t *kd3 = (eapol_key_desc_t *)(msg3 + sizeof(eapol_hdr_t));
     kd3->desc_type = EAPOL_KEY_DESC_WPA2;
@@ -104,14 +104,17 @@ static void test_full_4way_handshake(void) {
     kd3->replay_counter = t_hton64(2);
     memcpy(kd3->key_nonce, anonce, 32);
 
+    const uint8_t gtk_kde[24]={0xdd,22,0,0x0f,0xac,1,1,0};
+    kd3->key_data_len=t_htons(sizeof(gtk_kde));
+    memcpy(msg3+sizeof(eapol_hdr_t)+sizeof(eapol_key_desc_t),gtk_kde,sizeof(gtk_kde));
     /* AP computes Message 3 MIC */
     uint8_t m3_mic[WLAN_SHA1_DIGEST_SIZE];
-    wlan_hmac_sha1(ap_ptk, WLAN_KCK_LEN, msg3, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), m3_mic);
+    wlan_hmac_sha1(ap_ptk, WLAN_KCK_LEN, msg3, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)+24, m3_mic);
     memcpy(kd3->key_mic, m3_mic, 16);
 
     /* 6. Station processes Message 3 and produces Message 4 */
     uint8_t msg4[256];
-    int msg4_len = wpa2_sm_rx_eapol(&sta_sm, msg3, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t),
+    int msg4_len = wpa2_sm_rx_eapol(&sta_sm, msg3, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)+24,
                                     msg4, sizeof(msg4));
     assert(msg4_len > 0);
 
@@ -337,11 +340,54 @@ static void test_wpa3_sae_4way_and_tkip_gtk32(void) {
     printf("[TEST 4] PASS: WPA3-SAE 4-Way Handshake (KDF-SHA-256, HMAC-SHA256-128, PMKID) & 32B TKIP GTK verified.\n");
 }
 
+static void test_long_encrypted_key_data(void) {
+    /* Independent AES key-wrap vector generated with Python cryptography:
+     * zero KEK; RSN IE + TKIP GTK + IGTK + padding, 96B plaintext/104B wrapped.
+     * This exceeds the former 64B plaintext limit. */
+    static const uint8_t wrapped[] = {0xc8,0x0b,0x3f,0xc1,0x5b,0x7e,0x88,0x75,0x89,0xb0,0x7e,0x6c,0xc2,0x21,0x1c,0x23,0xfa,0xb4,0x43,0xb6,0x64,0x61,0x29,0xfb,0x79,0x6b,0x22,0x87,0x62,0x6d,0x34,0x88,0x51,0x2a,0xab,0x7f,0x83,0x96,0x9d,0x1c,0x68,0xe3,0xd0,0x73,0x11,0x3e,0x05,0x7d,0x00,0xf9,0xf6,0xbb,0x21,0xb5,0x1d,0xe8,0xe8,0x8d,0x4b,0xb9,0x62,0xef,0x0d,0x01,0x58,0xe8,0xfe,0xbd,0x9c,0xc5,0x0c,0x33,0xad,0x60,0xba,0x4d,0x70,0x8f,0xfa,0xf1,0x75,0x5d,0x33,0x65,0x3a,0x4e,0x50,0x65,0x8d,0x58,0x36,0xea,0xd4,0x80,0x42,0xc5,0x0b,0xf1,0xf5,0x95,0x26,0x8b,0xdc,0x35};
+    uint8_t msg[sizeof(eapol_hdr_t)+sizeof(eapol_key_desc_t)+sizeof(wrapped)]={0};
+    uint8_t response[256];
+    wpa2_sm_t sm;
+    uint8_t zero[32]={0};
+    for (unsigned corrupt=0;corrupt<3;++corrupt) {
+        wpa2_sm_init(&sm,zero,zero,zero);
+        sm.handshake_step=2;
+        sm.group_cipher=2;
+        eapol_hdr_t *h=(eapol_hdr_t *)msg;
+        h->version=2;h->type=EAPOL_TYPE_KEY;h->length=t_htons(sizeof(msg)-sizeof(*h));
+        eapol_key_desc_t *k=(eapol_key_desc_t *)(msg+sizeof(*h));
+        k->desc_type=EAPOL_KEY_DESC_WPA2;
+        k->key_info=t_htons(EAPOL_KEY_INFO_HMAC_SHA1|EAPOL_KEY_INFO_KEY_TYPE|
+            EAPOL_KEY_INFO_KEY_ACK|EAPOL_KEY_INFO_KEY_MIC|EAPOL_KEY_INFO_INSTALL|
+            EAPOL_KEY_INFO_SECURE|EAPOL_KEY_INFO_ENCR_KEY_DATA);
+        k->replay_counter=t_hton64(2);k->key_data_len=t_htons(sizeof(wrapped));
+        memcpy(msg+sizeof(*h)+sizeof(*k),wrapped,sizeof(wrapped));
+        size_t message_len=sizeof(msg);
+        if (corrupt==1) msg[sizeof(msg)-1]^=1;
+        if (corrupt==2) {
+            message_len=sizeof(*h)+sizeof(*k);
+            h->length=t_htons(sizeof(*k));k->key_data_len=0;
+            k->key_info=t_htons(EAPOL_KEY_INFO_HMAC_SHA1|EAPOL_KEY_INFO_KEY_TYPE|
+                EAPOL_KEY_INFO_KEY_ACK|EAPOL_KEY_INFO_KEY_MIC|EAPOL_KEY_INFO_INSTALL|EAPOL_KEY_INFO_SECURE);
+        }
+        memset(k->key_mic,0,16);
+        uint8_t mic[20];wlan_hmac_sha1(sm.kck,16,msg,message_len,mic);memcpy(k->key_mic,mic,16);
+        int rc=wpa2_sm_rx_eapol(&sm,msg,message_len,response,sizeof(response));
+        if (corrupt) {assert(rc<0 && !sm.port_authorized && !sm.gtk_len);}
+        else {
+            assert(rc>0 && sm.port_authorized && sm.gtk_len==32 && sm.gtk_idx==1);
+            for (unsigned i=0;i<32;++i) assert(sm.gtk[i]==0xa0+i);
+        }
+    }
+    puts("Long encrypted M3 PASS: independent 104B wrap installs TKIP GTK; valid-MIC corrupt or missing GTK cannot authorize");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("  FortressOS WPA2-PSK 4-Way Handshake (WIFI-2) Test Suite       \n");
     printf("================================================================\n");
 
+    test_long_encrypted_key_data();
     test_full_4way_handshake();
     test_adversarial_gates();
     test_rsn_ie_mirroring();

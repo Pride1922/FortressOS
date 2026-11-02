@@ -417,7 +417,7 @@ static void aes128_decrypt_block(const uint8_t round_keys[176], const uint8_t in
 int wlan_aes_unwrap(const uint8_t kek[16],
                     const uint8_t *wrapped, size_t wrapped_len,
                     uint8_t *plain) {
-    if (!kek || !wrapped || !plain || wrapped_len < 16 || (wrapped_len % 8) != 0) {
+    if (!kek || !wrapped || !plain || wrapped_len < 24 || wrapped_len > 256 || (wrapped_len % 8) != 0) {
         return -1;
     }
 
@@ -428,9 +428,10 @@ int wlan_aes_unwrap(const uint8_t kek[16],
     uint8_t a[8];
     memcpy(a, wrapped, 8);
 
-    /* Allocate R array on stack (max 64 bytes for Wi-Fi GTK/IGTK) */
-    if (n > 8) return -1;
-    uint8_t r[8][8];
+    /* Complete bounded EAPOL Key Data can contain RSN + GTK + IGTK.
+     * Match the handshake caller's 256-byte wrapped-data ceiling. */
+    if (n > 31) return -1;
+    uint8_t r[31][8];
     for (size_t i = 1; i <= n; i++) {
         memcpy(r[i - 1], wrapped + i * 8, 8);
     }

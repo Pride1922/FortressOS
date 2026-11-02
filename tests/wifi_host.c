@@ -111,6 +111,8 @@ static size_t build_mock_beacon(uint8_t *buf, const uint8_t bssid[6], const char
     return p - buf;
 }
 
+/* Synthetic AP delivers a CCMP GTK in every successful Message 3. */
+static const uint8_t s_ccmp_gtk_kde[24]={0xdd,22,0,0x0f,0xac,1,1,0};
 static unsigned long long diag_counter(const char *text, const char *key) {
     const char *p = strstr(text, key);
     assert(p);
@@ -162,15 +164,17 @@ static void complete_mock_handshake(const uint8_t *pmk, const uint8_t ap_bssid[6
                                           EAPOL_KEY_INFO_INSTALL | EAPOL_KEY_INFO_KEY_ACK |
                                           EAPOL_KEY_INFO_KEY_MIC | EAPOL_KEY_INFO_SECURE);
     m3_desc->replay_counter = __builtin_bswap64(2);
-    m3_desc->key_data_len = 0;
+    m3_desc->key_data_len = __builtin_bswap16(sizeof(s_ccmp_gtk_kde));
+    memcpy((uint8_t *)(m3_desc+1),s_ccmp_gtk_kde,sizeof(s_ccmp_gtk_kde));
     memset(m3_desc->key_mic, 0, 16);
 
     eapol_hdr_t *m3_eh = (eapol_hdr_t *)(m3 + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t));
+    m3_eh->length=__builtin_bswap16(sizeof(eapol_key_desc_t)+sizeof(s_ccmp_gtk_kde));
     uint8_t mic[20];
-    wlan_hmac_sha1(ptk, 16, (uint8_t *)m3_eh, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), mic);
+    wlan_hmac_sha1(ptk, 16, (uint8_t *)m3_eh, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)+sizeof(s_ccmp_gtk_kde), mic);
     memcpy(m3_desc->key_mic, mic, 16);
 
-    assert(wlan_mgr_rx_raw_80211(m3, m1_len, -45) == 0);
+    assert(wlan_mgr_rx_raw_80211(m3, m1_len+sizeof(s_ccmp_gtk_kde), -45) == 0);
 }
 
 int main(void) {
@@ -340,18 +344,19 @@ int main(void) {
                                           EAPOL_KEY_INFO_INSTALL | EAPOL_KEY_INFO_KEY_ACK |
                                           EAPOL_KEY_INFO_KEY_MIC | EAPOL_KEY_INFO_SECURE);
     m3_desc->replay_counter = __builtin_bswap64(2);
-    m3_desc->key_data_len = 0;
+    m3_desc->key_data_len = __builtin_bswap16(sizeof(s_ccmp_gtk_kde));
+    memcpy((uint8_t *)(m3_desc+1),s_ccmp_gtk_kde,sizeof(s_ccmp_gtk_kde));
 
     eapol_hdr_t *m3_eh = (eapol_hdr_t *)(m3_frame + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t));
-    m3_eh->length = __builtin_bswap16(sizeof(eapol_key_desc_t));
+    m3_eh->length = __builtin_bswap16(sizeof(eapol_key_desc_t)+sizeof(s_ccmp_gtk_kde));
 
     /* Compute MIC for Message 3 */
     memset(m3_desc->key_mic, 0, 16);
     uint8_t m3_mic[20];
-    wlan_hmac_sha1(kck, 16, (uint8_t *)m3_eh, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), m3_mic);
+    wlan_hmac_sha1(kck, 16, (uint8_t *)m3_eh, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)+sizeof(s_ccmp_gtk_kde), m3_mic);
     memcpy(m3_desc->key_mic, m3_mic, 16);
 
-    size_t m3_len = sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+    size_t m3_len = sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)+sizeof(s_ccmp_gtk_kde);
 
     prev_tx = s_mock_tx_count;
     rx_rc = wlan_mgr_rx_raw_80211(m3_frame, m3_len, -45);
