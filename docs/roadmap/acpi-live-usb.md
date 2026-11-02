@@ -1,6 +1,13 @@
 # Live USB with latest ACPI work — 2026-11-02
 
-Current published live image: `bin/fortress-live.img` (130 MiB), SHA-256
+Latest published live USB: `bin/fortress-live.img`, 130 MiB, source `d6c9984`,
+SHA-256 `c3b90563ad2d7f86ce2aa935814f2998c8ab1423eb2496701fe75a6da0d9787f`. Includes the GTK delivery and scoped profile-save corrections,
+with BIOS/UEFI live checks PASS. [Wi-Fi candidate and physical test](wifi-gtk-delivery.md).
+Actual battery telemetry remains unsupported; the correction below is retained.
+
+## Earlier battery-reporting correction
+
+Earlier live image: `bin/fortress-live.img` (130 MiB), SHA-256
 `bcac8b695122ac0a2b9356adee7b94df4aae2f337f1aab70377f8bb4d1b626db`; production source `d9a682d`.
 The predecessor below physically reported false battery/AC readings. The current
 image explicitly reports telemetry unavailable; actual battery/adapter/thermal

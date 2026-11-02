@@ -60,3 +60,31 @@ Evidence: `build/wifi-gtk-evidence/`, including the failing old regression,
 ASan/UBSan suites, strict handshake tests, profile save/load tests and stack
 gate. This is initial GTK delivery, not an implementation of later group-key
 rotation. Physical cold ARP acceptance of the correction remains pending.
+
+## Published candidate and test results
+
+`bin/fortress-live.img`, 130 MiB, clean production source `d6c9984`, SHA-256
+`c3b90563ad2d7f86ce2aa935814f2998c8ab1423eb2496701fe75a6da0d9787f`. The isolated checkout is
+`.codex-remote-attachments/wifi-gtk-release`. This includes the previous desktop
+changes and honest unsupported-battery handling; it is live-only media.
+
+Host ASan/UBSan handshake/crypto/manager and fault suites PASS, plus profile
+save/load/boot-auto tests, no-global-sync/volatile-fsync tests and concurrent
+owner ASan/UBSan + separate TSan (4800 calls each). Stack gate PASS: 230 functions,
+576-byte unwrap helper, 1072-byte EAPOL function within its existing 1280-byte
+exception, all other functions within the default 1024-byte limit.
+
+Actual raw live USB BIOS/UEFI SMP=4 PASS 2/2: login, unsupported battery CLI,
+all RX diagnostic rows, desktop version, successful operator and sudo profile
+saves, precise error on exclusive-temp collision, and retained profile contents.
+Only one regular-file USB snapshot per boot; no installation target or physical
+I/O; backing checksum unchanged. GPT/FAT/ext4 audit and embedded kernel/initramfs
+byte identity pass. Exact argv, logs, before/after failures and receipts are in
+`build/wifi-gtk-evidence/`. The initial UEFI save failure is retained under
+`before-scoped-sync-smoke/`. No mock-radio result establishes Dell cold ARP.
+
+On the laptop, boot this replacement USB and connect once. Expect `GTK bytes=32`
+for the observed TKIP group cipher, then read `sudo dmesg -n 4` before initiating
+any FortressOS-to-Bazzite ping. Repeat the measured Bazzite ARP burst and check
+reply reception and successful group decrypt deltas. Physical acceptance and
+installed-root saved-network reboot persistence remain open until tested.

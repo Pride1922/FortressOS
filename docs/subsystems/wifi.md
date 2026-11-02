@@ -2,6 +2,13 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-02 physical RX diagnostics: the Dell receives AP group frames but has
+GTK length zero and rejects every group decrypt. Reproduced encrypted M3 unwrap
+limit and silent missing-GTK authorization; bounded complete key unwrapping and
+mandatory GTK validation now pass independent-vector regressions. Live UEFI
+profile-save global-sync failure also reproduced and corrected with scoped
+directory fsync. [Candidate, before/after evidence and physical-pending limits](../roadmap/wifi-gtk-delivery.md).
+
 2026-11-02 cold inbound ARP follow-up: supplied-neighbor testing isolates
 failing initial ARP from working unicast ICMP on the Dell. Intel MAC_CONTEXT
 now requests raw encrypted unicast/group delivery for FortressOS software
