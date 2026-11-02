@@ -215,10 +215,107 @@ impl<'a> Canvas<'a> {
         let draw_h = 10.min(self.height.saturating_sub(y));
         for dy in 0..draw_h {
             for dx in 0..draw_w {
-                if let Some(col) = crate::ui::render_battery_pixel(dx, dy, status, theme::PANEL) {
+                if let Some(col) = render_battery_pixel(dx, dy, status, theme::PANEL) {
                     self.pixels[(y + dy) * self.stride + x + dx] = col;
                 }
             }
         }
+    }
+}
+
+/// Renders a single pixel for the 22x10 battery icon:
+/// - 20x10 rounded body outline
+/// - 2x4 nub on the right side
+/// - Fill level inside based on capacity_percent:
+///   theme::ACCENT_BLUE for normal, theme::AMBER for <20%, theme::RED for <10%
+/// - Yellow lightning bolt if state == Charging
+/// - Red 'X' if no battery detected (-ENODEV)
+pub fn render_battery_pixel(dx: usize, dy: usize, status: &crate::sys::BatteryStatus, bg: u32) -> Option<u32> {
+    if dx >= 22 || dy >= 10 {
+        return None;
+    }
+
+    // 2x4 Nub on the right side: dx 20..22, dy 3..7
+    if dx >= 20 {
+        if (3..7).contains(&dy) {
+            return Some(0xffcbd5e1);
+        } else {
+            return Some(bg);
+        }
+    }
+
+    // Battery Body: dx 0..20, dy 0..10
+    // Rounded corners: omit (0,0), (0,9), (19,0), (19,9)
+    let is_corner = (dx == 0 && dy == 0) || (dx == 0 && dy == 9) || (dx == 19 && dy == 0) || (dx == 19 && dy == 9);
+    if is_corner {
+        return Some(bg);
+    }
+
+    // Outline border
+    let is_border = dx == 0 || dx == 19 || dy == 0 || dy == 9;
+    if is_border {
+        return Some(0xffcbd5e1);
+    }
+
+    // Interior: dx 1..19, dy 1..9
+    let is_inner_border = dx == 1 || dx == 18 || dy == 1 || dy == 8;
+    let interior_bg = 0xff1e2430;
+
+    // Check for no battery (e.g. unknown with 0 capacity) -> draw Red 'X'
+    let is_no_battery = status.state == crate::sys::BATTERY_STATE_UNKNOWN && status.capacity_percent == 0;
+    if is_no_battery {
+        if is_inner_border {
+            return Some(interior_bg);
+        }
+        // Red 'X' inside dx 4..16, dy 2..8
+        if (4..16).contains(&dx) && (2..8).contains(&dy) {
+            let rx = dx - 4; // 0..11
+            let ry = dy - 2; // 0..5
+            let on_x = (ry * 11 / 5 == rx) || ((5 - ry) * 11 / 5 == rx)
+                || ((ry * 11 + 5) / 5 == rx) || (((5 - ry) * 11 + 5) / 5 == rx);
+            if on_x {
+                return Some(theme::RED);
+            }
+        }
+        return Some(interior_bg);
+    }
+
+    // Check for yellow lightning bolt if Charging
+    if status.state == crate::sys::BATTERY_STATE_CHARGING && (7..14).contains(&dx) && (2..8).contains(&dy) {
+        let lx = dx - 7; // 0..6
+        let ly = dy - 2; // 0..5
+        let is_bolt = match ly {
+            0 => lx == 3 || lx == 4,
+            1 => lx == 2 || lx == 3,
+            2 => (0..=5).contains(&lx),
+            3 => lx == 1 || lx == 2,
+            4 => lx == 2 || lx == 3,
+            5 => lx == 2,
+            _ => false,
+        };
+        if is_bolt {
+            return Some(theme::YELLOW);
+        }
+    }
+
+    // Fill level: inside width is 16 pixels (dx 2..18)
+    let fill_color = if status.capacity_percent < 10 {
+        theme::RED
+    } else if status.capacity_percent < 20 {
+        theme::AMBER
+    } else {
+        theme::ACCENT_BLUE
+    };
+
+    let cap = status.capacity_percent.min(100) as usize;
+    let fill_w = if cap > 0 { ((cap * 16) / 100).max(1) } else { 0 };
+    if (2..18).contains(&dx) && (2..8).contains(&dy) {
+        if dx - 2 < fill_w {
+            Some(fill_color)
+        } else {
+            Some(interior_bg)
+        }
+    } else {
+        Some(interior_bg)
     }
 }
