@@ -3,7 +3,7 @@
 [Implementation evidence and acceptance limits](roadmap/base-repository-updates.md).
 
 The complete A/B installer is `bin/fortress-base-installer.img` (528 MiB).
-SHA-256: `68e591626926a60acfd5b5147f787816341dccd87691d60045ca6e54da421c54`. The earlier
+SHA-256: `8afbab95e23d05360d45a53bf3e45dd16d16a5de2beff6e5164de53cf6b5736b`. The earlier
 `fortress-ready-2026-11-02-installer.img` is superseded: it does not provision
 complete base-update slots. Use the complete A/B baseline for the intended last
 reflash. Installation erases the selected target; flashing/installing remain

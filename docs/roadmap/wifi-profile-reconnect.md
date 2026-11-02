@@ -73,3 +73,8 @@ normal desktop factory packages and enabled Wi-Fi auto-connect service. Earlier
 host-tool failures above are retained as historical attempts, not the final
 verification boundary. See the final installer manifest for exact source hashes
 and image identity. Physical installed-root Wi-Fi acceptance remains pending.
+
+Final follow-up: BIOS/UEFI × SMP=1/4 owner tests PASS 4/4; final complete raw
+installer BIOS/UEFI SMP=4 boot smoke PASS 2/2. See
+[complete installer receipt](complete-installer-2026-11-02.md). These use a mock
+radio or no radio; physical Wi-Fi and installed reboot acceptance remain pending.
