@@ -634,6 +634,11 @@ WIFI_HOST_SAN ?= $(shell printf 'int main(void){return 0;}\n' | $(CC) -x c - -fs
 .PHONY: test-wifi-owner-host test-wifi-owner
 test-wifi-owner-host:
 	@python3 scripts/test_wifi_owner_host.py
+.PHONY: test-wifi-profiles-host
+test-wifi-profiles-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include tests/wifi_profiles_host.c -o $(BUILD_DIR)/wifi-profiles-host
+	@$(BUILD_DIR)/wifi-profiles-host
 .PHONY: test-wifi-prepare-host
 test-wifi-prepare-host:
 	@mkdir -p $(BUILD_DIR)

@@ -316,6 +316,13 @@ typedef struct {
 static saved_net_t s_saved_nets[MAX_SAVED_NETWORKS];
 static int         s_saved_count = 0;
 
+static void copy_profile_field(char *out, size_t cap, const char *in) {
+    size_t i = 0;
+    if (in) while (in[i] && i + 1 < cap) { out[i] = in[i]; i++; }
+    out[i] = 0;
+}
+
+
 static void commit_current_network(char *cur_ssid, char *cur_psk,
                                    char *cur_addr, char *cur_gw, char *cur_dns) {
     if (!cur_ssid[0] || s_saved_count >= MAX_SAVED_NETWORKS) return;
@@ -344,11 +351,20 @@ static int load_saved_networks(void) {
     int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
     if (fd < 0) return 0;
 
-    static char buf[2048];
-    long rd = WIFI_SYSCALL(SYS_READ, fd, buf, sizeof(buf) - 1);
+    static char buf[8192];
+    size_t used = 0;
+    while (used < sizeof(buf) - 1) {
+        long rd = WIFI_SYSCALL(SYS_READ, fd, buf + used, sizeof(buf) - 1 - used);
+        if (rd < 0 || (size_t)rd > sizeof(buf) - 1 - used) {
+            WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+            return 0;
+        }
+        if (!rd) break;
+        used += (size_t)rd;
+    }
     WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
-    if (rd <= 0) return 0;
-    buf[rd] = '\0';
+    if (!used) return 0;
+    buf[used] = '\0';
 
     char *line = buf;
     char cur_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
@@ -476,7 +492,7 @@ static int load_saved_networks(void) {
 static bool save_all_networks(void) {
     (void)WIFI_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
 
-    static char content[2048];
+    static char content[8192];
     size_t pos = 0;
     const char *hdr = "# /etc/network/wlan.conf - FortressOS Wireless Configuration\n\n";
     while (*hdr) content[pos++] = *hdr++;
@@ -518,13 +534,30 @@ static bool save_all_networks(void) {
     }
     content[pos] = '\0';
 
-    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0600);
+    const char *temporary = "/etc/network/.wlan-cli.new";
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)temporary, 0x800c1, 0600);
     if (fd < 0) return false;
-    (void)WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
-    long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
-    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
-    (void)WIFI_SYSCALL(SYS_SYNC, 0, 0, 0);
-    return wr > 0;
+    bool ok = WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0) == 0;
+    size_t off = 0;
+    while (ok && off < pos) {
+        long wr = WIFI_SYSCALL(SYS_WRITE, fd, content + off, pos - off);
+        if (wr <= 0 || (size_t)wr > pos - off) ok = false;
+        else off += (size_t)wr;
+    }
+    long flushed = WIFI_SYSCALL(SYS_FSYNC, fd, 0, 0);
+    /* Live ETCFS is volatile and has no fsync operation. */
+    if (flushed != 0 && flushed != SYSCALL_EOPNOTSUPP) ok = false;
+    if (WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0) != 0) ok = false;
+    if (ok) {
+        long rc = WIFI_SYSCALL(SYS_RENAME_REPLACE, (uintptr_t)temporary,
+                               (uintptr_t)"/etc/network/wlan.conf", 0);
+        if (rc == SYSCALL_ENOENT)
+            rc = WIFI_SYSCALL(SYS_RENAME, (uintptr_t)temporary,
+                              (uintptr_t)"/etc/network/wlan.conf", 0);
+        ok = rc == 0;
+    }
+    if (!ok) (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)temporary, 0, 0);
+    return ok && WIFI_SYSCALL(SYS_SYNC, 0, 0, 0) == 0;
 }
 
 static int do_list(void) {
@@ -574,6 +607,19 @@ static int do_save(const char *ssid, const char *passphrase,
         return 1;
     }
 
+    /* Callers may pass fields in s_saved_nets itself (auto/reconnect).
+     * Snapshot before reload and before replacing the destination entry. */
+    saved_net_t snapshot = {0};
+    copy_profile_field(snapshot.ssid, sizeof(snapshot.ssid), ssid);
+    copy_profile_field(snapshot.psk, sizeof(snapshot.psk), passphrase);
+    copy_profile_field(snapshot.address, sizeof(snapshot.address), address);
+    copy_profile_field(snapshot.gateway, sizeof(snapshot.gateway), gateway);
+    copy_profile_field(snapshot.dns, sizeof(snapshot.dns), dns);
+    ssid = snapshot.ssid;
+    passphrase = snapshot.psk;
+    address = snapshot.address;
+    gateway = snapshot.gateway;
+    dns = snapshot.dns;
     load_saved_networks();
 
     int existing_idx = -1;
@@ -778,7 +824,7 @@ static int do_static(const char *ssid, const char *address, const char *gateway,
                     long waited;
                     do {
                         waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
-                    } while (waited == -4 /* EINTR */);
+                    } while (waited == SYSCALL_EINTR);
                 }
 
                 static char st_buf[256];
@@ -810,7 +856,7 @@ static int do_static(const char *ssid, const char *address, const char *gateway,
                     long waited;
                     do {
                         waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
-                    } while (waited == -4 /* EINTR */);
+                    } while (waited == SYSCALL_EINTR);
                 }
             }
         }
@@ -857,7 +903,20 @@ static int do_connect(const char *ssid, const char *passphrase,
         if (!actual_dns && s_saved_nets[saved_idx].dns[0]) actual_dns = s_saved_nets[saved_idx].dns;
     }
 
-    ensure_firmware_loaded();
+    /* Saving reloads the profile table. Keep connection parameters independent
+     * of that table through saving and IP configuration. */
+    saved_net_t connection = {0};
+    copy_profile_field(connection.ssid, sizeof(connection.ssid), ssid);
+    copy_profile_field(connection.psk, sizeof(connection.psk), actual_psk);
+    copy_profile_field(connection.address, sizeof(connection.address), actual_addr);
+    copy_profile_field(connection.gateway, sizeof(connection.gateway), actual_gw);
+    copy_profile_field(connection.dns, sizeof(connection.dns), actual_dns);
+    ssid = connection.ssid;
+    actual_psk = connection.psk;
+    actual_addr = connection.address;
+    actual_gw = connection.gateway;
+    actual_dns = connection.dns;
+    if (!ensure_firmware_loaded()) return 1;
 
     wifi_connect_req_t req;
     for (size_t i = 0; i < sizeof(req.ssid); i++) req.ssid[i] = 0;
@@ -879,16 +938,20 @@ static int do_connect(const char *ssid, const char *passphrase,
     long rc = -1;
     for (int retry = 0; retry < 10; retry++) {
         rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_CONNECT, &req, sizeof(req));
-        if (rc != -2) break;
+        if (rc != SYSCALL_EAGAIN) break;
         timespec_t ts_probe = { .tv_sec = 0, .tv_nsec = 300000000 }; /* 300ms waiting for probe response */
         (void)WIFI_SYSCALL(SYS_NANOSLEEP, &ts_probe, 0, 0);
+    }
+    if (rc == SYSCALL_EACCES) {
+        write_str(2, "wifi: secured network requires a password; use wifi connect <SSID> <password> once. It will be saved for boot auto-connect.\n");
+        return 1;
     }
     if (rc != 0) {
         write_str(2, "wifi: connection failed (authentication rejected or invalid passphrase)\n");
         return 1;
     }
 
-    /* Wait up to 6 seconds and pump RX via WIFI_CMD_STATUS until 4-way handshake completes */
+    /* Wait for owner-driven association and key exchange; status is a snapshot. */
     wifi_status_t st;
     for (int wait = 0; wait < 60; wait++) {
         if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
@@ -903,7 +966,8 @@ static int do_connect(const char *ssid, const char *passphrase,
 
                 /* Auto-save network profile permanently immediately upon association */
                 if (do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns) != 0) {
-                    write_str(2, "wifi: warning: connected, but failed to save profile to /etc/network/wlan.conf\n");
+                    write_str(2, "wifi: connected, but saving failed; boot auto-connect is not guaranteed\n");
+                    return 1;
                 }
 
                 timespec_t ts_settle = { .tv_sec = 0, .tv_nsec = 250000000 }; /* 250ms AP bridge port settling delay */
@@ -934,8 +998,8 @@ static int do_connect(const char *ssid, const char *passphrase,
                         long waited;
                         do {
                             waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
-                        } while (waited == -4 /* EINTR */);
-                        if (status != 0) {
+                        } while (waited == SYSCALL_EINTR);
+                        if (waited < 0 || status != 0) {
                             write_str(2, "wifi: ifup failed to configure static IP\n");
                             return 1;
                         }
@@ -974,8 +1038,8 @@ static int do_connect(const char *ssid, const char *passphrase,
                         long waited;
                         do {
                             waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
-                        } while (waited == -4 /* EINTR */);
-                        if (status != 0) {
+                        } while (waited == SYSCALL_EINTR);
+                        if (waited < 0 || status != 0) {
                             write_str(2, "wifi: failed to configure IP address via DHCP\n");
                             return 1;
                         }
@@ -1007,7 +1071,7 @@ static int do_connect(const char *ssid, const char *passphrase,
 
 static int do_auto(void) {
     if (!ensure_firmware_loaded()) {
-        return 0;
+        return 1;
     }
 
     int count = load_saved_networks();

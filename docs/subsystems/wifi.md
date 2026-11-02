@@ -2,6 +2,13 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-02 installed-root reconnect fix: missing credentials no longer turn a
+protected beacon into an open link; CLI save/reconnect snapshots prevent
+self-erasure of saved SSIDs/passwords, and checked atomic profile writes retain
+previous configurations on failure. Existing enabled `wifi.service` runs
+`wifi auto` at boot. Host verification passes; guest/physical reboot acceptance
+remains pending. [Changes, evidence and limits](../roadmap/wifi-profile-reconnect.md).
+
 2026-10-28 GUI connection follow-up: a selected BSSID uses its own cached
 channel/RSSI/beacon interval, rather than metadata from the currently strongest
 same-SSID AP. The desktop also performs the CLI's firmware preparation before
@@ -161,7 +168,7 @@ wifi status                                 # Displays wlan0 MAC, BSSID, channel
    - `wifi auto` scans range, selects the saved network with the strongest RSSI, executes the 4-way WPA2 handshake, and configures either static IP or DHCP based on that network's saved profile.
 
 ### Open / Public Wi-Fi Network Support (Zero Passphrase)
-When connecting to an open access point (`!bss->has_wpa2_psk && !bss->has_wpa3_sae` or an empty passphrase), `wlan_mgr_connect()` sets `s_target_is_open = true`, omits the RSN Information Element (IE 48) and clears the Privacy capability bit (`0x0010`) in the Association Request, and skips `WLAN_STATE_4WAY_HANDSHAKE` upon receiving Association Response `SUCCESS` (`status == 0`), transitioning directly to `WLAN_STATE_CONNECTED` with immediate port authorization. Data frames on open links are encapsulated and decapsulated without `IEEE80211_FCTL_PROTECTED`, while secured links strictly reject unencrypted data frames.
+When connecting to an open access point (no WPA2/SAE advertisement and no Privacy capability bit), `wlan_mgr_connect()` sets `s_target_is_open = true`, omits the RSN Information Element (IE 48) and clears the Privacy capability bit (`0x0010`) in the Association Request, and skips `WLAN_STATE_4WAY_HANDSHAKE` upon receiving Association Response `SUCCESS` (`status == 0`), transitioning directly to `WLAN_STATE_CONNECTED` with immediate port authorization. Data frames on open links are encapsulated and decapsulated without `IEEE80211_FCTL_PROTECTED`, while secured links strictly reject unencrypted data frames.
 
 ### TKIP Group Frame Decryption (Mixed-Mode AP Broadcast ARP / Multicast)
 On mixed-mode routers advertising `Group Cipher = 00-0F-AC:2` (TKIP) with `Pairwise Cipher = 00-0F-AC:4` (AES-CCMP), `wpa2_sm_rx_eapol()` unpacks the full 32-byte TKIP Group Temporal Key (`16B Temporal Key + 8B AP Tx Michael MIC Key + 8B AP Rx Michael MIC Key`) from EAPOL Message 3. Inbound broadcast/multicast data frames (`addr1[0] & 0x01`) are decrypted via `wlan_tkip_decrypt_frame()` using IEEE 802.11i TKIP Phase 1 & Phase 2 key mixing, RC4 stream cipher, CRC-32 ICV verification, Michael MIC verification over `DA || SA || Priority || 0x000000 || MSDU`, WEPSeed validation, and a 64-packet sliding TSC replay window.

@@ -136,6 +136,10 @@ int main(void) {
     wifi_scan_result_t result={0}; assert(!call(SYS_WIFI_CMD_SCAN,&result,sizeof(result))); clean();
     result.max_entries=UINT32_MAX;
     assert(!call(SYS_WIFI_CMD_SCAN,&result,sizeof(result)) && result.max_entries==16 && !result.count); clean();
+    wifi_connect_req_t absent={.ssid="not-cached",.passphrase="password"};
+    assert(call(SYS_WIFI_CMD_CONNECT,&absent,sizeof(absent))==SYSCALL_EAGAIN); clean();
+    wifi_connect_req_t missing={.ssid="test",.bssid={1,2,3,4,5,6}};
+    assert(call(SYS_WIFI_CMD_CONNECT,&missing,sizeof(missing))==SYSCALL_EACCES); clean();
     wifi_connect_req_t req={.ssid="test",.passphrase="password",.bssid={1,2,3,4,5,6}};
     assert(!call(SYS_WIFI_CMD_CONNECT,&req,sizeof(req))); clean();
     wifi_status_t status;

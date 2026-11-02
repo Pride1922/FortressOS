@@ -290,7 +290,7 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     return 0;
 }
 
-static void wlan_select_bss_params(const wlan_bss_entry_t *entry, size_t pass_len) {
+static void wlan_select_bss_params(const wlan_bss_entry_t *entry) {
     if (!entry) return;
     s_current_channel = entry->channel;
     s_current_rssi = entry->rssi;
@@ -301,7 +301,7 @@ static void wlan_select_bss_params(const wlan_bss_entry_t *entry, size_t pass_le
     s_target_has_vht = entry->has_vht;
     s_target_chan_width = entry->has_vht ? entry->vht_chan_width : entry->ht_chan_width;
 
-    if ((!entry->has_wpa2_psk && !entry->has_wpa3_sae) || pass_len == 0) {
+    if (!entry->has_wpa2_psk && !entry->has_wpa3_sae && !(entry->capabilities & 0x0010)) {
         s_target_is_open = true;
         s_target_use_sae = false;
     } else if (entry->has_wpa2_psk) {
@@ -344,7 +344,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     memset(&s_sae_ctx, 0, sizeof(s_sae_ctx));
     s_gtk_rx_pn = 0;
     s_gtk_rx_bitmap = 0;
-    s_target_is_open = (pass_len == 0);
+    s_target_is_open = false; /* Only a cached open beacon can authorize an open link. */
     s_target_use_sae = false;
     s_target_has_ht = false;
     s_target_has_vht = false;
@@ -368,14 +368,14 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             }
         }
         if (entry) {
-            wlan_select_bss_params(entry, pass_len);
+            wlan_select_bss_params(entry);
         }
         found_bssid = true;
     } else {
         const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
         if (entry) {
             memcpy(s_target_bssid, entry->bssid, 6);
-            wlan_select_bss_params(entry, pass_len);
+            wlan_select_bss_params(entry);
             found_bssid = true;
         }
     }
@@ -389,7 +389,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
         if (entry) {
             memcpy(s_target_bssid, entry->bssid, 6);
-            wlan_select_bss_params(entry, pass_len);
+            wlan_select_bss_params(entry);
             found_bssid = true;
         }
     }
@@ -403,6 +403,17 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         }
         spin_unlock_irqrestore(&s_wlan_lock, irq);
         return -2; /* Not found in scan cache, probe sent */
+    }
+
+    /* An absent credential never makes a protected AP open. In particular,
+     * fresh installations must not authorize data after association alone. */
+    if (!s_target_is_open && pass_len == 0) {
+        s_wlan_state = WLAN_STATE_FAILED;
+        s_wlan_net_dev.flags &= ~NET_RUNNING;
+        memset(s_target_pmk, 0, sizeof(s_target_pmk));
+        s_has_pending_pmk = false;
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+        return -4; /* Credential required; owner maps to EACCES. */
     }
 
     if (s_target_is_open) {

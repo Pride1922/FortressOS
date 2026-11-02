@@ -198,6 +198,18 @@ int main(void) {
     assert(scan_res.entries[0].security == WIFI_SEC_WPA2_PSK);
     printf("  [PASS] Beacon reception & BSS scan cache population\n");
 
+    /* Fresh install / lost credential: a WPA2 beacon must never become open. */
+    uint32_t missing_tx = s_mock_tx_count;
+    assert(wlan_mgr_connect("FortressSecure", "", NULL) == -4);
+    assert(s_mock_tx_count == missing_tx);
+    assert(!wlan_network_online(dev));
+    assert(wlan_mgr_connect("FortressSecure", NULL, s_mock_ap_bssid) == -4);
+    assert(s_mock_tx_count == missing_tx);
+    wifi_status_t missing_status;
+    assert(wlan_mgr_status(&missing_status) == 0);
+    assert(missing_status.state == WIFI_STATUS_FAILED && !missing_status.link_online);
+    printf("  [PASS] Secured AP without credentials fails before authentication/authorization\n");
+
     /* 3. Test Connection State Machine: Connect & Auth Request */
     uint32_t prev_tx = s_mock_tx_count;
     int conn_rc = wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", s_mock_ap_bssid);

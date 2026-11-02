@@ -168,7 +168,7 @@ void net_wifi_step(handoff_token_t t,handoff_request_t r) {
         case SYS_WIFI_CMD_STATUS: rc=wlan_mgr_status(&v->value.status); break;
         case SYS_WIFI_CMD_CONNECT:
             rc=wlan_mgr_connect(v->value.connect.ssid,v->value.connect.passphrase,v->value.connect.bssid);
-            if (rc==-2) rc=0;
+            if (rc==-2) rc=SYSCALL_EAGAIN;
             wipe(&v->value.connect,sizeof(v->value.connect));
             break;
         case SYS_WIFI_CMD_DISCONNECT: rc=wlan_mgr_disconnect(); break;
@@ -177,7 +177,8 @@ void net_wifi_step(handoff_token_t t,handoff_request_t r) {
             if (rc==-2) rc=iwlwifi_load_firmware(v->firmware,v->firmware_size) ? 0 : -1;
             break;
         }
-        result=rc ? SYSCALL_EIO : 0;
+        result=rc == -4 ? SYSCALL_EACCES :
+               (rc == SYSCALL_EAGAIN ? SYSCALL_EAGAIN : (rc ? SYSCALL_EIO : 0));
     }
     /* Cancellation before claim prevents effects. Once claimed the bounded
      * action may finish; death never runs driver teardown on the caller CPU. */
