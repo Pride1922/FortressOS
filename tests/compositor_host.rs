@@ -2515,3 +2515,78 @@ fn clipboard_history_notepad_files_and_settings_integration() {
     assert_eq!(clipboard::get().as_deref(), Some("public-clip"));
     assert_eq!(secret.as_str(), "Fortress-5G");
 }
+
+#[test]
+fn alt_tab_window_switcher_hud_lifecycle_and_rendering() {
+    use proto::{
+        KEY_LEFTALT, KEY_STATE_PRESS, KEY_STATE_RELEASE, KEY_TAB, KeyEvent, MOD_ALT, MOD_SHIFT,
+    };
+
+    let mut s = Surface::new(800, 600).unwrap();
+    let mut wm = WindowManager::desktop();
+    let w1 = window::Window::new(
+        3,
+        "Terminal - /bin/sh",
+        Rect {
+            x: 60,
+            y: 60,
+            w: 360,
+            h: 220,
+        },
+    )
+    .unwrap();
+    let w2 = window::Window::new(
+        4,
+        "Notes - /tmp/notes.txt",
+        Rect {
+            x: 120,
+            y: 100,
+            w: 360,
+            h: 220,
+        },
+    )
+    .unwrap();
+    let mut w3 = window::Window::new(
+        5,
+        "Files - /etc",
+        Rect {
+            x: 180,
+            y: 140,
+            w: 360,
+            h: 220,
+        },
+    )
+    .unwrap();
+    w3.is_focused = true;
+    wm.windows.push(w1);
+    wm.windows.push(w2);
+    wm.windows.push(w3);
+
+    assert!(!wm.switcher_open);
+    assert_eq!(wm.focused_window_id(), Some(5));
+
+    // Press Alt+Tab: opens switcher HUD and cycles focus to window 3
+    let alt_tab = KeyEvent::new(KEY_TAB, MOD_ALT, KEY_STATE_PRESS, b'\t');
+    assert!(wm.intercept_key(alt_tab, &mut s));
+    assert!(wm.switcher_open);
+    assert_eq!(wm.switcher_selected, 3);
+    assert_eq!(wm.focused_window_id(), Some(3));
+
+    // Render switcher HUD and verify center card pixels are drawn
+    wm.render(&mut s);
+    let card = WindowManager::switcher_card_rect(s.width, s.height, 3);
+    assert!(card.w >= 200 && card.h >= 100);
+
+    // Press Alt+Shift+Tab: cycles backwards to window 5
+    let alt_shift_tab = KeyEvent::new(KEY_TAB, MOD_ALT | MOD_SHIFT, KEY_STATE_PRESS, b'\t');
+    assert!(wm.intercept_key(alt_shift_tab, &mut s));
+    assert!(wm.switcher_open);
+    assert_eq!(wm.switcher_selected, 5);
+    assert_eq!(wm.focused_window_id(), Some(5));
+
+    // Release Left Alt: closes switcher HUD and keeps window 5 focused at top
+    let alt_release = KeyEvent::new(KEY_LEFTALT, 0, KEY_STATE_RELEASE, 0);
+    assert!(wm.intercept_key(alt_release, &mut s));
+    assert!(!wm.switcher_open);
+    assert_eq!(wm.focused_window_id(), Some(5));
+}

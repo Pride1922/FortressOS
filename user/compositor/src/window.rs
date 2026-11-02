@@ -844,7 +844,41 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
             }
             0xff0d1117
         }
+        4 => {
+            // Settings: Slate blue tile with precision gear icon
+            if iy == 0 {
+                return 0xff3b82f6;
+            }
+            let dx = (ix as i32 - 14).abs();
+            let dy = (iy as i32 - 14).abs();
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= 9 {
+                return 0xff172030;
+            }
+            if dist_sq <= 42
+                || (dx <= 2 && dy <= 9)
+                || (dy <= 2 && dx <= 9)
+                || ((dx - dy).abs() <= 2 && dx <= 7 && dy <= 7)
+            {
+                return if iy < 14 { 0xff93c5fd } else { 0xff60a5fa };
+            }
+            0xff172030
+        }
         _ => dock_bg,
+    }
+}
+
+fn window_icon_kind(w: &Window) -> usize {
+    if w.id == 5 || w.title.starts_with("Files") {
+        0
+    } else if w.id == 3 || w.title.starts_with("Terminal") {
+        1
+    } else if w.id == 4 || w.title.contains("Notes") || w.title.starts_with("Notepad") {
+        2
+    } else if w.id == 1 || w.id == 6 || w.title.starts_with("System") {
+        3
+    } else {
+        4
     }
 }
 
@@ -926,6 +960,8 @@ pub struct WindowManager {
     pub dock_hover: Option<usize>,
     pub context_menu: Option<(usize, usize)>,
     pub context_hover: Option<usize>,
+    pub switcher_open: bool,
+    pub switcher_selected: u32,
 }
 
 impl WindowManager {
@@ -979,6 +1015,8 @@ impl WindowManager {
             dock_hover: None,
             context_menu: None,
             context_hover: None,
+            switcher_open: false,
+            switcher_selected: 0,
         })
     }
 
@@ -996,6 +1034,8 @@ impl WindowManager {
             dock_hover: None,
             context_menu: None,
             context_hover: None,
+            switcher_open: false,
+            switcher_selected: 0,
         }
     }
 
@@ -1216,17 +1256,90 @@ impl WindowManager {
     }
 
     pub fn cycle_focus(&mut self, s: &mut Surface) {
-        if self.windows.len() <= 1 {
+        if self.windows.is_empty() {
             return;
         }
         let first_id = self.windows[0].id;
-        self.raise(first_id, s);
+        self.unminimize_and_raise(first_id, s);
+        self.switcher_selected = first_id;
+    }
+
+    pub fn cycle_focus_reverse(&mut self, s: &mut Surface) {
+        if self.windows.len() <= 1 {
+            if let Some(w) = self.windows.first() {
+                let id = w.id;
+                self.unminimize_and_raise(id, s);
+                self.switcher_selected = id;
+            }
+            return;
+        }
+        let prev_idx = self.windows.len() - 2;
+        let target_id = self.windows[prev_idx].id;
+        let top = self.windows.pop().unwrap();
+        s.damage(top.damage_rect());
+        self.windows.insert(0, top);
+        self.unminimize_and_raise(target_id, s);
+        self.switcher_selected = target_id;
+    }
+
+    pub fn switcher_ids(&self) -> ([u32; 8], usize) {
+        let mut ids = [0u32; 8];
+        let mut count = 0;
+        for w in &self.windows {
+            if count < 8 {
+                ids[count] = w.id;
+                count += 1;
+            }
+        }
+        // Keep icons in stable ID order left-to-right so the selection highlight
+        // moves smoothly across the row as the user presses Tab.
+        for i in 1..count {
+            let mut j = i;
+            while j > 0 && ids[j - 1] > ids[j] {
+                ids.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        (ids, count)
+    }
+
+    pub fn switcher_card_rect(width: usize, height: usize, count: usize) -> Rect {
+        let scale = theme::scale(height);
+        let n = count.clamp(1, 8);
+        let cw = (n * 68 + 20).max(180) * scale;
+        let ch = 104 * scale;
+        Rect {
+            x: width.saturating_sub(cw) / 2,
+            y: height.saturating_sub(ch) / 2,
+            w: cw.min(width),
+            h: ch.min(height),
+        }
+    }
+
+    pub fn switcher_damage_rect(width: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        let max_w = (8 * 68 + 28) * scale;
+        let max_h = 114 * scale;
+        Rect {
+            x: width.saturating_sub(max_w) / 2,
+            y: height.saturating_sub(max_h) / 2,
+            w: max_w.min(width),
+            h: max_h.min(height),
+        }
+    }
+
+    pub fn close_switcher(&mut self, s: &mut Surface) {
+        if self.switcher_open {
+            self.switcher_open = false;
+            s.damage(Self::switcher_damage_rect(s.width, s.height));
+        }
     }
 
     /// Releases any active pointer capture, closes open desktop menus, and
     /// clears keyboard focus from all windows (SAK step 1).
     pub fn emergency_unfocus(&mut self, s: &mut Surface) {
         self.buttons = 0;
+        self.close_switcher(s);
         if self.context_menu.is_some() {
             self.close_context_menu(s);
         }
@@ -1268,12 +1381,39 @@ impl WindowManager {
             }
             return true;
         }
+        if (ev.keycode == crate::proto::KEY_LEFTALT || ev.keycode == crate::proto::KEY_RIGHTALT)
+            && ev.state == crate::proto::KEY_STATE_RELEASE
+            && self.switcher_open
+        {
+            let selected = self.switcher_selected;
+            self.close_switcher(s);
+            if selected != 0 {
+                self.unminimize_and_raise(selected, s);
+            }
+            return true;
+        }
+        if ev.keycode == crate::proto::KEY_ESC
+            && ev.state == crate::proto::KEY_STATE_PRESS
+            && self.switcher_open
+        {
+            self.close_switcher(s);
+            return true;
+        }
         if (ev.modifiers & crate::proto::MOD_ALT) != 0
             && (ev.modifiers & crate::proto::MOD_CTRL) == 0
             && ev.keycode == crate::proto::KEY_TAB
         {
-            if ev.is_press_or_repeat() {
-                self.cycle_focus(s);
+            if ev.is_press_or_repeat() && !self.windows.is_empty() {
+                if (ev.modifiers & crate::proto::MOD_SHIFT) != 0 {
+                    self.cycle_focus_reverse(s);
+                } else {
+                    self.cycle_focus(s);
+                }
+                self.switcher_open = true;
+                self.switcher_selected = self
+                    .focused_window_id()
+                    .unwrap_or_else(|| self.windows.last().map(|w| w.id).unwrap_or(0));
+                s.damage(Self::switcher_damage_rect(s.width, s.height));
             }
             return true;
         }
@@ -1447,6 +1587,27 @@ impl WindowManager {
                 w.is_resizing = false;
             }
         } else if self.buttons & 1 == 0 {
+            if self.switcher_open {
+                let (ids, count) = self.switcher_ids();
+                let card = Self::switcher_card_rect(s.width, s.height, count);
+                if card.contains(x, y) && count > 0 {
+                    let scale = theme::scale(s.height);
+                    let px = (x - card.x) / scale;
+                    let py = (y - card.y) / scale;
+                    if (22..74).contains(&py) && px >= 10 {
+                        let idx = (px - 10) / 68;
+                        let in_tile_x = (px - 10) % 68;
+                        if idx < count && in_tile_x < 56 {
+                            let target_id = ids[idx];
+                            self.close_switcher(s);
+                            self.unminimize_and_raise(target_id, s);
+                            self.buttons = buttons;
+                            return Action::None;
+                        }
+                    }
+                }
+                self.close_switcher(s);
+            }
             // Dismiss or interact with context menu
             if let Some((mx, my)) = self.context_menu.take() {
                 let scale = theme::scale(s.height);
@@ -2623,6 +2784,152 @@ impl WindowManager {
                                     item_bg
                                 }
                             };
+                        }
+                    }
+                }
+            }
+
+            // Centered Alt+Tab Window Switcher Glass HUD
+            if self.switcher_open && !self.windows.is_empty() {
+                let (ids, count) = self.switcher_ids();
+                let card = Self::switcher_card_rect(s.width, s.height, count);
+                let shadow = Rect {
+                    x: card.x.saturating_sub(4 * scale),
+                    y: card.y + card.h,
+                    w: (card.w + 8 * scale).min(s.width.saturating_sub(card.x.saturating_sub(4 * scale))),
+                    h: (6 * scale).min(s.height.saturating_sub(card.y + card.h)),
+                };
+                if let Some(clip) = shadow.intersection(r) {
+                    for y in clip.y..clip.y + clip.h {
+                        let dy = (y - (card.y + card.h)) / scale + 1;
+                        let factor = ((7usize.saturating_sub(dy)) * 14) as u32;
+                        for x in clip.x..clip.x + clip.w {
+                            s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                        }
+                    }
+                }
+                if let Some(clip) = card.intersection(r) {
+                    let bw = card.w / scale;
+                    let bh = card.h / scale;
+                    let selected_id = if self.switcher_selected != 0 {
+                        self.switcher_selected
+                    } else {
+                        self.focused_window_id().unwrap_or(ids[0])
+                    };
+                    let selected_title = self
+                        .windows
+                        .iter()
+                        .find(|w| w.id == selected_id)
+                        .map(|w| w.title.as_str())
+                        .unwrap_or("Desktop");
+                    let title_w = theme::text_width(selected_title);
+                    let title_x = bw.saturating_sub(title_w) / 2;
+                    let tiles_total_w = count * 68 - 12;
+                    let tiles_start_x = bw.saturating_sub(tiles_total_w) / 2;
+
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let cov = theme::rounded_coverage(
+                                x - card.x,
+                                y - card.y,
+                                card.w,
+                                card.h,
+                                12 * scale,
+                            );
+                            if cov == 0 {
+                                continue;
+                            }
+                            let under = s.pixels[y * s.width + x];
+                            // Semi-transparent glass backdrop: darken underlying scene and tint with dark slate
+                            let glass_base = theme::blend_coverage(0xff161b24, blend_darken(under, 96), 13);
+                            let px = (x - card.x) / scale;
+                            let py = (y - card.y) / scale;
+                            let is_border = px == 0 || px == bw - 1 || py == 0 || py == bh - 1;
+
+                            let pixel = if is_border {
+                                0xff3b475e
+                            } else if py == 1 {
+                                0xff2b3548
+                            } else if (4..20).contains(&py) {
+                                if px >= 12 && px < bw.saturating_sub(12) {
+                                    theme::text_pixel("Switch Windows", px - 12, py - 4, theme::MUTED, glass_base)
+                                } else {
+                                    glass_base
+                                }
+                            } else if (22..74).contains(&py) && px >= tiles_start_x {
+                                let rel_x = px - tiles_start_x;
+                                let idx = rel_x / 68;
+                                let tx = rel_x % 68;
+                                let ty = py - 22;
+                                if idx < count && tx < 56 {
+                                    let wid = ids[idx];
+                                    let is_sel = wid == selected_id;
+                                    let tile_cov = theme::rounded_coverage(tx, ty, 56, 52, 8);
+                                    if tile_cov == 0 {
+                                        glass_base
+                                    } else {
+                                        let tile_border = tx == 0 || tx == 55 || ty == 0 || ty == 51;
+                                        let tile_bg = if is_sel { 0xff1e385b } else { 0xff1e2430 };
+                                        let inner = if tile_border {
+                                            if is_sel { 0xff38bdf8 } else { 0xff2d3646 }
+                                        } else if (14..42).contains(&tx) && (6..34).contains(&ty) {
+                                            let icon_kind = self
+                                                .windows
+                                                .iter()
+                                                .find(|w| w.id == wid)
+                                                .map(window_icon_kind)
+                                                .unwrap_or(4);
+                                            render_dock_icon(icon_kind, tx - 14, ty - 6, tile_bg)
+                                        } else if (35..51).contains(&ty) && (6..50).contains(&tx) {
+                                            let short = match self
+                                                .windows
+                                                .iter()
+                                                .find(|w| w.id == wid)
+                                                .map(window_icon_kind)
+                                                .unwrap_or(4)
+                                            {
+                                                0 => "Files",
+                                                1 => "Shell",
+                                                2 => "Notes",
+                                                3 => "SysInfo",
+                                                _ => "Config",
+                                            };
+                                            let sw = theme::text_width(short);
+                                            let sx = 28usize.saturating_sub(sw / 2);
+                                            if tx >= sx {
+                                                theme::text_pixel(
+                                                    short,
+                                                    tx - sx,
+                                                    ty - 35,
+                                                    if is_sel { 0xffffffff } else { theme::MUTED },
+                                                    tile_bg,
+                                                )
+                                            } else {
+                                                tile_bg
+                                            }
+                                        } else {
+                                            tile_bg
+                                        };
+                                        theme::blend_coverage(inner, glass_base, tile_cov)
+                                    }
+                                } else {
+                                    glass_base
+                                }
+                            } else if py == 78 && px >= 12 && px < bw.saturating_sub(12) {
+                                0xff2a3344
+                            } else if (82..98).contains(&py) && px >= title_x.max(10) && px < bw.saturating_sub(10) {
+                                theme::text_pixel(
+                                    selected_title,
+                                    px - title_x.max(10),
+                                    py - 82,
+                                    0xffffffff,
+                                    glass_base,
+                                )
+                            } else {
+                                glass_base
+                            };
+
+                            s.pixels[y * s.width + x] = theme::blend_coverage(pixel, under, cov);
                         }
                     }
                 }
