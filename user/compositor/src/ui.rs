@@ -1164,7 +1164,7 @@ pub struct AppDescriptor {
     pub height: usize,
 }
 pub const APP_API_VERSION: u32 = 1;
-pub const APPS: [AppDescriptor; 3] = [
+pub const APPS: [AppDescriptor; 4] = [
     AppDescriptor {
         id: 7,
         name: "Settings",
@@ -1180,6 +1180,12 @@ pub const APPS: [AppDescriptor; 3] = [
     AppDescriptor {
         id: 9,
         name: "Date & Time",
+        width: 760,
+        height: 540,
+    },
+    AppDescriptor {
+        id: 10,
+        name: "Power & Battery",
         width: 760,
         height: 540,
     },

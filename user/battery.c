@@ -91,5 +91,17 @@ int battery_main(int argc, char **argv) {
         print_str("m\n");
     }
 
+    if (st.ac_online == AC_POWER_ONLINE) {
+        print_str("Power: AC Connected\n");
+    } else if (st.ac_online == AC_POWER_OFFLINE) {
+        print_str("Power: On Battery\n");
+    }
+
+    if (st.temperature_c > 0) {
+        print_str("Thermal: ");
+        print_u32((uint32_t)st.temperature_c);
+        print_str(" C\n");
+    }
+
     return 0;
 }

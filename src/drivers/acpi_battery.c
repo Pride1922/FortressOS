@@ -17,6 +17,8 @@ static bool g_has_cached = false;
 static bool g_battery_present = false;
 static bool g_battery_initialized = false;
 static acpi_ec_read_fn_t g_ec_reader = NULL;
+static int32_t g_mock_temp_c = 0;
+static uint32_t g_mock_ac_online = AC_POWER_UNKNOWN;
 
 /* Mock timer ticks for host tests */
 #ifdef HOST_TEST
@@ -38,6 +40,14 @@ void acpi_battery_set_ec_reader(acpi_ec_read_fn_t reader) {
     g_ec_reader = reader;
 }
 
+void acpi_thermal_set_mock(int32_t temp_c) {
+    g_mock_temp_c = temp_c;
+}
+
+void acpi_ac_adapter_set_mock(uint32_t online) {
+    g_mock_ac_online = online;
+}
+
 void acpi_battery_reset(void) {
     memset(&g_cached_battery, 0, sizeof(g_cached_battery));
     g_last_update_ticks = 0;
@@ -45,6 +55,8 @@ void acpi_battery_reset(void) {
     g_battery_present = false;
     g_battery_initialized = false;
     g_ec_reader = NULL;
+    g_mock_temp_c = 0;
+    g_mock_ac_online = AC_POWER_UNKNOWN;
 }
 
 void acpi_battery_force_update(void) {
@@ -276,6 +288,78 @@ bool acpi_battery_evaluate_bif(const uint8_t *aml, size_t len, uint32_t *last_fu
     return false;
 }
 
+/* Evaluate _PSR (Power Source): returns 1 for AC online, 0 for offline */
+bool acpi_ac_adapter_evaluate_psr(const uint8_t *aml, size_t len, uint32_t *online) {
+    if (!aml || !online || len < 5) return false;
+    for (size_t i = 0; i + 4 <= len; i++) {
+        if (memcmp(aml + i, "_PSR", 4) == 0) {
+            const uint8_t *ptr = aml + i + 4;
+            const uint8_t *end = aml + len;
+            if (i >= 2 && aml[i - 2] == 0x14) {
+                if (ptr < end) ptr++; /* method flags */
+            }
+            size_t ahead = 0;
+            while (ptr < end && ahead < 32) {
+                if (*ptr == 0xA4) {
+                    ptr++;
+                    uint32_t val = 0;
+                    if (parse_aml_integer(&ptr, end, &val)) {
+                        *online = (val != 0) ? AC_POWER_ONLINE : AC_POWER_OFFLINE;
+                        return true;
+                    }
+                }
+                uint32_t direct_val = 0;
+                const uint8_t *save = ptr;
+                if (parse_aml_integer(&ptr, end, &direct_val)) {
+                    *online = (direct_val != 0) ? AC_POWER_ONLINE : AC_POWER_OFFLINE;
+                    return true;
+                }
+                ptr = save + 1;
+                ahead++;
+            }
+        }
+    }
+    return false;
+}
+
+/* Evaluate _TMP (Temperature): returns temperature in Celsius from tenths of Kelvin */
+bool acpi_thermal_evaluate_tmp(const uint8_t *aml, size_t len, int32_t *temp_c) {
+    if (!aml || !temp_c || len < 5) return false;
+    for (size_t i = 0; i + 4 <= len; i++) {
+        if (memcmp(aml + i, "_TMP", 4) == 0) {
+            const uint8_t *ptr = aml + i + 4;
+            const uint8_t *end = aml + len;
+            if (i >= 2 && aml[i - 2] == 0x14) {
+                if (ptr < end) ptr++;
+            }
+            size_t ahead = 0;
+            while (ptr < end && ahead < 32) {
+                if (*ptr == 0xA4) {
+                    ptr++;
+                    uint32_t val = 0;
+                    if (parse_aml_integer(&ptr, end, &val)) {
+                        if (val >= 2732 && val <= 3932) {
+                            *temp_c = (int32_t)((val - 2732) / 10);
+                            return true;
+                        }
+                    }
+                }
+                uint32_t direct_val = 0;
+                const uint8_t *save = ptr;
+                if (parse_aml_integer(&ptr, end, &direct_val)) {
+                    if (direct_val >= 2732 && direct_val <= 3932) {
+                        *temp_c = (int32_t)((direct_val - 2732) / 10);
+                        return true;
+                    }
+                }
+                ptr = save + 1;
+                ahead++;
+            }
+        }
+    }
+    return false;
+}
+
 /* Status computation and clamping */
 void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint32_t rem_cap, uint32_t voltage, uint32_t full_cap, battery_status_t *out) {
     if (!out) return;
@@ -315,6 +399,20 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
     }
 
     out->voltage_mv = voltage;
+
+    /* AC Online & Thermal: derive default from state, then apply mock or ACPI */
+    if (out->state == BATTERY_STATE_CHARGING || out->state == BATTERY_STATE_FULL) {
+        out->ac_online = AC_POWER_ONLINE;
+    } else if (out->state == BATTERY_STATE_DISCHARGING) {
+        out->ac_online = AC_POWER_OFFLINE;
+    } else {
+        out->ac_online = AC_POWER_UNKNOWN;
+    }
+    if (g_mock_ac_online != AC_POWER_UNKNOWN) {
+        out->ac_online = g_mock_ac_online;
+    }
+
+    out->temperature_c = g_mock_temp_c;
 }
 
 #ifndef HOST_TEST
@@ -359,6 +457,14 @@ static bool poll_hardware_battery(battery_status_t *out) {
     /* If AML yielded valid values, compute status */
     if (has_bst && (full_cap > 0 || rem_cap > 0)) {
         acpi_battery_compute_status(bst_state, rate, rem_cap, voltage, full_cap, out);
+        uint32_t ac_on = AC_POWER_UNKNOWN;
+        if (acpi_ac_adapter_evaluate_psr(aml, len, &ac_on)) {
+            out->ac_online = ac_on;
+        }
+        int32_t tc = 0;
+        if (acpi_thermal_evaluate_tmp(aml, len, &tc)) {
+            out->temperature_c = tc;
+        }
         return true;
     }
 
@@ -386,6 +492,14 @@ static bool poll_hardware_battery(battery_status_t *out) {
         uint32_t c_volt = (uint32_t)ec_volt_lo | ((uint32_t)ec_volt_hi << 8);
 
         acpi_battery_compute_status(c_state, c_rate, c_rem, c_volt, c_full, out);
+        uint32_t ac_on = AC_POWER_UNKNOWN;
+        if (acpi_ac_adapter_evaluate_psr(aml, len, &ac_on)) {
+            out->ac_online = ac_on;
+        }
+        int32_t tc = 0;
+        if (acpi_thermal_evaluate_tmp(aml, len, &tc)) {
+            out->temperature_c = tc;
+        }
         return true;
     }
 

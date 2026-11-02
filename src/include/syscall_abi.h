@@ -142,17 +142,23 @@ _Static_assert(sizeof(fb_info_v1_t) == 40, "fb_info_v1_t size");
 
 /* Battery Status (SYS_BATTERY_GET, Syscall 103) */
 typedef struct {
-    uint32_t capacity_percent;  /* 0..100 */
-    uint32_t state;             /* 0 = Unknown, 1 = Discharging, 2 = Charging, 3 = Full */
+    uint32_t capacity_percent;    /* 0..100 */
+    uint32_t state;               /* 0 = Unknown, 1 = Discharging, 2 = Charging, 3 = Full */
     uint32_t time_remaining_mins; /* 0 if unknown/calculating */
-    uint32_t voltage_mv;        /* Optional, if available */
+    uint32_t voltage_mv;          /* Optional, if available */
+    uint32_t ac_online;           /* 0 = Offline/Battery, 1 = Online/AC, 2 = Unknown */
+    int32_t  temperature_c;       /* Current CPU/ThermalZone temp in Celsius, or 0 if unknown */
 } battery_status_t;
-_Static_assert(sizeof(battery_status_t) == 16, "battery_status_t size");
+_Static_assert(sizeof(battery_status_t) == 24, "battery_status_t size");
 
 #define BATTERY_STATE_UNKNOWN      0
 #define BATTERY_STATE_DISCHARGING  1
 #define BATTERY_STATE_CHARGING     2
 #define BATTERY_STATE_FULL         3
+
+#define AC_POWER_OFFLINE           0
+#define AC_POWER_ONLINE            1
+#define AC_POWER_UNKNOWN           2
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1

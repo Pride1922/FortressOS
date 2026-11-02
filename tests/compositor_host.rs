@@ -2861,24 +2861,32 @@ fn battery_icon_and_power_menu_lifecycle() {
         state: sys::BATTERY_STATE_CHARGING,
         time_remaining_mins: 0,
         voltage_mv: 11400,
+        ac_online: sys::AC_POWER_ONLINE,
+        temperature_c: 45,
     };
     let bat_low = sys::BatteryStatus {
         capacity_percent: 15,
         state: sys::BATTERY_STATE_DISCHARGING,
         time_remaining_mins: 45,
         voltage_mv: 10800,
+        ac_online: sys::AC_POWER_OFFLINE,
+        temperature_c: 42,
     };
     let bat_crit = sys::BatteryStatus {
         capacity_percent: 5,
         state: sys::BATTERY_STATE_DISCHARGING,
         time_remaining_mins: 15,
         voltage_mv: 10200,
+        ac_online: sys::AC_POWER_OFFLINE,
+        temperature_c: 40,
     };
     let bat_none = sys::BatteryStatus {
         capacity_percent: 0,
         state: sys::BATTERY_STATE_UNKNOWN,
         time_remaining_mins: 0,
         voltage_mv: 0,
+        ac_online: sys::AC_POWER_UNKNOWN,
+        temperature_c: 0,
     };
 
     // 1. Direct pixel rendering verification
@@ -2951,9 +2959,11 @@ fn battery_icon_and_power_menu_lifecycle() {
     wm.mouse(perf_x, perf_y, 0, &mut scene);
     assert_eq!(wm.power_profile, 0);
 
-    // Clicking outside power menu closes it
-    wm.mouse(10, 10, 1, &mut scene);
-    wm.mouse(10, 10, 0, &mut scene);
+    // Clicking "Power Settings..." inside power menu opens Power & Battery settings app (id 10)
+    let settings_link_y = pwr_rect.y + 115;
+    let act = wm.mouse(pwr_rect.x + 30, settings_link_y, 1, &mut scene);
+    wm.mouse(pwr_rect.x + 30, settings_link_y, 0, &mut scene);
+    assert_eq!(act, window::Action::OpenDesktopApp(10));
     assert!(!wm.show_power_menu);
 
     // 4. Desktop AppHost refresh polling
@@ -2966,9 +2976,42 @@ fn battery_icon_and_power_menu_lifecycle() {
     host.refresh(101, &mut wm, &mut scene);
     assert_eq!(wm.battery_status, Some(bat_low));
 
-    sys::set_mock_battery(Some(Err(-35))); // -ENODEV
+    sys::set_mock_battery(Some(Err(-35))); // -ENODEV (Desktop PC: no battery)
     host.refresh(102, &mut wm, &mut scene);
     assert_eq!(wm.battery_status, None);
+
+    // 5. Desktop PC mode without battery:
+    // Tray is compacted, clicking battery rect does NOT open power menu
+    let act_click_bat = wm.mouse(bat_rect.x + 5, bat_rect.y + 5, 1, &mut scene);
+    wm.mouse(bat_rect.x + 5, bat_rect.y + 5, 0, &mut scene);
+    assert_ne!(act_click_bat, window::Action::None); // Does not toggle power menu
+    assert!(!wm.show_power_menu);
+
+    // Clicking power icon in compacted tray directly opens Power & Battery Settings
+    let tray_w = 86;
+    let tray_x = scene.width - (tray_w + 8);
+    let pwr_icon_x = tray_x + 58;
+    let act_pwr = wm.mouse(pwr_icon_x, 14, 1, &mut scene);
+    wm.mouse(pwr_icon_x, 14, 0, &mut scene);
+    assert_eq!(act_pwr, window::Action::OpenDesktopApp(10));
+
+    // 6. Settings App: Power & Battery Page (kind: 3)
+    host.open(7, &mut wm, &mut scene); // Opens Settings
+    assert!(wm.windows.iter().any(|w| w.id == 7));
+
+    // Switch to Power & Battery tab (command 103)
+    host.pointer(7, 50, 180, &mut wm, &mut scene); // Clicks NAV[3] Power & Battery
+    assert_eq!(host.apps[0].kind, 3);
+
+    // Click "High Performance" button (command 2)
+    host.pointer(7, 400, 225, &mut wm, &mut scene);
+    assert_eq!(host.power_profile, 1);
+    assert_eq!(wm.power_profile, 1);
+
+    // Click "Balanced / Saver" button (command 1)
+    host.pointer(7, 230, 225, &mut wm, &mut scene);
+    assert_eq!(host.power_profile, 0);
+    assert_eq!(wm.power_profile, 0);
 
     sys::set_mock_battery(None);
 }

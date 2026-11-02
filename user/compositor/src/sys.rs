@@ -99,13 +99,19 @@ pub struct BatteryStatus {
     pub state: u32,
     pub time_remaining_mins: u32,
     pub voltage_mv: u32,
+    pub ac_online: u32,
+    pub temperature_c: i32,
 }
-const _: () = assert!(core::mem::size_of::<BatteryStatus>() == 16);
+const _: () = assert!(core::mem::size_of::<BatteryStatus>() == 24);
 
 pub const BATTERY_STATE_UNKNOWN: u32 = 0;
 pub const BATTERY_STATE_DISCHARGING: u32 = 1;
 pub const BATTERY_STATE_CHARGING: u32 = 2;
 pub const BATTERY_STATE_FULL: u32 = 3;
+
+pub const AC_POWER_OFFLINE: u32 = 0;
+pub const AC_POWER_ONLINE: u32 = 1;
+pub const AC_POWER_UNKNOWN: u32 = 2;
 
 #[cfg(not(test))]
 pub fn battery_get() -> Result<BatteryStatus, isize> {
@@ -126,6 +132,10 @@ static TEST_BATTERY_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::A
 static TEST_BATTERY_TIME: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 #[cfg(test)]
 static TEST_BATTERY_VOLT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(test)]
+static TEST_BATTERY_AC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(test)]
+static TEST_BATTERY_TEMP: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
 
 #[cfg(test)]
 pub fn set_mock_battery(mock: Option<Result<BatteryStatus, isize>>) {
@@ -135,6 +145,8 @@ pub fn set_mock_battery(mock: Option<Result<BatteryStatus, isize>>) {
             TEST_BATTERY_STATE.store(st.state, core::sync::atomic::Ordering::Relaxed);
             TEST_BATTERY_TIME.store(st.time_remaining_mins, core::sync::atomic::Ordering::Relaxed);
             TEST_BATTERY_VOLT.store(st.voltage_mv, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_AC.store(st.ac_online, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_TEMP.store(st.temperature_c, core::sync::atomic::Ordering::Relaxed);
         }
         Some(Err(e)) => {
             TEST_BATTERY_PERCENT.store(u32::MAX - 1, core::sync::atomic::Ordering::Relaxed);
@@ -161,6 +173,8 @@ pub fn battery_get() -> Result<BatteryStatus, isize> {
         state: TEST_BATTERY_STATE.load(core::sync::atomic::Ordering::Relaxed),
         time_remaining_mins: TEST_BATTERY_TIME.load(core::sync::atomic::Ordering::Relaxed),
         voltage_mv: TEST_BATTERY_VOLT.load(core::sync::atomic::Ordering::Relaxed),
+        ac_online: TEST_BATTERY_AC.load(core::sync::atomic::Ordering::Relaxed),
+        temperature_c: TEST_BATTERY_TEMP.load(core::sync::atomic::Ordering::Relaxed),
     })
 }
 pub fn wireless_connect(ssid: &str, password: &[u8], bssid: [u8; 6]) -> isize {

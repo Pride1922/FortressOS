@@ -918,7 +918,8 @@ impl Panel {
         let clock_pill_w = clock_tw + 20;
         let clock_pill_x = logical_width.saturating_sub(clock_pill_w) / 2;
 
-        let tray_w = 114;
+        let has_bat = wm.battery_status.is_some();
+        let tray_w = if has_bat { 114 } else { 86 };
         let tray_x = logical_width.saturating_sub(tray_w + 8);
 
         for y in clip.y..clip.y + clip.h {
@@ -993,20 +994,32 @@ impl Panel {
                     } else {
                         tray_bg
                     }
-                } else if wm.battery_status.is_some() && (9..19).contains(&ly) && (tray_x + 28..tray_x + 50).contains(&lx) {
+                } else if has_bat && (9..19).contains(&ly) && (tray_x + 28..tray_x + 50).contains(&lx) {
                     if let Some(col) = crate::ui::render_battery_pixel(lx - (tray_x + 28), ly - 9, wm.battery_status.as_ref().unwrap(), tray_bg) {
                         col
                     } else {
                         tray_bg
                     }
-                } else if (9..18).contains(&ly) && (tray_x + 54..tray_x + 65).contains(&lx) {
+                } else if has_bat && (9..18).contains(&ly) && (tray_x + 54..tray_x + 65).contains(&lx) {
                     if volume_tray_pixel(lx - (tray_x + 54), ly - 9) {
                         0xffcbd5e1
                     } else {
                         tray_bg
                     }
-                } else if (9..18).contains(&ly) && (tray_x + 72..tray_x + 81).contains(&lx) {
+                } else if has_bat && (9..18).contains(&ly) && (tray_x + 72..tray_x + 81).contains(&lx) {
                     if power_tray_pixel(lx - (tray_x + 72), ly - 9) {
+                        0xffe2e8f0
+                    } else {
+                        tray_bg
+                    }
+                } else if !has_bat && (9..18).contains(&ly) && (tray_x + 36..tray_x + 47).contains(&lx) {
+                    if volume_tray_pixel(lx - (tray_x + 36), ly - 9) {
+                        0xffcbd5e1
+                    } else {
+                        tray_bg
+                    }
+                } else if !has_bat && (9..18).contains(&ly) && (tray_x + 56..tray_x + 65).contains(&lx) {
+                    if power_tray_pixel(lx - (tray_x + 56), ly - 9) {
                         0xffe2e8f0
                     } else {
                         tray_bg
@@ -1564,7 +1577,7 @@ impl WindowManager {
             x: px * scale,
             y: 30 * scale,
             w: pw * scale,
-            h: 120 * scale,
+            h: 136 * scale,
         }
     }
 
@@ -2020,6 +2033,11 @@ impl WindowManager {
                             self.power_profile = 1;
                         }
                         s.damage(menu_r);
+                    } else if (106..132).contains(&ly) {
+                        self.show_power_menu = false;
+                        s.damage(menu_r);
+                        self.buttons = buttons;
+                        return Action::OpenDesktopApp(10);
                     }
                     self.buttons = buttons;
                     return Action::None;
@@ -2027,6 +2045,23 @@ impl WindowManager {
                     self.show_power_menu = false;
                     s.damage(menu_r);
                 }
+            }
+
+            // Power icon click in tray
+            let has_bat = self.battery_status.is_some();
+            let scale = theme::scale(s.height);
+            let tray_w = if has_bat { 114 } else { 86 };
+            let tray_x = (s.width / scale).saturating_sub(tray_w + 8);
+            let pwr_icon_x = if has_bat { tray_x + 70 } else { tray_x + 54 };
+            let pwr_btn_r = Rect {
+                x: pwr_icon_x * scale,
+                y: 7 * scale,
+                w: 16 * scale,
+                h: 14 * scale,
+            };
+            if pwr_btn_r.contains(x, y) {
+                self.buttons = buttons;
+                return Action::OpenDesktopApp(10);
             }
 
             if Self::clock_rect(s.width, s.height).contains(x, y) {
@@ -3459,6 +3494,10 @@ impl WindowManager {
                                 } else {
                                     0xff1c2128
                                 }
+                            } else if py == 106 && px >= 16 && px < bw - 16 {
+                                0xff2c313c
+                            } else if (110..128).contains(&py) && px >= 16 && px < bw - 16 {
+                                theme::text_pixel("Power Settings...", px - 16, py - 110, theme::ACCENT, 0xff1c2128)
                             } else {
                                 0xff1c2128
                             };

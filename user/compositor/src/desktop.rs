@@ -33,10 +33,15 @@ const fn control(id: u16, x: usize, y: usize, w: usize, h: usize) -> Control {
         rect: Rect { x, y, w, h },
     }
 }
-const NAV: [Control; 3] = [
+const NAV: [Control; 4] = [
     control(100, 6, 56, 168, 34),
     control(101, 6, 94, 168, 34),
     control(102, 6, 132, 168, 34),
+    control(103, 6, 170, 168, 34),
+];
+const POWER: [Control; 2] = [
+    control(1, 196, 210, 160, 32),
+    control(2, 366, 210, 160, 32),
 ];
 const APPEARANCE: [Control; 9] = [
     control(1, 196, 96, 96, 28),
@@ -87,7 +92,8 @@ impl Builtin {
         match self.kind {
             0 => &APPEARANCE,
             1 => &NETWORK,
-            _ => &CLOCK,
+            2 => &CLOCK,
+            _ => &POWER,
         }
     }
 }
@@ -164,9 +170,9 @@ pub fn parse_scan(bytes: &[u8]) -> Option<Vec<AccessPoint>> {
 pub struct AppHost {
     pub preferences: Preferences,
     pub draft: Preferences,
-    pub apps: [Builtin; 3],
+    pub apps: [Builtin; 4],
     pub status: Text<112>,
-    messages: [Text<112>; 3],
+    messages: [Text<112>; 4],
     message_page: usize,
     pub ssid: Text<32>,
     password: Text<64>,
@@ -338,6 +344,12 @@ impl AppHost {
                     size: (0, 0),
                     scroll: 0,
                 },
+                Builtin {
+                    kind: 3,
+                    focus: 0,
+                    size: (0, 0),
+                    scroll: 0,
+                },
             ],
             status: Text::from_str(
                 "Preferences persist on installed roots across reboots.",
@@ -348,6 +360,7 @@ impl AppHost {
                 ),
                 Text::from_str("Wi-Fi credentials are not stored by the desktop."),
                 Text::from_str("Choose an installed timezone and save to apply it."),
+                Text::from_str("Configure system power management and energy saving profile."),
             ],
             message_page: 0,
             ssid: Text::default(),
@@ -437,7 +450,7 @@ impl AppHost {
         };
         // If any built-in settings window (7, 8, or 9) is already open,
         // reuse the open window and switch its page in-place!
-        if let Some(open_id) = [7, 8, 9].iter().copied().find(|&oid| wm.windows.iter().any(|w| w.id == oid)) {
+        if let Some(open_id) = [7, 8, 9, 10].iter().copied().find(|&oid| wm.windows.iter().any(|w| w.id == oid)) {
             let open_idx = ui::APPS.iter().position(|a| a.id == open_id).unwrap_or(0);
             self.apps[open_idx].kind = index;
             self.apps[open_idx].focus = 0;
@@ -588,7 +601,7 @@ impl AppHost {
     fn command(&mut self, index: usize, command: u16, wm: &mut WindowManager, s: &mut Surface) {
         let kind = self.apps[index].kind;
         let id = ui::APPS[index].id;
-        if (100..103).contains(&command) {
+        if (100..104).contains(&command) {
             let target = (command - 100) as usize;
             if self.apps[index].kind != target {
                 self.apps[index].kind = target;
@@ -704,7 +717,7 @@ impl AppHost {
                 20..=23 => self.select_network(self.page * 4 + (command - 20) as usize),
                 _ => (),
             },
-            _ => match command {
+            2 => match command {
                 2 => self.save_zone(),
                 3 => {
                     self.zone = Text::from_str("UTC");
@@ -729,6 +742,22 @@ impl AppHost {
                 8 => self.sync_clock(),
                 _ => (),
             },
+            3 => match command {
+                1 => {
+                    self.power_profile = 0;
+                    wm.power_profile = 0;
+                    self.message("Power profile: Balanced / Battery Saver");
+                    s.damage(WindowManager::power_menu_rect(s.width, s.height));
+                }
+                2 => {
+                    self.power_profile = 1;
+                    wm.power_profile = 1;
+                    self.message("Power profile: High Performance");
+                    s.damage(WindowManager::power_menu_rect(s.width, s.height));
+                }
+                _ => (),
+            },
+            _ => (),
         }
     }
     #[inline(never)]
@@ -1254,6 +1283,7 @@ impl AppHost {
             "Personalization",
             "Network & Wi-Fi",
             "Time & Language",
+            "Power & Battery",
         ];
         for (i, control) in NAV.iter().enumerate() {
             c.sidebar_nav(
@@ -1331,7 +1361,7 @@ impl AppHost {
                 c.label_h(196, 350, 540, 18, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
             }
             1 => self.draw_network(c, focus),
-            _ => {
+            2 => {
                 c.label_h(196, 12, 520, 18, "Time & Language", theme::TEXT, theme::PANEL);
                 c.label_h(196, 32, 520, 18, "System clock, time synchronization, and regional timezone", theme::SUBTEXT, theme::PANEL);
 
@@ -1403,7 +1433,85 @@ impl AppHost {
 
                 c.label(196, 330, 520, self.messages[kind].as_str(), theme::MUTED);
             }
+            _ => self.draw_power(c, focus),
         }
+    }
+    fn draw_power(&self, c: &mut Canvas, focus: usize) {
+        c.label_h(196, 12, 520, 18, "Power & Battery", theme::TEXT, theme::PANEL);
+        c.label_h(196, 32, 520, 18, "Energy modes, battery charge status, and power efficiency", theme::SUBTEXT, theme::PANEL);
+
+        // Power Status Hero Card (x: 196, y: 56, w: 540, h: 96)
+        c.card(Rect { x: 196, y: 56, w: 540, h: 96 }, 0xff282828, theme::BORDER);
+
+        if let Some(ref bat) = self.battery {
+            c.battery_icon(212, 70, bat);
+
+            let mut text = Text::<64>::default();
+            let cap = bat.capacity_percent.min(100);
+            let state_str = match bat.state {
+                sys::BATTERY_STATE_CHARGING => "Charging",
+                sys::BATTERY_STATE_DISCHARGING => "Discharging",
+                sys::BATTERY_STATE_FULL => "Fully Charged",
+                _ => "Unknown",
+            };
+            let _ = write!(text, "{}% - {}", cap, state_str);
+            c.label_bold(244, 68, 480, 18, text.as_str(), 0xffffffff, 0xff282828);
+
+            // Progress bar
+            c.fill_rect(Rect { x: 212, y: 92, w: 508, h: 6 }, 0xff334155);
+            let fill_w = ((cap as usize) * 508) / 100;
+            let col = if cap < 10 { theme::RED } else if cap < 20 { theme::AMBER } else { theme::ACCENT_BLUE };
+            if fill_w > 0 {
+                c.fill_rect(Rect { x: 212, y: 92, w: fill_w, h: 6 }, col);
+            }
+
+            let mut sub = Text::<96>::default();
+            let ac_str = if bat.ac_online == sys::AC_POWER_ONLINE { "AC Connected" } else { "On Battery" };
+            if bat.time_remaining_mins > 0 {
+                let h = bat.time_remaining_mins / 60;
+                let m = bat.time_remaining_mins % 60;
+                let _ = write!(sub, "{}h {:02}m remaining   {}", h, m, ac_str);
+            } else {
+                let _ = write!(sub, "{}", ac_str);
+            }
+            if bat.temperature_c > 0 {
+                let _ = write!(sub, "   Thermal: {} C", bat.temperature_c);
+            }
+            c.label_h(212, 106, 508, 18, sub.as_str(), theme::MUTED, 0xff282828);
+        } else {
+            c.icon_badge(
+                Rect { x: 204, y: 64, w: 32, h: 28 },
+                0,
+                theme::ACCENT,
+                0xff1e2d40,
+                theme::ACCENT,
+                0xff282828,
+            );
+            c.label_bold(246, 64, 480, 18, "Connected to AC Power", 0xffffffff, 0xff282828);
+            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery installed. Continuous main power active.", theme::MUTED, 0xff282828);
+            c.label_h(246, 106, 480, 18, "Hardware power states and thermal limits managed by ACPI.", theme::SUBTEXT, 0xff282828);
+        }
+
+        // Power Profile Section
+        c.fill_rect(Rect { x: 196, y: 168, w: 540, h: 1 }, 0xff2c313c);
+        c.label_bold(196, 178, 520, 18, "Power Profile", 0xffffffff, theme::PANEL);
+        c.label_h(196, 196, 520, 18, "Balance system responsiveness and processor energy efficiency", theme::SUBTEXT, theme::PANEL);
+
+        c.button(
+            POWER[0].rect,
+            "Balanced / Saver",
+            self.power_profile == 0,
+            focus == 0,
+        );
+        c.button(
+            POWER[1].rect,
+            "High Performance",
+            self.power_profile == 1,
+            focus == 1,
+        );
+
+        c.fill_rect(Rect { x: 196, y: 260, w: 540, h: 1 }, 0xff2c313c);
+        c.label(196, 270, 520, self.messages[3].as_str(), theme::MUTED);
     }
     fn draw_network(&self, c: &mut Canvas, focus: usize) {
         let mut text = Text::<112>::default();

@@ -229,6 +229,55 @@ static void test_mock_ec_and_caching(void) {
     puts("       [PASS] Mock ACPI EC & 5-second cache validated");
 }
 
+static void test_ac_and_thermal(void) {
+    puts("[TEST 6] AC Adapter (_PSR) & Thermal Zone (_TMP) Evaluation...");
+
+    /* 1. AML fixture with _PSR (Power Source = 1: Online) */
+    uint8_t psr_online_fixture[] = {
+        '_', 'P', 'S', 'R',
+        0xA4, 0x01 /* ReturnOp, OneOp */
+    };
+    uint32_t online = 0;
+    assert(acpi_ac_adapter_evaluate_psr(psr_online_fixture, sizeof(psr_online_fixture), &online));
+    assert(online == AC_POWER_ONLINE);
+
+    /* 2. AML fixture with _PSR (Power Source = 0: Offline) */
+    uint8_t psr_offline_fixture[] = {
+        '_', 'P', 'S', 'R',
+        0xA4, 0x00 /* ReturnOp, ZeroOp */
+    };
+    assert(acpi_ac_adapter_evaluate_psr(psr_offline_fixture, sizeof(psr_offline_fixture), &online));
+    assert(online == AC_POWER_OFFLINE);
+
+    /* 3. AML fixture with _TMP (Temperature = 3000 dK -> 26°C) */
+    uint8_t tmp_fixture[] = {
+        '_', 'T', 'M', 'P',
+        0xA4, 0x0B, 0xB8, 0x0B /* ReturnOp, WordPrefix: 0x0BB8 = 3000 dK */
+    };
+    int32_t temp_c = 0;
+    assert(acpi_thermal_evaluate_tmp(tmp_fixture, sizeof(tmp_fixture), &temp_c));
+    assert(temp_c == 26); /* (3000 - 2732) / 10 = 26 */
+
+    /* 4. Thermal Zone at 50°C (3232 dK = 0x0CA0) */
+    uint8_t tmp_50_fixture[] = {
+        '_', 'T', 'M', 'P',
+        0xA4, 0x0B, 0xA0, 0x0C /* ReturnOp, WordPrefix: 3232 dK */
+    };
+    assert(acpi_thermal_evaluate_tmp(tmp_50_fixture, sizeof(tmp_50_fixture), &temp_c));
+    assert(temp_c == 50); /* (3232 - 2732) / 10 = 50 */
+
+    /* 5. Status computation integrates AC online and thermal */
+    battery_status_t st;
+    acpi_battery_reset();
+    acpi_thermal_set_mock(45);
+    acpi_ac_adapter_set_mock(AC_POWER_ONLINE);
+    acpi_battery_compute_status(0x02 /* Charging */, 1500, 4250, 11400, 5000, &st);
+    assert(st.ac_online == AC_POWER_ONLINE);
+    assert(st.temperature_c == 45);
+
+    puts("       [PASS] AC adapter and thermal zone evaluation verified");
+}
+
 int main(void) {
     puts("=== Running FortressOS ACPI Battery Verification Suite ===");
     test_percentage_calculation();
@@ -236,6 +285,7 @@ int main(void) {
     test_state_mapping();
     test_aml_parsing();
     test_mock_ec_and_caching();
+    test_ac_and_thermal();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;
 }
