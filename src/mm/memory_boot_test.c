@@ -1393,6 +1393,7 @@ void memory_cohort_test_run(size_t total_cpus) {
         tight_held++;
     }
     require_cohort(pmm_get_free_pages() <= 2, "failed to constrain free frames to 2");
+    (void)tight_held;
 
     /* Process spawn must fail cleanly under 2-frame headroom */
     tcb_t *p_oom = process_spawn_on_cpu(0, "cohort_poom",
@@ -2232,6 +2233,8 @@ void memory_kstack_profile_run(size_t total_cpus) {
     uint64_t delta_pmm_cont = pmm_cont_after >= pmm_cont_before ? (pmm_cont_after - pmm_cont_before) : 0;
     uint64_t delta_tlb_calls = tlb_after.calls >= tlb_before.calls ? (tlb_after.calls - tlb_before.calls) : 0;
     uint64_t delta_tlb_wait_cycles = tlb_after.wait_cycles >= tlb_before.wait_cycles ? (tlb_after.wait_cycles - tlb_before.wait_cycles) : 0;
+    (void)total_alloc_tsc;
+    (void)total_free_tsc;
 
     serial_puts("[KPROF_SUMMARY] cpus=");
     serial_print_dec(total_cpus);

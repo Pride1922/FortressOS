@@ -1,8 +1,14 @@
 //! Graphical Text Editor ("Notepad") for FortressOS Desktop. Runs as its
 //! own unprivileged process (src/bin/notepad.rs) and draws into a Canvas.
 
-use crate::{canvas::Canvas, clipboard, sys};
+use crate::{
+    canvas::Canvas,
+    clipboard,
+    file_dialog::{FileDialog, FileDialogAction, FileDialogMode},
+    sys,
+};
 use alloc::{string::String, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const NOTEPAD_BG: u32 = 0xff252525;
 pub const NOTEPAD_FG: u32 = 0xffe0e0e0;
@@ -22,6 +28,9 @@ pub struct Notepad {
     pub status: Option<&'static str>,
     pub cursor_visible: bool,
     ansi_state: u8,
+    pub dialog: Option<FileDialog>,
+    canvas_width: AtomicUsize,
+    canvas_height: AtomicUsize,
 }
 
 impl Notepad {
@@ -68,6 +77,9 @@ impl Notepad {
             status: None,
             cursor_visible: true,
             ansi_state: 0,
+            dialog: None,
+            canvas_width: AtomicUsize::new(480),
+            canvas_height: AtomicUsize::new(280),
         }
     }
 
@@ -269,6 +281,24 @@ impl Notepad {
     }
 
     pub fn handle_key(&mut self, b: u8) -> bool {
+        if let Some(ref mut dlg) = self.dialog {
+            match dlg.handle_key(b) {
+                Some(FileDialogAction::Save(full_path)) => {
+                    self.save_to(&full_path);
+                    self.dialog = None;
+                }
+                Some(FileDialogAction::Open(full_path)) => {
+                    self.load_from(&full_path);
+                    self.dialog = None;
+                }
+                Some(FileDialogAction::Cancel) => {
+                    self.dialog = None;
+                }
+                None => {}
+            }
+            return true;
+        }
+
         self.cursor_visible = true;
         match self.ansi_state {
             1 => {
@@ -346,8 +376,16 @@ impl Notepad {
         }
 
         if b == 19 || b == 18 {
-            // Ctrl+S / Ctrl+R
-            self.save();
+            // Ctrl+S / Ctrl+R: Quick save to current file if set, or open save dialog if empty
+            if self.path.is_empty() {
+                self.open_save_dialog();
+            } else {
+                self.save();
+            }
+            true
+        } else if b == 15 {
+            // Ctrl+O: Open file dialog
+            self.open_load_dialog();
             true
         } else if b == 1 {
             // Ctrl+A: Select all text
@@ -506,13 +544,75 @@ impl Notepad {
         target_idx.min(self.text.len())
     }
 
+    pub fn open_save_dialog(&mut self) {
+        self.dialog = Some(FileDialog::new(FileDialogMode::Save, &self.path));
+    }
+
+    pub fn open_load_dialog(&mut self) {
+        self.dialog = Some(FileDialog::new(FileDialogMode::Open, &self.path));
+    }
+
+    pub fn save_to(&mut self, path: &str) -> bool {
+        self.path.clear();
+        self.path.push_str(path);
+        self.save()
+    }
+
+    pub fn load_from(&mut self, path: &str) -> bool {
+        let fd = sys::open(path, sys::VFS_O_RDONLY as i32);
+        if fd < 0 {
+            self.status = Some("Error opening file");
+            return false;
+        }
+        self.text.clear();
+        let mut buf = [0u8; 512];
+        let mut total = 0;
+        while total < 4096 {
+            let n = sys::read(fd as i32, &mut buf);
+            if n <= 0 {
+                break;
+            }
+            let chunk = &buf[..n as usize];
+            self.text.extend_from_slice(chunk);
+            total += n as usize;
+        }
+        sys::close(fd as i32);
+        self.path.clear();
+        self.path.push_str(path);
+        self.cursor = 0;
+        self.selection_anchor = None;
+        self.modified = false;
+        self.status = Some("Opened file");
+        true
+    }
+
     /// Handles mouse clicks in client coordinates. Returns true if re-render is needed.
     pub fn handle_click(&mut self, cx: usize, cy: usize) -> bool {
         self.cursor_visible = true;
+        if let Some(ref mut dlg) = self.dialog {
+            let cw = self.canvas_width.load(Ordering::Relaxed);
+            let ch = self.canvas_height.load(Ordering::Relaxed);
+            match dlg.handle_click(cx, cy, cw, ch) {
+                Some(FileDialogAction::Save(full_path)) => {
+                    self.save_to(&full_path);
+                    self.dialog = None;
+                }
+                Some(FileDialogAction::Open(full_path)) => {
+                    self.load_from(&full_path);
+                    self.dialog = None;
+                }
+                Some(FileDialogAction::Cancel) => {
+                    self.dialog = None;
+                }
+                None => {}
+            }
+            return true;
+        }
+
         if cy <= 20 {
             // Clicked header toolbar
             if (8..=72).contains(&cx) {
-                self.save();
+                self.open_save_dialog();
                 return true;
             } else if (78..=130).contains(&cx) {
                 return self.copy_current_line();
@@ -523,6 +623,9 @@ impl Notepad {
                 return true;
             } else if (272..=318).contains(&cx) {
                 return self.cut_current_line();
+            } else if (324..=374).contains(&cx) {
+                self.open_load_dialog();
+                return true;
             }
             return false;
         }
@@ -542,7 +645,7 @@ impl Notepad {
 
     /// Handles mouse drag motion while left button is held down to select text.
     pub fn handle_drag(&mut self, cx: usize, cy: usize) -> bool {
-        if cy <= 20 {
+        if self.dialog.is_some() || cy <= 20 {
             return false;
         }
         let idx = self.index_at_pixel(cx, cy);
@@ -584,6 +687,9 @@ impl Notepad {
         if width < 30 || height < 30 {
             return;
         }
+        self.canvas_width.store(width, Ordering::Relaxed);
+        self.canvas_height.store(height, Ordering::Relaxed);
+
         let ed_bg = 0xff181b22;
         let gutter_bg = 0xff12151b;
         let hdr_bg = 0xff12151b;
@@ -606,10 +712,11 @@ impl Notepad {
         c.pill_button(136, 2, 60, 18, "Paste", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
         c.pill_button(202, 2, 64, 18, "Select", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
         c.pill_button(272, 2, 46, 18, "Cut", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
-        if width > 426 {
-            let path_w = width.saturating_sub(420);
-            c.rounded_box(324, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
-            c.text(332, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
+        c.pill_button(324, 2, 50, 18, "Open", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        if width > 450 {
+            let path_w = width.saturating_sub(444);
+            c.rounded_box(380, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
+            c.text(388, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
         }
         if self.modified && width >= 170 {
             c.pill_button(
@@ -734,6 +841,10 @@ impl Notepad {
                 0xff7e8796,
                 hdr_bg,
             );
+        }
+
+        if let Some(ref dlg) = self.dialog {
+            dlg.render(c);
         }
     }
 }

@@ -116,7 +116,10 @@ The installed image provisions four independent ordinary packages:
 | `fortress-terminal` | `/usr/bin/terminal` |
 
 Notes launches Notepad with `/tmp/notes.txt`; it has no separate executable or
-package. That default file is temporary. Save documents to persistent user storage.
+package. That default file is temporary. The application provides an integrated elevated modal
+"Open / Save" file dialog (invoked via toolbar buttons or shortcuts) featuring folder navigation,
+parent traversal, quick directory shortcuts (`/`, `/tmp`, `/home`), existing file listing, and
+filename editing to save or open documents anywhere on persistent user storage.
 
 The base retains `/bin/compositor` as the recovery UI and privileged settings
 broker. Wi-Fi drivers, firmware, networking and SSH server remain in

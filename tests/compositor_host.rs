@@ -523,6 +523,8 @@ mod font;
 mod canvas;
 #[path = "../user/compositor/src/clipboard.rs"]
 mod clipboard;
+#[path = "../user/compositor/src/file_dialog.rs"]
+mod file_dialog;
 #[path = "../user/compositor/src/notepad.rs"]
 mod notepad;
 #[path = "../user/compositor/src/theme.rs"]
@@ -3023,3 +3025,167 @@ mod clients;
 #[path = "../user/compositor/src/perf.rs"]
 #[allow(dead_code)]
 mod perf;
+
+#[test]
+fn file_dialog_navigation_and_directory_traversal() {
+    let mut dlg = file_dialog::FileDialog::new(file_dialog::FileDialogMode::Save, "/tmp/notes.txt");
+    assert_eq!(dlg.current_dir, "/tmp");
+    assert_eq!(dlg.filename, "notes.txt");
+    assert_eq!(dlg.full_path(), "/tmp/notes.txt");
+
+    // Quick navigation
+    dlg.navigate_to("/");
+    assert_eq!(dlg.current_dir, "/");
+    assert_eq!(dlg.full_path(), "/notes.txt");
+
+    dlg.navigate_to("/home/operator");
+    assert_eq!(dlg.current_dir, "/home/operator");
+    assert_eq!(dlg.full_path(), "/home/operator/notes.txt");
+
+    dlg.navigate_up();
+    assert_eq!(dlg.current_dir, "/home");
+
+    dlg.navigate_up();
+    assert_eq!(dlg.current_dir, "/");
+
+    // At root, navigate_up stays at root
+    dlg.navigate_up();
+    assert_eq!(dlg.current_dir, "/");
+}
+
+#[test]
+fn file_dialog_typing_and_file_selection() {
+    let mut dlg = file_dialog::FileDialog::new(file_dialog::FileDialogMode::Save, "/tmp/doc.txt");
+    dlg.entries.push(file_dialog::FileEntry {
+        name: String::from("projects"),
+        is_dir: true,
+        is_exe: false,
+        size: 0,
+    });
+    dlg.entries.push(file_dialog::FileEntry {
+        name: String::from("readme.txt"),
+        is_dir: false,
+        is_exe: false,
+        size: 1024,
+    });
+
+    // Test backspace
+    dlg.handle_key(0x08);
+    dlg.handle_key(0x08);
+    assert_eq!(dlg.filename, "doc.t");
+
+    // Test typing
+    dlg.handle_key(b'x');
+    dlg.handle_key(b't');
+    assert_eq!(dlg.filename, "doc.txt");
+
+    // Index 0 is ".. (Parent Dir)", Index 1 is "projects", Index 2 is "readme.txt"
+    // Clicking file entry (row 2: cy = 85 + 2 * 20 + 5 = 130) selects it and populates filename
+    dlg.handle_click(110, 130, 480, 280);
+    assert_eq!(dlg.selected, 2);
+    assert_eq!(dlg.filename, "readme.txt");
+
+    // Clicking folder entry (row 1: cy = 85 + 1 * 20 + 5 = 110) enters directory
+    dlg.handle_click(110, 110, 480, 280);
+    assert_eq!(dlg.current_dir, "/tmp/projects");
+}
+
+#[test]
+fn file_dialog_save_and_open_actions() {
+    let mut dlg = file_dialog::FileDialog::new(file_dialog::FileDialogMode::Save, "/tmp/output.log");
+
+    // Test Enter key on filename confirms Save
+    let act = dlg.handle_key(b'\n');
+    assert_eq!(act, Some(file_dialog::FileDialogAction::Save(String::from("/tmp/output.log"))));
+
+    // Test Esc key cancels
+    let act_esc = dlg.handle_key(0x1b);
+    assert_eq!(act_esc, Some(file_dialog::FileDialogAction::Cancel));
+
+    // Test Cancel button click:
+    // Canvas 480x280: mw=360, mh=210, mx=60, my=35.
+    // btn_y = 35 + 210 - 28 = 217.
+    // Cancel button: cx in mx + mw - 74..=mx + mw - 8 => 346..=412.
+    let act_cancel = dlg.handle_click(380, 225, 480, 280);
+    assert_eq!(act_cancel, Some(file_dialog::FileDialogAction::Cancel));
+
+    // Test Save button click:
+    // Save button: cx in mx + mw - 146..=mx + mw - 80 => 274..=340.
+    let act_save = dlg.handle_click(300, 225, 480, 280);
+    assert_eq!(act_save, Some(file_dialog::FileDialogAction::Save(String::from("/tmp/output.log"))));
+
+    // Test Open mode
+    let mut dlg_open = file_dialog::FileDialog::new(file_dialog::FileDialogMode::Open, "/etc/desktop.conf");
+    let act_open = dlg_open.handle_key(b'\r');
+    assert_eq!(act_open, Some(file_dialog::FileDialogAction::Open(String::from("/etc/desktop.conf"))));
+}
+
+#[test]
+fn file_dialog_rendering_and_backdrop_dimming() {
+    let dlg = file_dialog::FileDialog::new(file_dialog::FileDialogMode::Save, "/tmp/test.txt");
+    let mut pixels = vec![0xff4488ccu32; 480 * 280];
+    let mut c = canvas::Canvas::new(&mut pixels, 480, 280, 480).unwrap();
+    dlg.render(&mut c);
+
+    // Verify backdrop dimming: top-left pixel (0,0) outside modal was dimmed by half
+    // Original: 0x44 (68) -> 34, 0x88 (136) -> 68, 0xcc (204) -> 102
+    let p0 = pixels[0];
+    assert_eq!((p0 >> 16) & 0xff, 34);
+    assert_eq!((p0 >> 8) & 0xff, 68);
+    assert_eq!(p0 & 0xff, 102);
+
+    // Verify modal was drawn inside center:
+    assert!(pixels.iter().any(|&p| p == 0xff3b82f6)); // Accent border
+    assert!(pixels.iter().any(|&p| p == 0xff161d28)); // Header bg
+}
+
+#[test]
+fn notepad_file_dialog_modal_integration() {
+    let mut np = notepad::Notepad::new("/tmp/initial.txt");
+    np.text.clear();
+    np.insert_char(b'A');
+    np.insert_char(b'B');
+    assert!(np.modified);
+    assert!(np.dialog.is_none());
+
+    // Click "Save" toolbar button: cx = 20, cy = 8
+    assert!(np.handle_click(20, 8));
+    assert!(np.dialog.is_some());
+
+    // When modal is open, typing modifies the filename in the dialog
+    let dlg = np.dialog.as_ref().unwrap();
+    assert_eq!(dlg.mode, file_dialog::FileDialogMode::Save);
+    assert_eq!(dlg.current_dir, "/tmp");
+
+    // Press Esc cancels the dialog
+    assert!(np.handle_key(0x1b));
+    assert!(np.dialog.is_none());
+    assert_eq!(np.path, "/tmp/initial.txt");
+
+    // Click "Save" again to open dialog
+    assert!(np.handle_click(20, 8));
+    assert!(np.dialog.is_some());
+
+    // Type a new filename: Backspace 15 times, then type "saved.txt"
+    for _ in 0..15 {
+        np.handle_key(0x08);
+    }
+    for &ch in b"saved.txt" {
+        np.handle_key(ch);
+    }
+    assert_eq!(np.dialog.as_ref().unwrap().filename, "saved.txt");
+
+    // Press Enter to confirm Save
+    assert!(np.handle_key(b'\n'));
+    assert!(np.dialog.is_none());
+    assert_eq!(np.path, "/tmp/saved.txt");
+
+    // Click "Open" toolbar button: cx = 330, cy = 8
+    assert!(np.handle_click(330, 8));
+    assert!(np.dialog.is_some());
+    assert_eq!(np.dialog.as_ref().unwrap().mode, file_dialog::FileDialogMode::Open);
+
+    // Press Esc to dismiss Open dialog
+    assert!(np.handle_key(0x1b));
+    assert!(np.dialog.is_none());
+}

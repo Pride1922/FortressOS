@@ -1487,8 +1487,8 @@ impl AppHost {
                 theme::ACCENT,
                 0xff282828,
             );
-            c.label_bold(246, 64, 480, 18, "Connected to AC Power", 0xffffffff, 0xff282828);
-            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery installed. Continuous main power active.", theme::MUTED, 0xff282828);
+            c.label_bold(246, 64, 480, 18, "No Battery Detected", 0xffffffff, 0xff282828);
+            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery detected or ACPI probe pending.", theme::MUTED, 0xff282828);
             c.label_h(246, 106, 480, 18, "Hardware power states and thermal limits managed by ACPI.", theme::SUBTEXT, 0xff282828);
         }
 

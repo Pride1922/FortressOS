@@ -16,6 +16,8 @@ mod app;
 mod canvas;
 #[path = "../clipboard.rs"]
 mod clipboard;
+#[path = "../file_dialog.rs"]
+mod file_dialog;
 #[path = "../font.rs"]
 mod font;
 #[path = "../notepad.rs"]

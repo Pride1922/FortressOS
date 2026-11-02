@@ -210,6 +210,33 @@ acpi_sdt_header_t *acpi_find_table(const char *signature) {
     return NULL;
 }
 
+size_t acpi_get_table_count(void) {
+    if (!g_root_sdt || g_root_sdt->length < sizeof(acpi_sdt_header_t)) {
+        return 0;
+    }
+    return (g_root_sdt->length - sizeof(acpi_sdt_header_t)) / (g_is_xsdt ? 8 : 4);
+}
+
+acpi_sdt_header_t *acpi_get_table_by_index(size_t index) {
+    if (!g_root_sdt) return NULL;
+    size_t count = acpi_get_table_count();
+    if (index >= count) return NULL;
+
+    uint8_t *table_ptrs = (uint8_t *)((uint8_t *)g_root_sdt + sizeof(acpi_sdt_header_t));
+    uintptr_t phys = 0;
+    size_t ptr_size = g_is_xsdt ? 8 : 4;
+    memcpy(&phys, table_ptrs + index * ptr_size, ptr_size);
+    if (!phys) return NULL;
+
+    if (!acpi_ensure_mapped(phys, sizeof(acpi_sdt_header_t))) return NULL;
+    acpi_sdt_header_t *hdr = (acpi_sdt_header_t *)(phys + g_hhdm_offset);
+    if (hdr->length < sizeof(acpi_sdt_header_t) || hdr->length > MAX_ACPI_TABLE_SIZE) return NULL;
+    if (!acpi_ensure_mapped(phys, hdr->length)) return NULL;
+    if (!acpi_validate_checksum(hdr)) return NULL;
+
+    return hdr;
+}
+
 bool acpi_parse_madt(acpi_madt_info_t *out_info) {
     acpi_madt_t *madt = (acpi_madt_t *)acpi_find_table("APIC");
     if (!madt) return false;
