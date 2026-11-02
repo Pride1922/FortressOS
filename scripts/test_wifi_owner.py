@@ -67,6 +67,10 @@ def boot(workspace, out, firmware, cpus):
         guest.wait(lambda t:t.endswith('FortressOS login: '),timeout=90)
         guest.send('operator'); guest.wait(lambda t:t.endswith('$ '),timeout=20)
         for cpu in range(cpus): command(probe(cpu,'a'),'WIFI BSP/AP operations PASS')
+        for cpu in range(cpus):
+            command(probe(cpu,'r'),'RXDIAG unprivileged refusal PASS')
+            command('sudo '+probe(cpu,'d'),'RXDIAG root BSP/AP snapshot and bounds PASS')
+        command('sudo /bin/dmesg -n 4','[RXDIAG ARP]')
         # Pending caller on BSP/AP, interrupt/stop/death. Owner still serves
         # unrelated NETCTL queries; retained cleanup completes after interest ends.
         for signal in ('STOP','INT','KILL'):

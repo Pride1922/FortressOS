@@ -1,5 +1,6 @@
 #include "iwlwifi.h"
 #include "iwl_health.h"
+#include "../net/rx_diag.h"
 #include "../net/wlan/wlan_mgr.h"
 #include "serial.h"
 #include "vfs.h"
@@ -14,6 +15,15 @@
 static iwlwifi_state_t s_iwl_dev = {
     .lock = SPINLOCK_RANKED(2, "iwlwifi_ring"),
 };
+
+enum { RD_MPDU, RD_DATA, RD_GROUP, RD_BAD, RD_FULL, RD_QUEUED, RD_STATUS, RD_COUNT };
+static uint64_t s_rx_diag[RD_COUNT];
+size_t iwlwifi_rx_profile_format(char *out, size_t cap) {
+    static const char *const names[RD_COUNT] = {
+        "mpdu", "data", "group", "bad-status", "ring-full", "queued", "last-status"
+    };
+    return rx_diag_format(out, cap, "[RXDIAG IWL]", names, s_rx_diag, RD_COUNT);
+}
 
 static iwl_health_t s_health;   /* zero state == IWL_HEALTH_OK */
 
@@ -718,6 +728,12 @@ static void iwl_drain_rx_ring(void) {
                         if (mpdu_len >= 24 && mpdu_len <= 2036 &&
                             (uint32_t)(4u + mpdu_len + 4u) <= payload_len) {
                             uint32_t rx_status = *(const uint32_t *)(pkt->data + 4 + mpdu_len);
+                            rx_diag_inc(&s_rx_diag[RD_MPDU]);
+                            rx_diag_set(&s_rx_diag[RD_STATUS], rx_status);
+                            if ((pkt->data[4] & 0x0cu) == 0x08u) {
+                                rx_diag_inc(&s_rx_diag[RD_DATA]);
+                                if (pkt->data[8] & 1u) rx_diag_inc(&s_rx_diag[RD_GROUP]);
+                            }
                             /* Verify CRC_OK (bit 0) and OVERRUN_OK (bit 1) */
                             if ((rx_status & 0x03u) == 0x03u) {
                                 uint32_t next_rx = (s_iwl_dev.rx_head + 1) % IWL_RX_RING_SIZE;
@@ -730,8 +746,9 @@ static void iwl_drain_rx_ring(void) {
                                     dst->total_len = mpdu_len;
                                     dst->flags = IWL_PBUF_PACK_META(s_last_rx_rssi, s_last_rx_chan);
                                     s_iwl_dev.rx_head = next_rx;
-                                }
-                            }
+                                    rx_diag_inc(&s_rx_diag[RD_QUEUED]);
+                                } else rx_diag_inc(&s_rx_diag[RD_FULL]);
+                            } else rx_diag_inc(&s_rx_diag[RD_BAD]);
                         }
                     }
                 } else if (wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||

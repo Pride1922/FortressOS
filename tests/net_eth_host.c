@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <setjmp.h>
+#include <stdlib.h>
+#include "../src/net/rx_diag.h"
 #include "../src/net/net.h"
 #include "arp.h"
 #include "net_ipv4.h"
@@ -16,6 +18,23 @@ void net_udp_refresh_work(void) {}
 bool net_udp_owner_work(void) { return false; }
 #include "../src/net/poll_budget.h"
 
+static unsigned long long diag_value(const char *text, const char *key) {
+    const char *p = strstr(text, key); assert(p);
+    return strtoull(p + strlen(key), NULL, 10);
+}
+static void test_diag_bounds(void) {
+    uint64_t values[] = {0, UINT64_MAX};
+    const char *const names[] = {"zero", "max"};
+    char text[128];
+    size_t full = rx_diag_format(text, sizeof(text)-1, "[TEST]", names, values, 2);
+    text[full] = 0;
+    assert(!strcmp(text, "[TEST] zero=0 max=18446744073709551615\n"));
+    for (size_t cap = 0; cap < sizeof(text); ++cap) {
+        memset(text, 0x5a, sizeof(text));
+        size_t n = rx_diag_format(text, cap, "[TEST]", names, values, 2);
+        assert(n == (cap < full ? 0 : full) && text[cap] == 0x5a);
+    }
+}
 static net_dev_t dev;
 static bool carrier=true;
 static net_dev_t wireless, usb;
@@ -356,6 +375,25 @@ int main(void) {
         assert(returned.type==ICMP_ECHO_REPLY && returned.identifier==0x1234 &&
                returned.sequence==cycle && echo_len==4 && !memcmp(echo_data,"cold",4));
     }
+    /* Observe the actual dispatch and TX failure branches, not a mock
+     * diagnostic callback. Snapshots must not send or recycle packets. */
+    char diag[512];
+    size_t dn = net_arp_profile_format(diag, sizeof(diag)-1); diag[dn]=0;
+    unsigned long long local0=diag_value(diag,"local-request=");
+    unsigned long long ok0=diag_value(diag,"reply-tx-ok=");
+    unsigned long long fail0=diag_value(diag,"reply-tx-fail=");
+    make_arp(broadcast,false,cfg.local_ip); input();
+    fail_send=true;
+    make_arp(broadcast,false,cfg.local_ip); input();
+    fail_send=false;
+    unsigned sent0=sends, recycled0=recycles;
+    dn=net_arp_profile_format(diag,sizeof(diag)-1); diag[dn]=0;
+    assert(diag_value(diag,"local-request=")==local0+2);
+    assert(diag_value(diag,"reply-tx-ok=")==ok0+1);
+    assert(diag_value(diag,"reply-tx-fail=")==fail0+1);
+    assert(sends==sent0 && recycles==recycled0);
+    test_diag_bounds();
+    puts("RX diagnostics PASS: ARP request/reply success/failure, bounded formatting, uint64 maximum, side-effect-free snapshots");
     puts("Cold inbound LAN PASS: broadcast ARP, immediate neighbor learning, echo replies without outgoing ping (3 fresh-cache cycles)");
     test_interface_handover(cfg);
     printf("NET 3 host PASS: dispatch/recycle, cache/resolve, bounded config, timer deadline (mock scheduler); %u inputs recycled\n",recycles);

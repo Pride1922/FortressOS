@@ -868,4 +868,7 @@ int  iwlwifi_add_ba_session(uint8_t tid, uint16_t ssn, uint16_t buf_size);
 bool iwlwifi_is_detected(void);
 void iwlwifi_get_health(iwl_health_t *out);
 
+/* Atomic snapshot only; callable on any CPU, no hardware access. */
+size_t iwlwifi_rx_profile_format(char *out, size_t cap);
+
 #endif /* FORTRESS_IWLWIFI_H */

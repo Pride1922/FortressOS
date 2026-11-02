@@ -5,8 +5,11 @@
 2026-11-02 cold inbound ARP follow-up: supplied-neighbor testing isolates
 failing initial ARP from working unicast ICMP on the Dell. Intel MAC_CONTEXT
 now requests raw encrypted unicast/group delivery for FortressOS software
-crypto. Actual command-byte regression passes; physical confirmation remains
-pending. [Evidence, API reference and limits](../roadmap/wifi-cold-arp.md).
+crypto. Actual command-byte regression passes, but the latest installed ACPI
+image still fails cold ARP. On-demand, atomic receive-stage diagnostics now
+appear in `sudo dmesg -n 4`; no per-packet logging or configuration changes.
+[Physical failure and command evidence](../roadmap/wifi-cold-arp.md),
+[diagnostic stages and test sequence](../roadmap/wifi-rx-diagnostics.md).
 
 2026-11-02 installed idle/reboot follow-up: reproduced the production selector
 evicting Wi-Fi for a disconnected Ethernet device during transient offline

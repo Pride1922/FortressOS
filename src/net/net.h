@@ -33,6 +33,8 @@ void net_request_poll(void);
 /* On-demand cumulative diagnostics; no NIC access or counter reset. Thread
  * context, no locks held. Individual atomic samples, not a coherent epoch. */
 size_t net_poll_profile_format(char *out, size_t cap);
+/* Atomic diagnostic samples only, no NIC/configuration/cache access. */
+size_t net_arp_profile_format(char *out, size_t cap);
 extern const char g_net_poll_channel;
 
 /* CPU-0 owner snapshot. Application callers use net_control_call. */

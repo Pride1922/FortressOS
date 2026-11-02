@@ -105,6 +105,9 @@ static void *producer(void *arg) {
     task.tid=(uintptr_t)arg+1; cpu=task.tid%4;
     __atomic_add_fetch(&started,1,__ATOMIC_RELEASE);
     for (unsigned n=0;n<100;++n) {
+        char profile[1024];
+        size_t len=wlan_rx_profile_format(profile,sizeof(profile));
+        assert(len && len<=sizeof(profile) && profile[len-1]=='\n');
         wifi_status_t s; int64_t rc=call(SYS_WIFI_CMD_STATUS,&s,sizeof(s));
         assert(!rc || rc==SYSCALL_EAGAIN);
         if (!rc) { assert(!s.reserved); __atomic_add_fetch(&successes,1,__ATOMIC_RELAXED); }

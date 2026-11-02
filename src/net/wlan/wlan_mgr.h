@@ -72,4 +72,7 @@ bool     wlan_network_online(net_dev_t *dev);
 uint32_t wlan_link_state_abi(const net_dev_t *dev);
 void     wlan_get_stats(const net_dev_t *dev, uint64_t *rx_packets, uint64_t *tx_packets);
 
+/* Atomic snapshot only; callable on any CPU, no locks or radio access. */
+size_t wlan_rx_profile_format(char *out, size_t cap);
+
 #endif /* FORTRESS_WLAN_MGR_H */

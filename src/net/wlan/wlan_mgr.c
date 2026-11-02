@@ -1,4 +1,5 @@
 #include "wlan_mgr.h"
+#include "../rx_diag.h"
 #include "spinlock.h"
 #include "iwlwifi.h"
 #include <string.h>
@@ -11,6 +12,19 @@
 #define serial_print_dec(v) ((void)(v))
 #endif
 
+
+enum { WD_RAW, WD_GROUP, WD_TARGET, WD_OK, WD_REPLAY, WD_FAIL,
+       WD_CIPHER, WD_GTK_LEN, WD_GTK_IDX, WD_PACKET_IDX, WD_COUNT };
+enum { ED_QUEUED, ED_ARP, ED_FULL, ED_BAD, ED_COUNT };
+static uint64_t s_wlan_diag[WD_COUNT], s_eth_diag[ED_COUNT];
+size_t wlan_rx_profile_format(char *out, size_t cap) {
+    static const char *const wn[WD_COUNT] = {"raw", "group", "group-target",
+        "group-ok", "group-replay", "group-decrypt-fail", "cipher", "gtk-len",
+        "gtk-idx", "packet-key-idx"};
+    static const char *const en[ED_COUNT] = {"queued", "arp", "ring-full", "decap-fail"};
+    size_t n = rx_diag_format(out, cap, "[RXDIAG WLAN]", wn, s_wlan_diag, WD_COUNT);
+    return n + rx_diag_format(out + n, cap - n, "[RXDIAG DECAP]", en, s_eth_diag, ED_COUNT);
+}
 
 #define WLAN_RX_RING_SIZE 16
 
@@ -582,8 +596,11 @@ static void wlan_enqueue_decapsulated_rx(const uint8_t *wlan_frame, size_t wlan_
             s_rx_head = (s_rx_head + 1) % WLAN_RX_RING_SIZE;
             s_rx_count++;
             s_stats_rx_packets++;
-        }
-    }
+            rx_diag_inc(&s_eth_diag[ED_QUEUED]);
+            if (eth_len >= 14 && slot->data[12] == 0x08 && slot->data[13] == 0x06)
+                rx_diag_inc(&s_eth_diag[ED_ARP]);
+        } else rx_diag_inc(&s_eth_diag[ED_BAD]);
+    } else rx_diag_inc(&s_eth_diag[ED_FULL]);
 }
 
 int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
@@ -591,7 +608,13 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
     const ieee80211_hdr_t *hdr = (const ieee80211_hdr_t *)frame;
+    rx_diag_inc(&s_wlan_diag[WD_RAW]);
     uint8_t type = (hdr->frame_control >> 2) & 0x3;
+    if (type == IEEE80211_TYPE_DATA && (hdr->addr1[0] & 1u)) {
+        rx_diag_inc(&s_wlan_diag[WD_GROUP]);
+        if (memcmp(hdr->addr2, s_target_bssid, 6) == 0)
+            rx_diag_inc(&s_wlan_diag[WD_TARGET]);
+    }
     uint8_t subtype = (hdr->frame_control >> 4) & 0xF;
 
     /* 1. Beacon or Probe Response -> Update BSS Scan Table */
@@ -883,6 +906,14 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn[tid];
             uint64_t *bm_tracker   = is_group ? &s_gtk_rx_bitmap : &s_wpa2_sm.rx_bitmap[tid];
 
+            if (is_group) {
+                rx_diag_set(&s_wlan_diag[WD_CIPHER], s_target_group_cipher);
+                rx_diag_set(&s_wlan_diag[WD_GTK_LEN], s_wpa2_sm.gtk_len);
+                rx_diag_set(&s_wlan_diag[WD_GTK_IDX], s_wpa2_sm.gtk_idx);
+                size_t iv_offset = is_qos ? 26u : 24u;
+                if (len >= iv_offset + 4)
+                    rx_diag_set(&s_wlan_diag[WD_PACKET_IDX], frame[iv_offset + 3] >> 6);
+            }
             int dec_rc;
             if (is_group && s_target_group_cipher == 0x02) {
                 /* Mixed-Mode AP Group Cipher = TKIP (Broadcast ARP / Multicast / DHCP Offer) */
@@ -895,6 +926,9 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                                                  s_rx_unenc_frame, &unenc_len,
                                                  pn_tracker, bm_tracker);
             }
+            if (is_group)
+                rx_diag_inc(&s_wlan_diag[dec_rc == 0 ? WD_OK :
+                    (dec_rc == -2 ? WD_REPLAY : WD_FAIL)]);
             if (dec_rc == 0 && unenc_len > 0) {
                 wlan_enqueue_decapsulated_rx(s_rx_unenc_frame, unenc_len);
             }

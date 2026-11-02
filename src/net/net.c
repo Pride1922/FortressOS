@@ -1,5 +1,6 @@
 #include "net.h"
 #include "poll_budget.h"
+#include "rx_diag.h"
 #include "arp.h"
 #include "string.h"
 #include "apic.h"
@@ -63,6 +64,14 @@ size_t net_poll_profile_format(char *out, size_t cap) {
         memcpy(out+n,line,len); n+=len;
     }
     return n;
+}
+enum { AD_INPUT, AD_WRONG_IF, AD_BAD, AD_LOCAL, AD_TX_OK, AD_TX_FAIL,
+       AD_RX_REJECT, AD_COUNT };
+static uint64_t s_arp_diag[AD_COUNT];
+size_t net_arp_profile_format(char *out, size_t cap) {
+    static const char *const names[AD_COUNT] = {"input", "wrong-if", "malformed",
+        "local-request", "reply-tx-ok", "reply-tx-fail", "eth-reject"};
+    return rx_diag_format(out, cap, "[RXDIAG ARP]", names, s_arp_diag, AD_COUNT);
 }
 static const uint8_t broadcast[ETH_ALEN] = {255,255,255,255,255,255};
 
@@ -158,13 +167,17 @@ static int send_arp(net_dev_t *dev, const uint8_t *dest, uint32_t ip, bool reply
     return result ? -1 : dev->send_packet(dev,s_tx,sizeof(s_tx));
 }
 void arp_input(net_dev_t *dev, const uint8_t *payload, size_t len) {
-    if (dev!=s_if || !dev || arp_decode(payload,len,&s_arp)) return;
+    rx_diag_inc(&s_arp_diag[AD_INPUT]);
+    if (dev!=s_if || !dev) { rx_diag_inc(&s_arp_diag[AD_WRONG_IF]); return; }
+    if (arp_decode(payload,len,&s_arp)) { rx_diag_inc(&s_arp_diag[AD_BAD]); return; }
     /* Learn replies and requests targeted at our local IP per RFC 826 */
     if (s_arp.opcode==ARP_OP_REPLY || (s_arp.opcode==ARP_OP_REQUEST && s_arp.target_ip==s_config.local_ip)) {
         arp_cache_update(&s_arp_cache,s_arp.sender_ip,s_arp.sender_mac,apic_timer_get_bsp_ticks());
     }
     if (s_arp.opcode==ARP_OP_REQUEST && s_arp.target_ip==s_config.local_ip) {
-        (void)send_arp(dev,s_arp.sender_mac,s_arp.sender_ip,true);
+        rx_diag_inc(&s_arp_diag[AD_LOCAL]);
+        int rc=send_arp(dev,s_arp.sender_mac,s_arp.sender_ip,true);
+        rx_diag_inc(&s_arp_diag[rc ? AD_TX_FAIL : AD_TX_OK]);
     }
 }
 void net_input(net_dev_t *dev, pbuf_t *packet) {
@@ -176,7 +189,7 @@ void net_input(net_dev_t *dev, pbuf_t *packet) {
         eth_mac_matches(s_eth.dest,dev->mac_addr)) {
         if (s_eth.ethertype==ETHERTYPE_ARP) arp_input(dev,payload,len);
         else if (s_eth.ethertype==ETHERTYPE_IPV4) net_ipv4_input(payload,len);
-    }
+    } else rx_diag_inc(&s_arp_diag[AD_RX_REJECT]);
     dev->recycle_rx(dev,packet);
 }
 int arp_resolve(net_dev_t *dev, uint32_t ip, uint8_t out_mac[ETH_ALEN]) {

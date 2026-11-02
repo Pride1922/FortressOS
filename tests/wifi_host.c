@@ -111,6 +111,12 @@ static size_t build_mock_beacon(uint8_t *buf, const uint8_t bssid[6], const char
     return p - buf;
 }
 
+static unsigned long long diag_counter(const char *text, const char *key) {
+    const char *p = strstr(text, key);
+    assert(p);
+    return strtoull(p + strlen(key), NULL, 10);
+}
+
 static void complete_mock_handshake(const uint8_t *pmk, const uint8_t ap_bssid[6], const uint8_t anonce[32]) {
     /* 1. Build and send EAPOL M1 */
     uint8_t m1[256];
@@ -828,12 +834,44 @@ int main(void) {
         size_t btc_len = sizeof(bcast_tkip_cipher);
         assert(wlan_tkip_encrypt_frame(tkip_gtk, 1, 1, bcast_wlan_plain, (size_t)bp_len, bcast_tkip_cipher, &btc_len) == 0);
 
+        char diag[1024];
+        size_t dn = wlan_rx_profile_format(diag, sizeof(diag) - 1); diag[dn] = 0;
+        unsigned long long ok0 = diag_counter(diag, "group-ok=");
+        unsigned long long replay0 = diag_counter(diag, "group-replay=");
+        unsigned long long fail0 = diag_counter(diag, "group-decrypt-fail=");
+        unsigned long long arp0 = diag_counter(diag, " arp=");
+        uint32_t tx0 = s_mock_tx_count;
         assert(wlan_mgr_rx_raw_80211(bcast_tkip_cipher, btc_len, -45) == 0);
         rx_p = wlan_poll_rx(dev);
         assert(rx_p != NULL);
         assert(rx_p->length == sizeof(bcast_eth));
         assert(memcmp(rx_p->payload, bcast_eth, sizeof(bcast_eth)) == 0);
         wlan_recycle_rx(dev, rx_p);
+        /* The same authenticated PN is a replay; a fresh PN with a corrupt
+         * encrypted body is a decrypt failure. Neither may reach Ethernet. */
+        assert(!wlan_mgr_rx_raw_80211(bcast_tkip_cipher, btc_len, -45));
+        assert(!wlan_poll_rx(dev));
+        btc_len = sizeof(bcast_tkip_cipher);
+        assert(!wlan_tkip_encrypt_frame(tkip_gtk, 2, 1, bcast_wlan_plain,
+                                       (size_t)bp_len, bcast_tkip_cipher, &btc_len));
+        bcast_tkip_cipher[btc_len - 1] ^= 1;
+        assert(!wlan_mgr_rx_raw_80211(bcast_tkip_cipher, btc_len, -45));
+        assert(!wlan_poll_rx(dev));
+        dn = wlan_rx_profile_format(diag, sizeof(diag) - 1); diag[dn] = 0;
+        assert(diag_counter(diag, "group-ok=") == ok0 + 1);
+        assert(diag_counter(diag, "group-replay=") == replay0 + 1);
+        assert(diag_counter(diag, "group-decrypt-fail=") == fail0 + 1);
+        assert(diag_counter(diag, " arp=") == arp0 + 1);
+        assert(diag_counter(diag, "cipher=") == 2);
+        assert(diag_counter(diag, "gtk-len=") == 32);
+        assert(s_mock_tx_count == tx0); /* Snapshot never polls/sends radio. */
+        for (size_t cap = 0; cap < sizeof(diag); ++cap) {
+            memset(diag, 0x5a, sizeof(diag));
+            dn = wlan_rx_profile_format(diag, cap);
+            assert(dn <= cap && diag[cap] == 0x5a);
+            if (dn) assert(diag[dn - 1] == '\n');
+        }
+        puts("  [PASS] RX diagnostics distinguish authenticated group ARP, replay and corrupt ciphertext without radio calls");
     }
     printf("  [PASS] Mixed-mode TKIP group broadcast ARP frame decryption verified\n");
 

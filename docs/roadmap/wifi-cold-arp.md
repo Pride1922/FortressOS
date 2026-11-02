@@ -84,3 +84,25 @@ Final candidate gate: raw image BIOS/UEFI SMP=4 boot smoke PASS 2/2, with
 no installation target attached and unchanged image SHA-256. Two owned
 disposable image duplicates were removed; one disk image remains. Physical
 Intel cold-ARP validation of this candidate remains pending.
+
+## Physical follow-up: latest ACPI image still fails
+
+The user confirmed installation of the latest ACPI/desktop image (SHA-256
+`13283ee703b3fe9dfefc099a1ac3e2a81ef5f43d63c1be0f9357203ccfe88a9e`) and
+unchanged FortressOS address `192.168.0.194/24`. After deleting the Bazzite
+neighbor entry, ordinary ping again received no replies. The firmware-filter
+correction is therefore insufficient; cold inbound ARP remains **FAIL**.
+
+A measured follow-up used `arping -b -I wlo1 -c 10 -w 12 192.168.0.194`
+on Bazzite: ten broadcast requests, zero responses. User-reported FortressOS
+`ifconfig` counters changed from RX 43 / TX 8 to RX 79 / TX 8. These RX counters
+increment after successful 802.11 decapsulation and queue admission, not at raw
+Intel DMA reception. The increase proves some Ethernet traffic was admitted
+during the interval, but does not identify it as the ARP probes; unrelated
+broadcast/multicast traffic is not excluded. Unchanged TX provides no evidence
+of transmitted ARP replies.
+
+Existing diagnostics do not distinguish raw group reception, GTK authentication
+or replay rejection, successful ARP decapsulation, and network-stack dispatch.
+Stage-specific bounded diagnostics are needed before attributing the physical
+failure to one of those stages or publishing another purported fix.

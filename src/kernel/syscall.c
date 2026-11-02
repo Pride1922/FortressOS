@@ -1214,12 +1214,23 @@ static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
 
     /* On-demand snapshot only; syscall entry keeps IRQs masked on BSP. No
      * hot-path output, new syscall or network configuration semantics. */
+    char profile[1024];
     if (cpu_current()->id==0) {
-        char profile[1024];
         size_t n=net_poll_profile_format(profile,sizeof(profile));
         dmesg_append_str(profile,n);
     }
-    return (int64_t)dmesg_read((char *)user_buf, (size_t)cap);
+    /* These formatters read only individually atomic counters. Unlike the
+     * legacy polling profile, RX diagnostics are available on BSP and AP.
+     * Append to this caller's validated output, never to the shared log ring
+     * from an AP. No new writer or serialization assumptions for dmesg. */
+    size_t diag=iwlwifi_rx_profile_format(profile,sizeof(profile));
+    diag+=wlan_rx_profile_format(profile+diag,sizeof(profile)-diag);
+    diag+=net_arp_profile_format(profile+diag,sizeof(profile)-diag);
+    if (cap<=diag) return (int64_t)dmesg_read((char *)user_buf,(size_t)cap);
+    size_t n=dmesg_read((char *)user_buf,(size_t)cap-diag-1);
+    if (n && ((char *)user_buf)[n-1]!='\n') ((char *)user_buf)[n++]='\n';
+    memcpy((char *)user_buf+n,profile,diag);
+    return (int64_t)(n+diag);
 }
 
 static int64_t sys_net_ifset(uintptr_t user_config, uint64_t size) {

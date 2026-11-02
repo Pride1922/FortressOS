@@ -23,10 +23,38 @@ static wifi_scan_result_t scan;
 static wifi_status_t status;
 static const wifi_status_t readonly_status={0};
 static uint8_t firmware[96]={[4]=0x49,[5]=0x57,[6]=0x4c,[7]=0x0a,[88]=18};
+static char diagnostic[DMESG_SIZE+16];
+static bool contains(const char *p,size_t n,const char *needle) {
+    for (size_t i=0;i<n;++i) {
+        size_t j=0; while (needle[j] && i+j<n && p[i+j]==needle[j]) ++j;
+        if (!needle[j]) return true;
+    }
+    return false;
+}
 int wifi_owner_main(int argc,char **argv) {
     CHECK(argc>=4);
     CHECK(observe(0)==argv[2][0]-'0');
     char mode=argv[3][0];
+    if (mode=='r') {
+        CHECK(sc(SYS_DMESG,(uintptr_t)diagnostic,sizeof(diagnostic),0)==SYSCALL_EPERM);
+        say("RXDIAG unprivileged refusal PASS\n"); return 0;
+    }
+    if (mode=='d') {
+        CHECK(!sc(SYS_DMESG,0,0,0));
+        CHECK(sc(SYS_DMESG,0,1024,0)==SYSCALL_EFAULT);
+        for (size_t i=0;i<sizeof(diagnostic);++i) diagnostic[i]=0x5a;
+        long n=sc(SYS_DMESG,(uintptr_t)diagnostic,sizeof(diagnostic),0);
+        CHECK(n>0 && n<=DMESG_SIZE);
+        CHECK(contains(diagnostic,(size_t)n,"[RXDIAG IWL]"));
+        CHECK(contains(diagnostic,(size_t)n,"[RXDIAG WLAN]"));
+        CHECK(contains(diagnostic,(size_t)n,"[RXDIAG DECAP]"));
+        CHECK(contains(diagnostic,(size_t)n,"[RXDIAG ARP]"));
+        for (size_t i=DMESG_SIZE;i<sizeof(diagnostic);++i) CHECK(diagnostic[i]==0x5a);
+        diagnostic[8]=0x5a;
+        n=sc(SYS_DMESG,(uintptr_t)diagnostic,8,0);
+        CHECK(n>=0 && n<=8 && diagnostic[8]==0x5a);
+        say("RXDIAG root BSP/AP snapshot and bounds PASS\n"); return 0;
+    }
     if (mode=='h') { CHECK(!observe(1)); return 0; }
     if (mode=='u') { CHECK(!observe(2)); return 0; }
     if (mode=='p') { CHECK(observe(3)>0); return 0; }
