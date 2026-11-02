@@ -13,9 +13,10 @@ static char disk[8192], temporary[8192];
 static size_t temporary_len, read_offset;
 static unsigned connects, spawns, syncs;
 static unsigned radio_state = WIFI_STATUS_IDLE;
-static bool short_write, fail_write, fail_rename;
+static bool short_write, fail_write, fail_rename, volatile_filesystem;
 static long fixture_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (nr == SYS_OPEN) {
+        if (!strcmp((char *)a, "/etc/network")) { assert(b==0); return 5; }
         if (!strcmp((char *)a, "/etc/network/wlan.conf")) {
             assert(b == 0); read_offset = 0; return 3;
         }
@@ -39,9 +40,9 @@ static long fixture_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         temporary_len += n; temporary[temporary_len] = 0; return (long)n;
     }
     if (nr == SYS_FCHMOD) { assert(a == 4 && b == 0600); return 0; }
-    if (nr == SYS_FSYNC) { assert(a == 4); return 0; }
+    if (nr == SYS_FSYNC) { assert(a == 4 || a == 5); if (a==5) syncs++; return volatile_filesystem ? SYSCALL_EOPNOTSUPP : 0; }
     if (nr == SYS_CLOSE || nr == SYS_MKDIR || nr == SYS_UNLINK || nr == SYS_NANOSLEEP) return 0;
-    if (nr == SYS_SYNC) { syncs++; return 0; }
+    if (nr == SYS_SYNC) { assert(!"profile save must not flush unrelated mounts"); return SYSCALL_EIO; }
     if (nr == SYS_RENAME_REPLACE) {
         assert(!strcmp((char *)b, "/etc/network/wlan.conf"));
         if (fail_rename) return -1;
@@ -79,6 +80,10 @@ int main(void) {
     assert(!do_save("Halloween", "SavedSecret2026", NULL, NULL, NULL));
     assert(strstr(disk, "psk=\"SavedSecret2026\""));
     assert(syncs == 1);
+    volatile_filesystem=true;
+    assert(!do_save("Halloween", "SavedSecret2026", NULL, NULL, NULL));
+    assert(strstr(disk,"Halloween"));
+    volatile_filesystem=false;
     /* Reboot: discard all process state, then execute the boot service CLI. */
     memset(s_saved_nets, 0, sizeof(s_saved_nets)); s_saved_count = 0;
     s_fw_loaded = true; /* Radio firmware mocked ready. */

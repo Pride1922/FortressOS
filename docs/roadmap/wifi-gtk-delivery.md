@@ -38,14 +38,23 @@ now explicitly supply a CCMP GTK instead of retaining that impossible success.
 
 ## Saved profile failure
 
-The physical session also reports failed profile saving. The actual current
-published live image, under BIOS USB snapshot with operator login, successfully
-saves both direct `wifi save` and `sudo wifi save` synthetic profiles. This does
-not establish the physical failure's cause. CLI errors now identify create,
-chmod, write, fsync, close, rename or global sync stage and numeric return code,
-without printing profile contents or credentials. Atomic replacement, private
-permissions and checked durability behavior remain unchanged. Live /etc is
-volatile; installed-root boot persistence still needs separate physical testing.
+The physical session also reports failed profile saving. A BIOS USB snapshot
+initially saved direct/operator and sudo profiles successfully. The release UEFI
+USB test then reproduced a failure precisely at global SYS_SYNC (-11), after
+successful private write and atomic replacement. That proves this software
+failure mode, not that the physical laptop necessarily returned the same errno.
+The previous command flushed every mounted filesystem, allowing unrelated disk
+errors to report a profile write failure.
+
+The CLI now fsyncs the retained `/etc/network` directory after rename instead of
+calling global sync. The existing EXT4 fsync implementation explicitly accepts
+directory descriptors and commits that mount; installed-root durability is not
+skipped. Volatile ETCFS reports EOPNOTSUPP for both file and directory fsync.
+Other file/directory flush errors and close errors remain failures. No unrelated
+mount flush is requested. CLI errors identify the failing stage and numeric code
+without credentials. Host tests assert no SYS_SYNC call and cover both supported
+and unsupported scoped fsync. Live /etc remains volatile; installed-root reboot
+persistence still needs separate physical testing.
 
 Evidence: `build/wifi-gtk-evidence/`, including the failing old regression,
 ASan/UBSan suites, strict handshake tests, profile save/load tests and stack

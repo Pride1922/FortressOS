@@ -578,8 +578,16 @@ static bool save_all_networks(void) {
     }
     if (!ok) (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)temporary, 0, 0);
     if (!ok) return false;
-    rc = WIFI_SYSCALL(SYS_SYNC, 0, 0, 0);
-    return rc == 0 ? true : save_error("sync filesystems", rc);
+    /* Commit the rename on the profile's filesystem, rather than flushing
+     * unrelated disks. EXT4 fsync supports directory descriptors; volatile
+     * ETCFS explicitly returns EOPNOTSUPP, as for the staged file above. */
+    int directory = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network", 0, 0);
+    if (directory < 0) return save_error("open profile directory", directory);
+    rc = WIFI_SYSCALL(SYS_FSYNC, directory, 0, 0);
+    long closed = WIFI_SYSCALL(SYS_CLOSE, directory, 0, 0);
+    if (rc != 0 && rc != SYSCALL_EOPNOTSUPP) return save_error("flush profile directory", rc);
+    if (closed != 0) return save_error("close profile directory", closed);
+    return true;
 }
 
 static int do_list(void) {
