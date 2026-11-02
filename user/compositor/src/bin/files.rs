@@ -14,6 +14,8 @@ mod allocator;
 mod app;
 #[path = "../canvas.rs"]
 mod canvas;
+#[path = "../clipboard.rs"]
+mod clipboard;
 #[path = "../font.rs"]
 mod font;
 #[path = "../files.rs"]
@@ -151,6 +153,10 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                     Some(b'k' | b'K' | b'w' | b'W') => {
                         fm.selected = fm.selected.saturating_sub(1);
                         true
+                    }
+                    Some(3) => {
+                        let _ = fm.copy_selected_path();
+                        false
                     }
                     _ => false,
                 }

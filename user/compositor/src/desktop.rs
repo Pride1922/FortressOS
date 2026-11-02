@@ -494,18 +494,57 @@ impl AppHost {
             }
             match (kind, focus) {
                 (1, 5) => {
-                    if self.ssid.edit(byte) {
+                    let edited = match byte {
+                        3 => {
+                            let _ = crate::clipboard::set(self.ssid.as_str());
+                            false
+                        }
+                        24 => {
+                            if crate::clipboard::set(self.ssid.as_str()) {
+                                self.ssid.clear();
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        22 => crate::clipboard::get()
+                            .map(|clip| self.ssid.paste(&clip))
+                            .unwrap_or(false),
+                        _ => self.ssid.edit(byte),
+                    };
+                    if edited {
                         self.selected = usize::MAX;
                         self.password.clear();
                         self.show_password = false;
                     }
                 }
                 (1, 6) => {
-                    self.password.edit(byte);
+                    if byte == 22 {
+                        if let Some(clip) = crate::clipboard::get() {
+                            self.password.paste(&clip);
+                        }
+                    } else {
+                        self.password.edit(byte);
+                    }
                 }
-                (2, 1) => {
-                    self.zone.edit(byte);
-                }
+                (2, 1) => match byte {
+                    3 => {
+                        let _ = crate::clipboard::set(self.zone.as_str());
+                    }
+                    24 => {
+                        if crate::clipboard::set(self.zone.as_str()) {
+                            self.zone.clear();
+                        }
+                    }
+                    22 => {
+                        if let Some(clip) = crate::clipboard::get() {
+                            self.zone.paste(&clip);
+                        }
+                    }
+                    _ => {
+                        self.zone.edit(byte);
+                    }
+                },
                 _ => (),
             }
             return;

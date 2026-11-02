@@ -76,6 +76,7 @@ def main():
             'dhcpc.service': 'Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n',
             'ntpd.service': 'Exec=/sbin/ntpd -f pool.ntp.org\nOrder=15\nEnabled=yes\nRestart=on-failure\nTimeoutStop=2\n',
             'sshd.service': 'Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=10\n',
+            'clipboard.service': 'Exec=/sbin/clipboardd\nOrder=25\nEnabled=yes\nType=simple\nRestart=on-failure\nRestartLimit=3\nRestartDelay=2\nTimeoutStop=2\n',
             'crond.service': 'Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n',
         }
         for svc_file, svc_content in default_services.items():

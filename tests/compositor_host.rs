@@ -521,6 +521,8 @@ mod files;
 mod font;
 #[path = "../user/compositor/src/canvas.rs"]
 mod canvas;
+#[path = "../user/compositor/src/clipboard.rs"]
+mod clipboard;
 #[path = "../user/compositor/src/notepad.rs"]
 mod notepad;
 #[path = "../user/compositor/src/theme.rs"]
@@ -2432,4 +2434,68 @@ fn ev_key_backward_compatibility_for_byte_consumers() {
     assert_eq!(from_ascii.keycode, proto::KEY_Q);
     assert_eq!(from_ascii.modifiers, MOD_SHIFT);
     assert_eq!(from_ascii.state, KEY_STATE_PRESS);
+}
+
+#[test]
+fn clipboard_history_notepad_files_and_settings_integration() {
+    clipboard::clear();
+    assert_eq!(clipboard::get(), None);
+    assert_eq!(clipboard::history_count(), 0);
+
+    // 1. History ring stores up to 8 deduplicated entries
+    assert!(clipboard::set("first-entry"));
+    assert!(clipboard::set("second-entry"));
+    assert!(clipboard::set("second-entry")); // duplicate top is deduplicated
+    assert_eq!(clipboard::history_count(), 2);
+    assert_eq!(clipboard::get().as_deref(), Some("second-entry"));
+    assert_eq!(clipboard::history_get(0).as_deref(), Some("second-entry"));
+    assert_eq!(clipboard::history_get(1).as_deref(), Some("first-entry"));
+
+    // 2. Notepad Ctrl+C, Ctrl+X, Ctrl+V, and toolbar Copy/Paste buttons
+    let mut np = notepad::Notepad::new("/tmp/clip.txt");
+    np.text = b"Alpha Line\nBeta Line\n".to_vec();
+    np.cursor = 2; // Inside "Alpha Line"
+    assert!(np.handle_key(3)); // Ctrl+C copies "Alpha Line"
+    assert_eq!(clipboard::get().as_deref(), Some("Alpha Line"));
+
+    // Move cursor to end and press Ctrl+V (22)
+    np.cursor = np.text.len();
+    assert!(np.handle_key(22));
+    assert_eq!(np.text, b"Alpha Line\nBeta Line\nAlpha Line");
+
+    // Move cursor to "Beta Line" and press Ctrl+X (24)
+    np.cursor = 12;
+    assert!(np.handle_key(24));
+    assert_eq!(clipboard::get().as_deref(), Some("Beta Line"));
+    assert_eq!(np.text, b"Alpha Line\nAlpha Line");
+
+    // Toolbar Copy (x=90, y=8) and Paste (x=150, y=8)
+    np.cursor = 0;
+    assert!(np.handle_click(90, 8)); // Copy "Alpha Line"
+    assert_eq!(clipboard::get().as_deref(), Some("Alpha Line"));
+    np.cursor = np.text.len();
+    assert!(np.handle_click(150, 8)); // Paste at end
+    assert_eq!(np.text, b"Alpha Line\nAlpha LineAlpha Line");
+
+    // 3. FileManager copy_selected_path (Ctrl+C)
+    let mut fm = files::FileManager::new("/etc");
+    fm.entries.push(files::FileEntry {
+        name: alloc::string::String::from("desktop.conf"),
+        is_dir: false,
+        is_exe: false,
+        size: 42,
+    });
+    fm.selected = fm.entries.len() - 1;
+    assert!(fm.copy_selected_path());
+    assert_eq!(clipboard::get().as_deref(), Some("/etc/desktop.conf"));
+
+    // 4. Settings Ctrl+V paste into focused text controls (Timezone)
+    let mut s = Surface::new(800, 600).unwrap();
+    let mut wm = WindowManager::new(&mut s);
+    let mut host = desktop::AppHost::load(true).unwrap();
+    host.open(9, &mut wm, &mut s); // Time & Language (focus=0 -> id=1 zone input)
+    assert!(clipboard::set("Europe/Paris"));
+    host.zone.clear();
+    host.key(9, 22, &mut wm, &mut s); // Ctrl+V pastes into zone
+    assert_eq!(host.zone.as_str(), "Europe/Paris");
 }

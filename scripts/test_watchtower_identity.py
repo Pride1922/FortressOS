@@ -55,7 +55,7 @@ def fixture(tmp,ssh_daemon=None):
     with tarfile.open(ROOT/'bin/initramfs.tar','r:') as src,tarfile.open(archive,'w',format=tarfile.USTAR_FORMAT) as dst:
         for entry in src:
             name=entry.name.removeprefix('./')
-            if name in replacements:continue
+            if name in replacements or name=='etc/watchtower/base-confirm.service':continue
             dst.addfile(entry,src.extractfile(entry) if entry.isfile() else None)
         for name,(data,mode) in replacements.items():
             entry=tarfile.TarInfo(name);entry.size=len(data);entry.mode=mode

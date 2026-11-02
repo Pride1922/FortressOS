@@ -404,6 +404,40 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isi
     }
 }
 
+pub fn mkdir(path: &str, mode: usize) -> isize {
+    path_call(11 /* SYS_MKDIR */, path, None, mode)
+}
+
+pub fn chmod(path: &str, mode: usize) -> isize {
+    path_call(59 /* SYS_CHMOD */, path, None, mode)
+}
+
+pub fn unlink(path: &str) -> isize {
+    path_call(12 /* SYS_UNLINK */, path, None, 0)
+}
+
+pub fn clipboard_write(path: &str, bytes: &[u8]) -> Result<(), isize> {
+    let fd = path_call(
+        SYS_OPEN,
+        path,
+        None,
+        (VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_CLOEXEC as u32) as usize,
+    );
+    if fd < 0 {
+        return Err(fd);
+    }
+    let _ = unsafe { syscall2(60 /* SYS_FCHMOD */, fd as usize, 0o666) };
+    let ok = write_all(fd as i32, bytes);
+    let closed = close(fd as i32);
+    if !ok {
+        Err(-9)
+    } else if closed < 0 {
+        Err(closed)
+    } else {
+        Ok(())
+    }
+}
+
 /// System files the unprivileged desktop may change, only through the root
 /// settings helper (`compositor --settings-broker`) once privileges dropped.
 pub const SETTING_PREFERENCES: u8 = 1;

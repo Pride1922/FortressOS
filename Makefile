@@ -1527,6 +1527,7 @@ $(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/composit
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/notepad $(BUILD_DIR)/notepad.elf
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/files $(BUILD_DIR)/files.elf
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/terminal $(BUILD_DIR)/terminal.elf
+	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/clipboardd $(BUILD_DIR)/clipboardd.elf
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt assets/desktop.conf
@@ -1538,6 +1539,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/initramfs/bin/notepad
 	@cp -f $(BUILD_DIR)/files.elf $(BUILD_DIR)/initramfs/bin/files
 	@cp -f $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/initramfs/bin/terminal
+	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/sbin/clipboardd
+	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/bin/clipboard
 	@cp -f assets/desktop.conf $(BUILD_DIR)/initramfs/etc/desktop.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/usr/share/licenses/compositor
 	@cp -f $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt $(BUILD_DIR)/initramfs/usr/share/licenses/compositor/DejaVu-LICENSE.txt
@@ -1622,6 +1625,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
 	@printf "Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/sshd.service
 	@printf "Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/crond.service
+	@printf "Exec=/sbin/clipboardd\nOrder=25\nEnabled=yes\nType=simple\nRestart=on-failure\nRestartLimit=3\nRestartDelay=2\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/clipboard.service
 	@printf "Exec=/sbin/ntpd -f pool.ntp.org\nOrder=15\nEnabled=yes\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/ntpd.service
 	@printf "# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n" > $(BUILD_DIR)/initramfs/etc/crontab
 	@printf "/var/log/messages {\n    size 10M\n    rotate 4\n    compress\n    missingok\n}\n" > $(BUILD_DIR)/initramfs/etc/logrotate.conf

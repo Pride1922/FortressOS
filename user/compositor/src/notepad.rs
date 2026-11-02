@@ -1,7 +1,7 @@
 //! Graphical Text Editor ("Notepad") for FortressOS Desktop. Runs as its
 //! own unprivileged process (src/bin/notepad.rs) and draws into a Canvas.
 
-use crate::{canvas::Canvas, sys};
+use crate::{canvas::Canvas, clipboard, sys};
 use alloc::{string::String, vec::Vec};
 
 pub const NOTEPAD_BG: u32 = 0xff252525;
@@ -231,6 +231,15 @@ impl Notepad {
             // Ctrl+S / Ctrl+R
             self.save();
             true
+        } else if b == 3 {
+            // Ctrl+C: Copy current line (or buffer) to clipboard
+            self.copy_current_line()
+        } else if b == 24 {
+            // Ctrl+X: Cut current line to clipboard
+            self.cut_current_line()
+        } else if b == 22 {
+            // Ctrl+V: Paste from clipboard at cursor
+            self.paste_clipboard()
         } else if b == 0x08 || b == 127 {
             // Backspace
             self.delete_back();
@@ -255,15 +264,91 @@ impl Notepad {
         }
     }
 
+    pub fn current_line_bounds(&self) -> (usize, usize) {
+        let mut start = self.cursor.min(self.text.len());
+        while start > 0 && self.text[start - 1] != b'\n' {
+            start -= 1;
+        }
+        let mut end = self.cursor.min(self.text.len());
+        while end < self.text.len() && self.text[end] != b'\n' {
+            end += 1;
+        }
+        (start, end)
+    }
+
+    pub fn copy_current_line(&mut self) -> bool {
+        let (start, end) = self.current_line_bounds();
+        let slice = if start < end {
+            &self.text[start..end]
+        } else {
+            &self.text[..]
+        };
+        if let Ok(s) = core::str::from_utf8(slice) {
+            if clipboard::set(s) {
+                self.status = Some("Copied to clipboard");
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn cut_current_line(&mut self) -> bool {
+        if self.text.is_empty() {
+            return false;
+        }
+        let (start, mut end) = self.current_line_bounds();
+        let slice = &self.text[start..end];
+        if let Ok(s) = core::str::from_utf8(slice) {
+            let _ = clipboard::set(s);
+        }
+        if end < self.text.len() && self.text[end] == b'\n' {
+            end += 1;
+        }
+        if start < end {
+            self.text.drain(start..end);
+            self.cursor = start.min(self.text.len());
+            self.modified = true;
+            self.status = Some("Cut to clipboard");
+            return true;
+        }
+        false
+    }
+
+    pub fn paste_clipboard(&mut self) -> bool {
+        let Some(clip) = clipboard::get() else {
+            return false;
+        };
+        let mut inserted = false;
+        for &b in clip.as_bytes() {
+            if self.text.len() >= 4096 {
+                break;
+            }
+            if (32..=126).contains(&b) || b == b'\n' {
+                let pos = self.cursor.min(self.text.len());
+                self.text.insert(pos, b);
+                self.cursor += 1;
+                inserted = true;
+            }
+        }
+        if inserted {
+            self.modified = true;
+            self.status = Some("Pasted from clipboard");
+        }
+        inserted
+    }
+
     /// Handles mouse clicks in client coordinates. Returns true if re-render is needed.
     pub fn handle_click(&mut self, cx: usize, cy: usize) -> bool {
         self.cursor_visible = true;
         if cy <= 20 {
             // Clicked header toolbar
-            if cx >= 8 && cx <= 76 {
-                // Clicked [S] Save
+            if (8..=72).contains(&cx) {
                 self.save();
                 return true;
+            } else if (78..=130).contains(&cx) {
+                return self.copy_current_line();
+            } else if (136..=196).contains(&cx) {
+                return self.paste_clipboard();
             }
             return false;
         }
@@ -335,11 +420,13 @@ impl Notepad {
         // Header toolbar (22px)
         c.fill_rect(0, 0, width, 22, hdr_bg);
         c.fill_rect(0, 22, width, 1, 0xff28303e);
-        c.pill_button(8, 2, 68, 18, "Save", 0xffffffff, 0xff1e385b, 0xff3b82f6, hdr_bg);
-        if width > 190 {
-            let path_w = width.saturating_sub(184);
-            c.rounded_box(82, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
-            c.text(90, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
+        c.pill_button(8, 2, 64, 18, "Save", 0xffffffff, 0xff1e385b, 0xff3b82f6, hdr_bg);
+        c.pill_button(78, 2, 52, 18, "Copy", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        c.pill_button(136, 2, 60, 18, "Paste", 0xffd5deeb, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        if width > 310 {
+            let path_w = width.saturating_sub(304);
+            c.rounded_box(202, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
+            c.text(210, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
         }
         if self.modified && width >= 170 {
             c.pill_button(

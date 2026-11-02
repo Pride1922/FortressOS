@@ -14,6 +14,8 @@ mod allocator;
 mod app;
 #[path = "../canvas.rs"]
 mod canvas;
+#[path = "../clipboard.rs"]
+mod clipboard;
 #[path = "../font.rs"]
 mod font;
 #[path = "../notepad.rs"]

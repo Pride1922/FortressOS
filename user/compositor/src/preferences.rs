@@ -144,6 +144,20 @@ impl<const N: usize> Text<N> {
             _ => false,
         }
     }
+    pub fn paste(&mut self, value: &str) -> bool {
+        let mut changed = false;
+        for &b in value.as_bytes() {
+            if b == b'\n' || b == b'\r' {
+                break;
+            }
+            if (32..=126).contains(&b) && self.len < N {
+                self.bytes[self.len] = b;
+                self.len += 1;
+                changed = true;
+            }
+        }
+        changed
+    }
 }
 impl<const N: usize> Write for Text<N> {
     fn write_str(&mut self, value: &str) -> fmt::Result {

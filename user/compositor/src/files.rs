@@ -2,7 +2,7 @@
 //! own unprivileged process (src/bin/files.rs) and draws into a Canvas;
 //! file names come from disk and are untrusted.
 
-use crate::{canvas::Canvas, sys};
+use crate::{canvas::Canvas, clipboard, sys};
 use alloc::{string::String, vec::Vec};
 
 pub const FILES_BG: u32 = 0xff252525;
@@ -149,6 +149,38 @@ impl FileManager {
             }
             full.push_str(&entry.name);
             Some(full)
+        }
+    }
+
+    pub fn selected_full_path(&self) -> Option<String> {
+        if self.selected >= self.entries.len() {
+            let mut cur = String::new();
+            let _ = cur.try_reserve_exact(self.current_path.len());
+            cur.push_str(&self.current_path);
+            return Some(cur);
+        }
+        let entry = &self.entries[self.selected];
+        if entry.name.starts_with("..") {
+            let mut cur = String::new();
+            let _ = cur.try_reserve_exact(self.current_path.len());
+            cur.push_str(&self.current_path);
+            return Some(cur);
+        }
+        let mut full = String::new();
+        let _ = full.try_reserve_exact(self.current_path.len() + entry.name.len() + 2);
+        full.push_str(&self.current_path);
+        if !self.current_path.ends_with('/') {
+            full.push('/');
+        }
+        full.push_str(&entry.name);
+        Some(full)
+    }
+
+    pub fn copy_selected_path(&self) -> bool {
+        if let Some(path) = self.selected_full_path() {
+            clipboard::set(&path)
+        } else {
+            false
         }
     }
 

@@ -14,6 +14,8 @@ mod allocator;
 mod app;
 #[path = "../canvas.rs"]
 mod canvas;
+#[path = "../clipboard.rs"]
+mod clipboard;
 #[path = "../font.rs"]
 mod font;
 #[path = "../terminal.rs"]
@@ -130,8 +132,13 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
     loop {
         match app.wait(master) {
             Wait::Event(Event::Configure) => resize(&mut app, &mut term, master),
-            // Raw bytes, unchanged: Ctrl+C, escape sequences and UTF-8 are
-            // the shell's (and the PTY line discipline's) business.
+            // Ctrl+V pastes from the system clipboard; all other bytes (including
+            // Ctrl+C / 0x03 SIGINT) are forwarded to the PTY master unchanged.
+            Wait::Event(Event::Key(22)) => {
+                if let Some(clip) = clipboard::get() {
+                    let _ = sys::write_all(master, clip.as_bytes());
+                }
+            }
             Wait::Event(Event::Key(b)) => {
                 let _ = sys::write(master, &[b]);
             }

@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod allocator;
 mod bench;
+mod clipboard;
 mod panic;
 mod clients;
 mod perf;
