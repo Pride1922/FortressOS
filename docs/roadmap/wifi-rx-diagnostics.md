@@ -72,3 +72,42 @@ clamping and small-buffer canaries, plus the actual `sudo dmesg -n 4` command.
 Guest/production-build results and artifact identity are recorded after running
 those gates. QEMU uses a mock radio and cannot validate Intel DMA/RF reception.
 Physical diagnosis remains pending installation and the paired snapshot test.
+
+## Published diagnostic image and results
+
+Source `d9be498`, clean isolated checkout
+`.codex-remote-attachments/wifi-rx-diag-release`; private test admission wait fix
+`89ae3cf` is test-only. The image includes the committed ACPI battery/AC-adapter/
+thermal support, battery CLI, desktop Power settings, four desktop application
+packages and command completion from the previous complete release. Concurrent
+unfinished source edits in other work remain outside this clean artifact.
+
+Published file: `bin/fortress-base-installer.img`, 553648128 bytes (528 MiB).
+SHA-256: `09ab399d209efae3938458519719c9d15754ad1ee7e92c66854ca847b01a58cf`.
+Receipt: `bin/fortress-base-installer.manifest.json`; checksum sidecar next to it.
+The retained isolated producer receipt records clean source and source hashes.
+Publication verifies kernel ACPI/diagnostic symbols, loaded battery/compositor
+ELF identity in the bootstrap, package digests, and identical image bytes.
+
+Results retained in `build/wifi-rx-diag-evidence/`:
+
+- Actual WLAN manager/handshake and fault suites, Ethernet/ARP/ICMP regressions,
+  ASan/UBSan, formatting/canary tests PASS. Stack gate PASS: 230 functions,
+  existing authorized 1056-byte EAPOL exception; default ceiling 1024 bytes.
+- Concurrent owner/snapshot host ASan/UBSan and separate TSan PASS, 4800 calls
+  per run with bounded copied records and cleanup.
+- BIOS/UEFI × SMP=1/4 private mock-radio guests PASS 4/4, including diagnostic
+  root/unprivileged and output boundary checks on BSP and each AP, real CLI
+  diagnostic output, retained management lifecycle, ping and DNS regression.
+- Final raw image BIOS/UEFI SMP=4 boot smoke PASS 2/2, source image unchanged.
+  No installation target was attached: these are boots to the installer and its
+  expected unavailable-target result, not fresh installation acceptance.
+
+The first guest setup attempt lacked a parent directory. The second completed
+BIOS cases but hit the prior cancellation probe's assumption that a background
+job announcement guarantees request admission. A bounded observable-admission
+wait fixed that test; the full matrix was rerun. Initial failure logs and the
+exact patched private probe hash are retained in `test-inputs.json`.
+
+Cold physical ARP remains FAIL on the predecessor and pending diagnosis on this
+image. These results validate observation and software behavior, not Intel RF.

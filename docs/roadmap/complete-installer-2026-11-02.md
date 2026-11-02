@@ -1,6 +1,18 @@
 # Single complete installer — 2026-11-02
 
-## Current image: ACPI power telemetry and desktop integration
+## Current image: Wi-Fi receive-stage diagnostics
+
+`bin/fortress-base-installer.img`, 528 MiB, SHA-256
+`09ab399d209efae3938458519719c9d15754ad1ee7e92c66854ca847b01a58cf`.
+Clean source `d9be498`; includes the prior committed ACPI, desktop, completion
+and network work. `sudo dmesg -n 4` now shows raw radio, group decrypt,
+decapsulation and ARP reply counters on BSP/AP without packet-path logging.
+Host sanitizer/concurrency gates, BIOS/UEFI × SMP=1/4 guests and final raw-image
+BIOS/UEFI boot smoke PASS. Cold ARP still failed on the preceding ACPI image;
+this replacement is diagnostic, with physical diagnosis pending.
+[Commands, limits and artifact evidence](wifi-rx-diagnostics.md).
+
+## Earlier image: ACPI power telemetry and desktop integration
 
 `bin/fortress-base-installer.img`, 528 MiB, SHA-256
 `13283ee703b3fe9dfefc099a1ac3e2a81ef5f43d63c1be0f9357203ccfe88a9e`. This image includes the ACPI battery/AC-adapter/thermal

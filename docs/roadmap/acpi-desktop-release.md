@@ -2,7 +2,7 @@
 
 Source release: `a12428a`, clean isolated checkout
 `.codex-remote-attachments/acpi-desktop-release`.
-Current artifact: `bin/fortress-base-installer.img`, 553648128 bytes (528 MiB).
+Historical artifact (superseded by the [receive diagnostics image](wifi-rx-diagnostics.md)): `bin/fortress-base-installer.img`, 553648128 bytes (528 MiB).
 SHA-256: `13283ee703b3fe9dfefc099a1ac3e2a81ef5f43d63c1be0f9357203ccfe88a9e`.
 Build receipt: `bin/fortress-base-installer.manifest.json`; the isolated checkout
 retains its original producer receipt. Publication copies identical image bytes
