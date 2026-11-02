@@ -2,6 +2,12 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-02 physical live-USB follow-up: replacement now installs the 32-byte
+GTK, with successful group decrypts and no group failures in the user's snapshot.
+Bazzite-originated broadcast ARP PASS 10/10 and inbound ICMP PASS 4/4. This is
+bounded initial-link acceptance; installed-root persistence, reboot/idle and
+later group-key rotation remain open. [Commands and provenance](../roadmap/wifi-gtk-delivery.md#physical-live-usb-acceptance-initial-group-rx-and-inbound-arp-pass).
+
 2026-11-02 physical RX diagnostics: the Dell receives AP group frames but has
 GTK length zero and rejects every group decrypt. Reproduced encrypted M3 unwrap
 limit and silent missing-GTK authorization; bounded complete key unwrapping and

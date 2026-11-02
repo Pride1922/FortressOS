@@ -88,3 +88,30 @@ for the observed TKIP group cipher, then read `sudo dmesg -n 4` before initiatin
 any FortressOS-to-Bazzite ping. Repeat the measured Bazzite ARP burst and check
 reply reception and successful group decrypt deltas. Physical acceptance and
 installed-root saved-network reboot persistence remain open until tested.
+
+## Physical live-USB acceptance: initial group RX and inbound ARP PASS
+
+2026-11-02: the user booted the replacement live USB and connected to the same
+AP at 192.168.0.194/24. The photographed snapshot now shows GTK length 32/index 1,
+16 successful group decrypts and zero group decrypt failures. Previously the
+same driver diagnostic reported GTK length zero and every group decrypt failing.
+
+From Bazzite 192.168.0.159, with the laptop asked to remain idle:
+
+- `arping -b -I wlo1 -c 10 -w 12 192.168.0.194`: ten broadcast probes and ten
+  replies from f4:d1:08:c9:6b:e3, exit zero. Explicit broadcast ARP response is
+  observed independently of any existing Bazzite neighbor entry.
+- `ping -c 4 -W 1 192.168.0.194`: 4/4 replies, zero loss, TTL 64,
+  min/avg/max/mdev 8.245/10.412/13.672/2.085 ms, exit zero.
+
+No FortressOS-originated ping was requested to enable the reverse direction,
+and no static neighbor was added during this test. No neighbor deletion was
+performed; the broadcast-only arping result directly establishes responsive ARP,
+while the ping result separately establishes inbound unicast reachability.
+
+This is a bounded physical PASS for initial GTK installation, group reception
+and inbound ARP/ICMP with the current live image. It does not prove the actual
+AP M3 packet length, installed-root save durability/autoconnect, reboot/idle
+recovery or later group-key rotation. Those boundaries remain open. Tool outputs
+and photo counters are transcribed with explicit provenance in
+`build/wifi-gtk-evidence/physical/acceptance.json` (not a packet capture).
