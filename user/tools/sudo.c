@@ -24,6 +24,23 @@ static bool password_line(int tty,char out[DB_PASSWORD_MAX+1]) {
         out[n++]=(char)c;
     }
 }
+/* Fixed privileged search path: never use the caller's PATH or cwd. */
+static bool sudo_command(const char *name,char command[VFS_MAX_PATH]) {
+    size_t n=tool_length(name);
+    if(!n||n>=VFS_MAX_PATH)return false;
+    if(name[0]=='/'){for(size_t i=0;i<=n;i++)command[i]=name[i];return true;}
+    for(size_t i=0;i<n;i++)if(name[i]=='/')return false;
+    static const char *const prefixes[]={"/sbin/","/bin/","/usr/bin/"};
+    for(unsigned i=0;i<sizeof prefixes/sizeof prefixes[0];i++){
+        size_t prefix=tool_length(prefixes[i]);
+        if(prefix+n>=VFS_MAX_PATH)continue;
+        for(size_t j=0;j<prefix;j++)command[j]=prefixes[i][j];
+        for(size_t j=0;j<=n;j++)command[prefix+j]=name[j];
+        vfs_stat_t st;
+        if(tool_syscall(SYS_STAT,(uintptr_t)command,(uintptr_t)&st,0)==0&&st.type==VFS_FILE)return true;
+    }
+    return false;
+}
 int sudo_main(int argc,char **argv,const char *const *envp) {
     uint32_t uid,euid,suid;
     bool background=false;
@@ -112,20 +129,9 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         tool_syscall(SYS_SETGROUPS,count,(uintptr_t)groups,0)<0 ||
         permission_call4(SYS_SETRESUID,0,0,0,0)<0)
         return tool_error("sudo","credential transition failed",0);
-    char command[VFS_MAX_PATH];size_t n=tool_length(argv[1]);
-    if (!n || n+7>sizeof(command)) return tool_error("sudo","invalid command",0);
-    unsigned off=0;
-    if (argv[1][0]!='/') {
-        for (size_t i=0;i<n;i++) if (argv[1][i]=='/') return tool_error("sudo","absolute command path required",0);
-        vfs_stat_t st;
-        char probe[VFS_MAX_PATH];
-        const char *sb="/sbin/";
-        size_t sl=0;while (sb[sl]) {probe[sl]=sb[sl];sl++;}
-        for (size_t j=0;j<=n;j++) probe[sl+j]=argv[1][j];
-        const char *prefix=(tool_syscall(SYS_STAT,(uintptr_t)probe,(uintptr_t)&st,0)==0 && st.type==VFS_FILE) ? "/sbin/" : "/bin/";
-        while (*prefix) command[off++]=*prefix++;
-    }
-    for (size_t i=0;i<=n;i++) command[off+i]=argv[1][i];
+    char command[VFS_MAX_PATH];
+    if(!sudo_command(argv[1],command))
+        return tool_error("sudo","command not found or invalid command",argv[1]);
     char term[64]="TERM=fortress";
     if (envp) for (unsigned i=0;i<MAX_SPAWN_ENVP && envp[i];i++) {
         const char *p=envp[i];
@@ -134,8 +140,10 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         for (size_t j=5;j<len;j++) if (p[j]<32 || p[j]>126) safe=false;
         if (safe) for (size_t j=0;j<=len;j++) term[j]=p[j];
     }
-    const char *environment[]={"PATH=/bin:/sbin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,
-        sudo_uid,sudo_gid,sudo_user,sudo_groups,NULL};
+    bool desktop_session=!background&&tool_equal(command,"/usr/bin/desktop");
+    const char *desktop_env=desktop_session?"SUDO_DESKTOP_SESSION=1":"SUDO_DESKTOP_SESSION=0";
+    const char *environment[]={"PATH=/bin:/sbin:/usr/bin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,
+        sudo_uid,sudo_gid,sudo_user,sudo_groups,desktop_env,NULL};
     spawn_opts_t opts={.size=sizeof(opts),.version=1,.argv=(uintptr_t)(argv+1),.envp=(uintptr_t)environment};
     spawn_fd_action_t input={.type=SPAWN_FD_ACTION_OPEN,.dst_fd=0,
         .flags=VFS_O_RDONLY,.path=(uintptr_t)"/dev/null"};
@@ -144,18 +152,24 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         opts.fd_actions=(uintptr_t)&input;opts.action_count=1;
     }
     db_wipe(&database,sizeof(database));
-    long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)command,(uintptr_t)&opts,sizeof(opts));
-    if (pid<0) return tool_sys_error("sudo","cannot start command",argv[1],pid);
-    if (background) {
-        char message[64]="sudo: started background pid ";
-        size_t used=tool_length(message);
-        used+=tool_format_u64(message+used,(uint64_t)pid);
-        message[used++]='\n';
-        tool_write("sudo",message,used);
-        return 0;
+    for(unsigned restarts=0;;) {
+        long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)command,(uintptr_t)&opts,sizeof(opts));
+        if(pid<0)return tool_sys_error("sudo","cannot start command",argv[1],pid);
+        if(background) {
+            char message[64]="sudo: started background pid ";
+            size_t used=tool_length(message);
+            used+=tool_format_u64(message+used,(uint64_t)pid);
+            message[used++]='\n';
+            tool_write("sudo",message,used);
+            return 0;
+        }
+        uint64_t status=0;long waited;
+        do {waited=tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0);} while(waited==SYSCALL_EINTR);
+        if(waited<0)return 1;
+        /* Only the foreground packaged desktop can request a fresh root setup
+         * followed by the same invoking-user privilege drop. Normal exit and
+         * crashes return to the console; they must not become restart loops. */
+        if(!desktop_session||status!=75)return (int)status;
+        if(restarts++==3)return tool_error("sudo","desktop restart limit reached; launch desktop again",0);
     }
-    uint64_t status=0;
-    long waited;
-    do {waited=tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0);} while (waited==SYSCALL_EINTR);
-    return waited<0 ? 1 : (int)status;
 }

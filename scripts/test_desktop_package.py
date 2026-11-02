@@ -7,7 +7,7 @@ from build_desktop_package import ROOT, build
 
 
 def main():
-    runner = ROOT / "build/desktop-package-host"
+    runner = ROOT / "build/desktop-package-host.elf"
     flags = ["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
              "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
              "-fsanitize=address,undefined", "-fno-omit-frame-pointer",

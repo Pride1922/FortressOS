@@ -83,6 +83,13 @@ pub struct Clients {
     pending_open: Option<[u8; proto::OPEN_PATH_MAX + 1]>,
 }
 
+impl Clients {
+    /// Restart is refused while an app or its teardown is still active.
+    pub fn restart_ready(&self) -> bool {
+        self.slots.iter().all(Option::is_none) && self.exiting.iter().all(Option::is_none)
+    }
+}
+
 impl Default for Clients {
     fn default() -> Self {
         Self {
@@ -618,5 +625,22 @@ fn spawn(
     match path.to_str() {
         Ok(p) => sys::spawn_ext(p, &opts),
         Err(_) => sys::EINVAL,
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+    #[test]
+    fn restart_waits_for_client_teardown() {
+        let mut clients=Clients::default();
+        assert!(clients.restart_ready());
+        clients.slots[0]=Some(Client{window_id:100,pid:42,requests:-1,events:-1,pixels:0,
+            stride:0,rows:0,created:false,rx:[0;MSG_SIZE],rx_len:0,
+            open:proto::OpenRequest::default(),last_open_ns:None});
+        assert!(!clients.restart_ready());
+        clients.slots[0]=None;
+        clients.exiting[0]=Some(Exiting{pid:42,since:0,killed:false});
+        assert!(!clients.restart_ready());
     }
 }

@@ -151,3 +151,21 @@ commands against the existing HTTPS repository; the additional campaign was
 stopped before completing all checks. No fresh-installer physical acceptance is
 claimed. A replacement image with the latest Wi-Fi work/redesign awaits separate
 user instructions. No new builds or tests were run for this commit.
+
+## Interactive confirmation correction (2026-11-02)
+
+Dell feedback: typing `y` at the batch-upgrade prompt cancelled the operation.
+The CLI required a single read to contain exactly `y\n` or `yes\n`; console and
+PTY reads can return partial input. The prompt now accumulates a bounded response
+through LF/CR, handles backspace, and accepts case-insensitive `y`/`yes`. Empty,
+negative, overlong and unterminated responses still cancel before package
+download or mutation. Noninteractive operation still requires `-y`.
+
+`make test-pkg-batch-cli-host` passed under ASan/UBSan with one-character input
+reads, CR/LF, editing, cancellation, overlong input and EOF cases added to the
+actual CLI harness. Evidence: `.codex-remote-attachments/pkg-batch-53m6hb59`,
+`build/pkg-confirmation-host.log`. Normal freestanding `make build/pkg/pkg.elf`
+passed with the existing stack-frame gate. No image or repository base release
+was published for this correction; the installed CLI remains unchanged. Use
+`sudo pkg upgrade -y` on that installation pending a base release containing the
+fixed `/bin/pkg`. The taskbar package itself does not replace the base-owned CLI.

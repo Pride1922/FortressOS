@@ -25,6 +25,9 @@ mod window;
 use cursor::Cursor;
 use surface::Surface;
 use window::WindowManager;
+static RESTART_SUPPORTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static RESTART_REQUESTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 
 // 16-byte stack aligned entry point satisfying System V ABI & FortressOS loader
 core::arch::global_asm!(
@@ -44,6 +47,8 @@ core::arch::global_asm!(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *const u8) -> i32 {
+    RESTART_SUPPORTED.store(privilege::desktop_session_from_env(envp), core::sync::atomic::Ordering::Relaxed);
+    RESTART_REQUESTED.store(false, core::sync::atomic::Ordering::Relaxed);
     let mut is_test = false;
     let mut perf_hud = false;
     let mut bench_drag = false;
@@ -172,7 +177,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *c
         let _ = line.write_str("\n");
         sys::write(1, line.as_bytes());
     }
-    status
+    if status == 0 && RESTART_REQUESTED.load(core::sync::atomic::Ordering::Relaxed) {75} else {status}
 }
 
 #[inline(never)]
@@ -796,6 +801,17 @@ fn handle_action(
     match action {
         window::Action::OpenDesktopApp(_) => {}
         window::Action::Exit => return true,
+        window::Action::Restart => {
+            if !RESTART_SUPPORTED.load(core::sync::atomic::Ordering::Relaxed) {
+                sys::write(2,b"[compositor] Restart requires the updated sudo desktop launcher\n");
+            } else if !clients.restart_ready() {
+                sys::write(2,b"[compositor] Save and close application windows before restarting\n");
+            } else {
+                RESTART_REQUESTED.store(true,core::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+        }
+
         window::Action::ClientClick(..) | window::Action::ClientDrag(..) => {}
         window::Action::SpawnTerminal => {
             open_terminal(clients, scene);

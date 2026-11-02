@@ -2834,3 +2834,30 @@ fn settings_timezone_preset_autosave_normalization_and_clock_fallback() {
     assert_eq!(cal.minute, 0);
     assert_eq!(cal.second, 0);
 }
+
+#[test]
+fn desktop_restart_action_and_launcher_marker() {
+    assert!(!privilege::desktop_session_from_env(core::ptr::null()));
+    let yes=std::ffi::CString::new("SUDO_DESKTOP_SESSION=1").unwrap();
+    let no=std::ffi::CString::new("SUDO_DESKTOP_SESSION=0").unwrap();
+    let short=std::ffi::CString::new("S").unwrap();
+    let vars=[short.as_ptr() as *const u8,yes.as_ptr() as *const u8,core::ptr::null()];
+    assert!(privilege::desktop_session_from_env(vars.as_ptr()));
+    let vars=[no.as_ptr() as *const u8,core::ptr::null()];
+    assert!(!privilege::desktop_session_from_env(vars.as_ptr()));
+    let mut scene=surface::Surface::new(1280,800).unwrap();
+    let mut wm=window::WindowManager::new(&mut scene);
+    wm.toggle_start_menu(&mut scene);
+    let menu=window::WindowManager::start_menu_rect(scene.height);
+    let scale=if scene.height>=1800 {2} else {1};
+    let action=wm.mouse(menu.x+30*scale,menu.y+(24+6*22+10)*scale,1,&mut scene);
+    assert_eq!(action,window::Action::Restart);
+}
+
+#[path = "../user/compositor/src/clients.rs"]
+#[allow(dead_code)]
+mod clients;
+
+#[path = "../user/compositor/src/perf.rs"]
+#[allow(dead_code)]
+mod perf;

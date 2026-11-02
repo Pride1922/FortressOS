@@ -10,6 +10,7 @@
 #include "pkg_abi.h"
 #include "terminal.h"
 static pkg_installed installed[PKG_INSTALLED_MAX];
+static size_t answer_at,answer_chunk;
 static unsigned refreshes,downloads,mutations,releases;static bool session,interactive,current,stale;
 static bool base_supported;static unsigned base_mutations,base_flags;
 static int fail_download=-1;static const char *answer="yes\n";static char output[32768];static size_t used;
@@ -27,7 +28,7 @@ static void result(pkg_result_v1 *r,uint64_t token,uint64_t sequence){*r=(pkg_re
 long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c){
     if(nr==SYS_WRITE){assert(a==1||a==2);assert(c<sizeof output-used);memcpy(output+used,(void *)b,c);used+=c;output[used]=0;return c;}
     if(nr==SYS_TERMCTL){assert(a==TERM_ISATTY);return interactive;}
-    if(nr==SYS_READ){if(!a){assert(interactive&&!session);size_t n=strlen(answer);assert(n<=c);memcpy((void *)b,answer,n);return n;}memset((void *)b,0,c);return c;}
+    if(nr==SYS_READ){if(!a){assert(interactive&&!session);size_t n=strlen(answer+answer_at);if(n>c)n=c;if(n>answer_chunk)n=answer_chunk;memcpy((void *)b,answer+answer_at,n);answer_at+=n;return n;}memset((void *)b,0,c);return c;}
     if(nr==SYS_OPEN){const char *path=(void *)a;return strstr(path,"catalog")?10:11;}
     if(nr==SYS_FSTAT){stat_ext_v1_t *st=(void *)b;*st=(stat_ext_v1_t){.size=sizeof *st,.version=1,.type=VFS_FILE,.file_size=base_supported?256:128};return 0;}
     if(nr==SYS_CLOSE)return 0;
@@ -50,13 +51,23 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c){
 static void reset(void){
     memset(installed,0,sizeof installed);const char *names[]={"alpha","beta","gamma"};
     for(unsigned i=0;i<3;i++){memcpy(installed[i].name,names[i],strlen(names[i])+1);memcpy(installed[i].command,names[i],strlen(names[i])+1);installed[i].build=installed[i].sequence=1;memset(installed[i].artifact,1,32);installed[i].identity[0]=i;}
-    refreshes=downloads=mutations=releases=base_mutations=base_flags=0;base_supported=false;session=interactive=current=stale=false;fail_download=-1;answer="yes\n";used=0;output[0]=0;
+    answer_at=0;answer_chunk=SIZE_MAX;refreshes=downloads=mutations=releases=base_mutations=base_flags=0;base_supported=false;session=interactive=current=stale=false;fail_download=-1;answer="yes\n";used=0;output[0]=0;
 }
 static int run(bool yes){char *argv[]={"pkg","upgrade","-y"};return pkg_system_main(yes?3:2,argv);}
 int main(void){
     reset();assert(run(false)&&refreshes==1&&!downloads&&!mutations&&strstr(output,"noninteractive"));
     reset();interactive=true;answer="n\n";assert(run(false)&&!downloads&&!mutations&&strstr(output,"cancelled"));
     reset();interactive=true;assert(!run(false)&&refreshes==1&&downloads==3&&mutations==3&&releases==3&&!session);
+    const char *accept[]={"y\n","yes\n","Y\r","YES\r\n","yx\by\b\n"};
+    for(unsigned i=0;i<sizeof accept/sizeof accept[0];i++){
+        reset();interactive=true;answer=accept[i];answer_chunk=1;
+        assert(!run(false)&&downloads==3&&mutations==3&&!session);
+    }
+    const char *reject[]={"\n","n\n","no\r","y","yesplease\n","yyyyyyyyyyyyyyyyy\n"};
+    for(unsigned i=0;i<sizeof reject/sizeof reject[0];i++){
+        reset();interactive=true;answer=reject[i];answer_chunk=1;
+        assert(run(false)&&!downloads&&!mutations&&!session);
+    }
     reset();current=true;assert(!run(false)&&!downloads&&!mutations&&strstr(output,"are current"));
     reset();assert(!run(true)&&refreshes==1&&mutations==3&&releases==3);
     reset();fail_download='b';assert(run(true)&&mutations==1&&downloads==2&&!session);

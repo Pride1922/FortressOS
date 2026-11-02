@@ -616,6 +616,14 @@ pub fn blend_darken(color: u32, factor: u32) -> u32 {
     0xff000000 | (r << 16) | (g << 8) | b
 }
 
+#[inline]
+pub fn blend_color(fg: u32, bg: u32, alpha: u32) -> u32 {
+    let r = (((fg >> 16) & 0xff) * alpha + ((bg >> 16) & 0xff) * (256 - alpha)) >> 8;
+    let g = (((fg >> 8) & 0xff) * alpha + ((bg >> 8) & 0xff) * (256 - alpha)) >> 8;
+    let b = ((fg & 0xff) * alpha + (bg & 0xff) * (256 - alpha)) >> 8;
+    0xff000000 | (r << 16) | (g << 8) | b
+}
+
 fn panel_box(
     w: &mut Window,
     x: usize,
@@ -752,6 +760,266 @@ fn fortress_tower_pixel(tx: usize, ty: usize) -> bool {
         9..=10 => (1..=7).contains(&tx) && !(2..=6).contains(&tx),
         11 => true,
         _ => false,
+    }
+}
+
+fn wifi_tray_pixel(x: usize, y: usize) -> bool {
+    match y {
+        0 => (3..=8).contains(&x),
+        1 => (1..=2).contains(&x) || (9..=10).contains(&x),
+        2 => x == 0 || x == 11,
+        3 => (4..=7).contains(&x),
+        4 => (2..=3).contains(&x) || (8..=9).contains(&x),
+        6 => (5..=6).contains(&x),
+        7 => (4..=7).contains(&x),
+        8 => (5..=6).contains(&x),
+        _ => false,
+    }
+}
+
+fn volume_tray_pixel(x: usize, y: usize) -> bool {
+    if x <= 2 {
+        (x == 2 && y <= 8) || (x == 1 && (1..=7).contains(&y)) || (x == 0 && (2..=6).contains(&y))
+    } else if x == 3 && (2..=6).contains(&y) {
+        true
+    } else if (y == 2 && x == 5) || ((3..=5).contains(&y) && x == 6) || (y == 6 && x == 5) {
+        true
+    } else if (y == 1 && x == 8) || (y == 2 && x == 9) || ((3..=5).contains(&y) && x == 10) || (y == 6 && x == 9) || (y == 7 && x == 8) {
+        true
+    } else {
+        false
+    }
+}
+
+fn battery_tray_pixel(x: usize, y: usize) -> (bool, bool) {
+    let is_terminal = (13..=14).contains(&x) && (2..=5).contains(&y);
+    let is_border = ((x == 0 || x == 12) && y <= 7) || ((y == 0 || y == 7) && x <= 12);
+    if is_terminal || is_border {
+        (true, false)
+    } else if (2..=9).contains(&x) && (2..=5).contains(&y) {
+        (true, true)
+    } else {
+        (false, false)
+    }
+}
+
+fn power_tray_pixel(x: usize, y: usize) -> bool {
+    if x == 4 && y <= 4 {
+        true
+    } else if y == 2 && (x == 1 || x == 7) {
+        true
+    } else if (3..=5).contains(&y) && (x == 0 || x == 8) {
+        true
+    } else if y == 6 && (x == 1 || x == 7) {
+        true
+    } else if y == 7 && (2..=6).contains(&x) {
+        true
+    } else {
+        false
+    }
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64 + era * 400) as i32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+fn format_clock(sec: i64, is_24h: bool, buf: &mut [u8; 32]) -> &str {
+    if sec < 0 {
+        return "--:--";
+    }
+    let seconds_in_day = sec.rem_euclid(86400) as u32;
+    let days = sec.div_euclid(86400);
+    let (_y, m, d) = civil_from_days(days);
+    let hour = seconds_in_day / 3600;
+    let minute = (seconds_in_day / 60) % 60;
+
+    let display_hour = if is_24h {
+        hour
+    } else {
+        let h = hour % 12;
+        if h == 0 { 12 } else { h }
+    };
+
+    const MONTHS: [&[u8]; 12] = [
+        b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun",
+        b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec",
+    ];
+    let month_idx = (m.saturating_sub(1) as usize).min(11);
+    let month_str = MONTHS[month_idx];
+
+    let mut len = 0;
+    if d >= 10 {
+        buf[len] = b'0' + (d / 10) as u8;
+        len += 1;
+    }
+    buf[len] = b'0' + (d % 10) as u8;
+    len += 1;
+
+    buf[len] = b' ';
+    len += 1;
+
+    buf[len..len + 3].copy_from_slice(month_str);
+    len += 3;
+
+    buf[len] = b' ';
+    len += 1;
+
+    buf[len] = b'0' + (display_hour / 10) as u8;
+    buf[len + 1] = b'0' + (display_hour % 10) as u8;
+    buf[len + 2] = b':';
+    buf[len + 3] = b'0' + (minute / 10) as u8;
+    buf[len + 4] = b'0' + (minute % 10) as u8;
+    len += 5;
+
+    if !is_24h {
+        buf[len] = b' ';
+        buf[len + 1] = if hour < 12 { b'A' } else { b'P' };
+        buf[len + 2] = b'M';
+        len += 3;
+    }
+
+    core::str::from_utf8(&buf[..len]).unwrap_or("--:--")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Panel {
+    pub rect: Rect,
+}
+
+impl Panel {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            rect: WindowManager::top_bar_rect(width, height),
+        }
+    }
+
+    pub fn render(&self, wm: &WindowManager, s: &mut Surface, r: Rect) {
+        let Some(clip) = self.rect.intersection(r) else {
+            return;
+        };
+        let scale = theme::scale(s.height);
+        let logical_width = s.width / scale;
+
+        let mut clock_buf = [0u8; 32];
+        let clock_str = format_clock(wm.clock_sec, wm.clock_24h, &mut clock_buf);
+        let clock_tw = theme::text_width(clock_str);
+        let clock_x = logical_width.saturating_sub(clock_tw) / 2;
+        let clock_pill_w = clock_tw + 20;
+        let clock_pill_x = logical_width.saturating_sub(clock_pill_w) / 2;
+
+        let tray_w = 114;
+        let tray_x = logical_width.saturating_sub(tray_w + 8);
+
+        for y in clip.y..clip.y + clip.h {
+            for x in clip.x..clip.x + clip.w {
+                let lx = x / scale;
+                let ly = y / scale;
+
+                let under = s.pixels[y * s.width + x];
+                let bg = if ly == 27 {
+                    blend_color(0x384152, under, 160)
+                } else {
+                    blend_color(0x101318, under, 204)
+                };
+
+                // Activities Pill (Left)
+                let act_cov = if (8..102).contains(&lx) && (3..25).contains(&ly) {
+                    theme::rounded_coverage(lx - 8, ly - 3, 94, 22, 10)
+                } else {
+                    0
+                };
+                let act_bg = if act_cov > 0 {
+                    if wm.start_open {
+                        blend_color(0x2d3748, bg, (act_cov * 255) / 16)
+                    } else {
+                        blend_color(0xffffff, bg, (act_cov * 22) / 16)
+                    }
+                } else {
+                    bg
+                };
+
+                // Date & Time Pill (Center)
+                let clk_cov = if (clock_pill_x..clock_pill_x + clock_pill_w).contains(&lx) && (3..25).contains(&ly) {
+                    theme::rounded_coverage(lx - clock_pill_x, ly - 3, clock_pill_w, 22, 10)
+                } else {
+                    0
+                };
+                let clk_bg = if clk_cov > 0 {
+                    blend_color(0xffffff, bg, (clk_cov * 20) / 16)
+                } else {
+                    bg
+                };
+
+                // System Tray Pill (Right)
+                let tray_cov = if (tray_x..tray_x + tray_w).contains(&lx) && (3..25).contains(&ly) {
+                    theme::rounded_coverage(lx - tray_x, ly - 3, tray_w, 22, 10)
+                } else {
+                    0
+                };
+                let tray_bg = if tray_cov > 0 {
+                    blend_color(0xffffff, bg, (tray_cov * 22) / 16)
+                } else {
+                    bg
+                };
+
+                let p = if (15..=23).contains(&lx) && (8..=19).contains(&ly) && fortress_tower_pixel(lx - 15, ly - 8) {
+                    0xff38bdf8
+                } else if (5..23).contains(&ly) && (28..96).contains(&lx) {
+                    theme::text_pixel("Activities", lx - 28, ly - 5, 0xfff8fafc, act_bg)
+                } else if act_cov > 0 {
+                    act_bg
+                } else if (5..23).contains(&ly) && (clock_x..clock_x + clock_tw).contains(&lx) {
+                    theme::text_pixel(clock_str, lx - clock_x, ly - 5, 0xfff8fafc, clk_bg)
+                } else if clk_cov > 0 {
+                    clk_bg
+                } else if (9..18).contains(&ly) && (tray_x + 12..tray_x + 24).contains(&lx) {
+                    if wifi_tray_pixel(lx - (tray_x + 12), ly - 9) {
+                        match wm.network_state {
+                            2 => 0xff38bdf8,
+                            1 => 0xff64748b,
+                            _ => 0xff94a3b8,
+                        }
+                    } else {
+                        tray_bg
+                    }
+                } else if (9..18).contains(&ly) && (tray_x + 38..tray_x + 49).contains(&lx) {
+                    if volume_tray_pixel(lx - (tray_x + 38), ly - 9) {
+                        0xffcbd5e1
+                    } else {
+                        tray_bg
+                    }
+                } else if (10..18).contains(&ly) && (tray_x + 62..tray_x + 77).contains(&lx) {
+                    let (is_bat, is_green) = battery_tray_pixel(lx - (tray_x + 62), ly - 10);
+                    if is_bat {
+                        if is_green { 0xff22c55e } else { 0xffcbd5e1 }
+                    } else {
+                        tray_bg
+                    }
+                } else if (9..18).contains(&ly) && (tray_x + 90..tray_x + 99).contains(&lx) {
+                    if power_tray_pixel(lx - (tray_x + 90), ly - 9) {
+                        0xffe2e8f0
+                    } else {
+                        tray_bg
+                    }
+                } else if tray_cov > 0 {
+                    tray_bg
+                } else {
+                    bg
+                };
+
+                s.pixels[y * s.width + x] = p;
+            }
+        }
     }
 }
 
@@ -976,6 +1244,7 @@ pub enum Action {
     ClientClick(u32, usize, usize),
     ClientDrag(u32, usize, usize),
     Exit,
+    Restart,
 }
 
 pub struct WindowManager {
@@ -1106,7 +1375,7 @@ impl WindowManager {
             x: 0,
             y: 0,
             w: width,
-            h: 24 * theme::scale(height),
+            h: 28 * theme::scale(height),
         }
     }
 
@@ -1125,20 +1394,22 @@ impl WindowManager {
     }
 
     pub fn start_btn_rect(height: usize) -> Rect {
+        let scale = theme::scale(height);
         Rect {
-            x: 8,
+            x: 6 * scale,
             y: 0,
-            w: 120 * theme::scale(height),
-            h: 24 * theme::scale(height),
+            w: 104 * scale,
+            h: 28 * scale,
         }
     }
 
     pub fn start_menu_rect(height: usize) -> Rect {
+        let scale = theme::scale(height);
         Rect {
             x: 8,
-            y: 24 * theme::scale(height),
-            w: 220 * theme::scale(height),
-            h: 157 * theme::scale(height),
+            y: 28 * scale,
+            w: 220 * scale,
+            h: 179 * scale,
         }
     }
 
@@ -1253,11 +1524,12 @@ impl WindowManager {
 
     pub fn network_rect(width: usize, height: usize) -> Rect {
         let scale = theme::scale(height);
+        let tray_w = 126 * scale;
         Rect {
-            x: width.saturating_sub(196 * scale),
+            x: width.saturating_sub(tray_w + 6 * scale),
             y: 0,
-            w: 76 * scale,
-            h: 24 * scale,
+            w: tray_w + 6 * scale,
+            h: 28 * scale,
         }
     }
 
@@ -1268,11 +1540,14 @@ impl WindowManager {
     }
 
     pub fn clock_rect(width: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        let box_w = 220 * scale;
+        let box_x = width.saturating_sub(box_w) / 2;
         Rect {
-            x: width.saturating_sub(120 * theme::scale(height)),
+            x: box_x,
             y: 0,
-            w: 120 * theme::scale(height),
-            h: 24 * theme::scale(height),
+            w: box_w,
+            h: 28 * scale,
         }
     }
 
@@ -1584,7 +1859,7 @@ impl WindowManager {
 
             let scale = theme::scale(s.height);
             let on_dock = Self::dock_rect(s.width, s.height).contains(x, y);
-            let on_topbar = y < 24 * scale;
+            let on_topbar = y < 28 * scale;
             let on_window = self.hit_test(x, y).is_some();
 
             if !on_dock && !on_topbar && !on_window {
@@ -1604,7 +1879,7 @@ impl WindowManager {
             for w in &mut self.windows {
                 if w.is_dragging && self.buttons & 1 != 0 && w.id >= 3 {
                     let scale = theme::scale(s.height);
-                    let snap = if y <= 24 * scale {
+                    let snap = if y <= 28 * scale {
                         Some((8 * scale, 28 * scale, s.width.saturating_sub(16 * scale)))
                     } else if x <= 4 {
                         Some((
@@ -1744,6 +2019,7 @@ impl WindowManager {
                             3 => self.ensure_window_1(s),
                             4 => ret_action = Action::OpenDesktopApp(7),
                             5 => ret_action = Action::Exit,
+                            6 => ret_action = Action::Restart,
                             _ => {}
                         }
                     }
@@ -1818,7 +2094,7 @@ impl WindowManager {
             let new_menu_hover =
                 if start_menu.contains(x, y) && y >= start_menu.y + 24 * theme::scale(s.height) {
                     let idx = ((y - start_menu.y) / theme::scale(s.height) - 24) / 22;
-                    if idx < 6 { Some(idx) } else { None }
+                    if idx < 7 { Some(idx) } else { None }
                 } else {
                     None
                 };
@@ -2167,84 +2443,8 @@ impl WindowManager {
             }
 
             let scale = theme::scale(s.height);
-            let top_bar = Self::top_bar_rect(s.width, s.height);
-            if let Some(clip) = top_bar.intersection(r) {
-                for y in clip.y..clip.y + clip.h {
-                    for x in clip.x..clip.x + clip.w {
-                        let lx = x / scale;
-                        let ly = y / scale;
-                        let bg = if ly == 23 {
-                            theme::BORDER
-                        } else {
-                            theme::PANEL
-                        };
-                        let logical_width = s.width / scale;
-                        let is_start_btn = lx >= 6 && lx < 120 && ly < 23;
-                        let start_bg = if self.start_open && is_start_btn {
-                            0xff2d333b
-                        } else {
-                            bg
-                        };
-                        let in_tower = (9..=17).contains(&lx)
-                            && (6..=17).contains(&ly)
-                            && fortress_tower_pixel(lx - 9, ly - 6);
-                        let p = if in_tower {
-                            0xff38bdf8
-                        } else if (3..21).contains(&ly) && (23..120).contains(&lx) {
-                            theme::text_pixel("FortressOS", lx - 23, ly - 3, theme::TEXT, start_bg)
-                        } else if is_start_btn {
-                            start_bg
-                        } else if (3..21).contains(&ly)
-                            && (logical_width.saturating_sub(196)
-                                ..logical_width.saturating_sub(120))
-                                .contains(&lx)
-                        {
-                            theme::text_pixel(
-                                match self.network_state {
-                                    2 => "Online",
-                                    1 => "Offline",
-                                    _ => "Network",
-                                },
-                                lx - logical_width.saturating_sub(196),
-                                ly - 3,
-                                theme::MUTED,
-                                bg,
-                            )
-                        } else if (3..21).contains(&ly) && lx >= logical_width.saturating_sub(100) {
-                            let mut bytes = *b"--:--   ";
-                            if self.clock_sec >= 0 {
-                                let seconds = self.clock_sec.rem_euclid(86400) as u32;
-                                let hour = seconds / 3600;
-                                let minute = seconds / 60 % 60;
-                                let display = if self.clock_24h {
-                                    hour
-                                } else {
-                                    let h = hour % 12;
-                                    if h == 0 { 12 } else { h }
-                                };
-                                bytes[0] = b'0' + (display / 10) as u8;
-                                bytes[1] = b'0' + (display % 10) as u8;
-                                bytes[3] = b'0' + (minute / 10) as u8;
-                                bytes[4] = b'0' + (minute % 10) as u8;
-                                if !self.clock_24h {
-                                    bytes[6] = if hour < 12 { b'A' } else { b'P' };
-                                    bytes[7] = b'M';
-                                }
-                            }
-                            theme::text_pixel(
-                                core::str::from_utf8(&bytes).unwrap_or(""),
-                                lx - logical_width.saturating_sub(100),
-                                ly - 3,
-                                theme::TEXT,
-                                bg,
-                            )
-                        } else {
-                            bg
-                        };
-                        s.pixels[y * s.width + x] = p;
-                    }
-                }
-            }
+            let panel = Panel::new(s.width, s.height);
+            panel.render(self, s, r);
 
             for w in &self.windows {
                 if w.is_minimized || w.id < 3 || w.saved_rect.is_some() {
@@ -2734,6 +2934,7 @@ impl WindowManager {
                                         3 => ("System Information", false),
                                         4 => ("Settings", false),
                                         5 => ("Exit to Console", true),
+                                        6 => ("Restart (save/close apps)", false),
                                         _ => ("", false),
                                     };
                                     let fg = if is_hover {

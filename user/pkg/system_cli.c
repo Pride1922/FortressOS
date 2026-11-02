@@ -124,7 +124,12 @@ static int install_done(cli_owner *owner,const pkg_transaction_status *state,con
         message[n++]='\n';return tool_write("pkg",message,n);
     }
     const char *done=upgrading?"upgrade complete\n":"installation complete\n";
-    return tool_write("pkg",done,strlen(done));
+    int written=tool_write("pkg",done,strlen(done));
+    if(!written&&upgrading&&!strcmp(name,"fortress-desktop")) {
+        static const char restart[]="Save and close your apps, then restart the desktop to apply this update. No laptop reboot is needed.\n";
+        return tool_write("pkg",restart,sizeof restart-1);
+    }
+    return written;
 }
 
 static int install_error(long error) {
@@ -347,6 +352,19 @@ static int installed_list(const char *name) {
     if(name&&!found)return tool_error("pkg","package is not installed",name);
     return 0;
 }
+/* Console/PTY reads may return a character before the line is complete. */
+static bool upgrade_confirm(void) {
+    char answer[16];size_t used=0;bool overflow=false;
+    for(;;) {
+        unsigned char ch;
+        if(tool_syscall(SYS_READ,0,(uintptr_t)&ch,1)!=1)return false;
+        if(ch=='\n'||ch=='\r')break;
+        if(ch==8||ch==127){if(used)used--;continue;}
+        if(used==sizeof answer){overflow=true;continue;}
+        answer[used++]=(ch>='A'&&ch<='Z')?(char)(ch-'A'+'a'):(char)ch;
+    }
+    return !overflow&&((used==1&&answer[0]=='y')||(used==3&&!memcmp(answer,"yes",3)));
+}
 static int upgrade_all(cli_owner *owner,bool yes) {
     static pkg_installed all[PKG_INSTALLED_MAX],current[PKG_INSTALLED_MAX];
     static bool eligible[PKG_INSTALLED_MAX];unsigned count=0,total=0;
@@ -376,8 +394,8 @@ static int upgrade_all(cli_owner *owner,bool yes) {
     char number[24];size_t n=tool_format_u64(number,total);number[n]=0;cli_msg(number);cli_msg(" package(s) to upgrade.\n");
     if(!yes) {
         if(tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1)return tool_error("pkg","noninteractive upgrade requires -y",NULL);
-        cli_msg("Proceed? [y/N] ");char answer[16];long got=tool_syscall(SYS_READ,0,(uintptr_t)answer,sizeof answer);
-        if(!((got==2&&answer[0]=='y'&&answer[1]=='\n')||(got==4&&!memcmp(answer,"yes\n",4)))){cli_msg("Upgrade cancelled.\n");return 1;}
+        cli_msg("Proceed? [y/N] ");
+        if(!upgrade_confirm()){cli_msg("Upgrade cancelled.\n");return 1;}
     }
     for(unsigned i=0;i<count;i++)if(eligible[i]) {
         int r=pkg_download_selected(all[i].name);

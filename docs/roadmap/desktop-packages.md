@@ -24,10 +24,32 @@ These checks do not establish guest GUI launch, production publication or physic
 acceptance. Firmware/physical acceptance remains pending.
 
 Final installer: `bin/fortress-base-installer.img` (528 MiB), SHA-256
-`68e591626926a60acfd5b5147f787816341dccd87691d60045ca6e54da421c54`. Exact factory bundle: `bin/fortress-desktop-packages-20347a2b4e656c39`.
+`8afbab95e23d05360d45a53bf3e45dd16d16a5de2beff6e5164de53cf6b5736b`. Exact factory bundle: `bin/fortress-desktop-packages-4d2b5827126f6171`.
 The image producer completed package, filesystem and media audits; no boot test.
 
 Production cutover: catalog revision 3 is now published with a newly generated
 private server-side key. Public HTTPS verification confirms that all four offered
 app artifacts exactly match the production-trusting installer. The old public
 key rejects this catalog. Dell install/upgrade acceptance remains pending.
+
+## Foreground launcher and restart (2026-11-02, local implementation)
+
+`sudo desktop` now searches the root-controlled package command directory. Fixed
+search ordering, directory rejection, relative/oversized-name refusal, ignored
+caller PATH and full invoking-user environment are checked by the actual sudo
+host harness. The waiting sudo parent recognizes only the foreground packaged
+desktop's explicit restart exit status; it respawns with the same identity data.
+Normal exits/errors are not restarted; restart loops are bounded.
+
+The desktop menu adds a process restart action, gated on the launcher marker and
+no active/exiting external applications. All input/display cleanup occurs before
+exit; new initialization and privilege drop occur on the new process. Watchtower
+is unchanged. No new kernel or desktop-client protocol is introduced.
+
+Evidence: `make test-perm-spawn-host` PASS, including full sudo desktop resolution,
+two requested relaunches and loop-limit refusal; `make test-compositor-host` 62/62
+PASS, including launcher-marker parsing, actual menu click and active/exiting-app
+restart refusal. Logs: `build/sudo-package-command-host.log` and
+`build/desktop-restart-host.log`. Normal sudo/compositor/CLI builds are required;
+no firmware or physical restart acceptance is claimed. Nothing has been published
+for these changes, and the existing Dell still needs an updated base launcher.

@@ -4,9 +4,12 @@
 #define PERMISSIONS_CLI_HOST_TEST
 #include "../user/tools/sudo.c"
 static bool authorized=true,empty=true,verify_ok=true,transition_fail;
-static unsigned transitions,spawns,reads,closes;
+static unsigned transitions,spawns,reads,closes,restart_exits;
 static const char *input;static char output[2048];static size_t written;
 static bool generation_current=true;
+static const char *spawn_path="/bin/id";
+static const char *available[]={"/bin/id",NULL,NULL};
+static unsigned available_types[]={VFS_FILE,VFS_FILE,VFS_FILE};
 static terminal_attrs_t tty_attrs={.version=1,.input_flags=TERM_ECHO|TERM_ICANON|TERM_ISIG};
 static int attr_fail_op=-1;
 static unsigned attr_sets;
@@ -35,12 +38,18 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if (nr==SYS_CLOSE) {assert(a==7);closes++;return 0;}
     if (nr==SYS_SETGROUPS) {transitions++;assert(a==1 && *(uint32_t *)b==0);return 0;}
     if (nr==SYS_SPAWN_EXT) {
-        spawns++;assert(!strcmp((char *)a,"/bin/id"));const spawn_opts_t *o=(void *)b;
-        const char *const *e=(void *)o->envp;assert((!strcmp(e[0],"PATH=/bin:/sbin") || !strcmp(e[0],"PATH=/bin")) && !strcmp(e[1],"HOME=/root"));
-        assert(!strcmp(e[2],"USER=root") && !strcmp(e[5],"TERM=test"));assert(!e[6]);return 99;
+        spawns++;assert(!strcmp((char *)a,spawn_path));const spawn_opts_t *o=(void *)b;
+        const char *const *e=(void *)o->envp;assert(!strcmp(e[0],"PATH=/bin:/sbin:/usr/bin") && !strcmp(e[1],"HOME=/root"));
+        assert(!strcmp(e[2],"USER=root") && !strcmp(e[5],"TERM=test"));assert(!strcmp(e[6],"SUDO_UID=1000") && !strcmp(e[7],"SUDO_GID=1000"));
+        assert(!strcmp(e[8],"SUDO_USER=operator") && !strcmp(e[9],"SUDO_GROUPS=1000,10") && !strcmp(e[10],!strcmp(spawn_path,"/usr/bin/desktop")?"SUDO_DESKTOP_SESSION=1":"SUDO_DESKTOP_SESSION=0") && !e[11]);return 99;
     }
-    if (nr==SYS_STAT) return -1;
-    if (nr==SYS_WAIT) {assert(a==99);*(uint64_t *)b=37;return 99;}
+    if (nr==SYS_STAT) {
+        for(unsigned i=0;i<3;i++)if(available[i]&&!strcmp((char *)a,available[i])){
+            vfs_stat_t *st=(void *)b;memset(st,0,sizeof *st);st->type=available_types[i];return 0;
+        }
+        return -1;
+    }
+    if (nr==SYS_WAIT) {assert(a==99);*(uint64_t *)b=restart_exits?(restart_exits--,75):37;return 99;}
     assert(!"unexpected syscall");return -1;
 }
 long permission_call4(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
@@ -59,6 +68,25 @@ int main(void) {
     uintptr_t e[]={(uintptr_t)"PATH=/evil",(uintptr_t)"TERM=test",0,23,1,0,0};
     input="secret\n";assert(sudo_main(2,args,(const char *const *)e)==37);
     assert(transitions==3 && spawns==1 && !reads && closes==1);
+    char resolved[VFS_MAX_PATH];
+    available[0]="/usr/bin/desktop";
+    assert(sudo_command("desktop",resolved)&&!strcmp(resolved,"/usr/bin/desktop"));
+    available[1]="/bin/desktop";available[2]="/sbin/desktop";
+    assert(sudo_command("desktop",resolved)&&!strcmp(resolved,"/sbin/desktop"));
+    available_types[2]=VFS_DIRECTORY;
+    assert(sudo_command("desktop",resolved)&&!strcmp(resolved,"/bin/desktop"));
+    available[1]=available[2]=NULL;available_types[2]=VFS_FILE;
+    assert(!sudo_command("missing",resolved)&&!sudo_command("./desktop",resolved)&&!sudo_command("sub/desktop",resolved));
+    assert(sudo_command("/usr/bin/desktop",resolved)&&!strcmp(resolved,"/usr/bin/desktop"));
+    char oversized[VFS_MAX_PATH+1];memset(oversized,'a',sizeof oversized);oversized[sizeof oversized-1]=0;
+    assert(!sudo_command(oversized,resolved));
+    char *desktop_args[]={"sudo","desktop",NULL};spawn_path="/usr/bin/desktop";written=0;
+    assert(sudo_main(2,desktop_args,(const char *const *)e)==37);
+    unsigned previous_spawns=spawns;restart_exits=2;written=0;
+    assert(sudo_main(2,desktop_args,(const char *const *)e)==37&&spawns==previous_spawns+3&&!restart_exits);
+    previous_spawns=spawns;restart_exits=8;written=0;
+    assert(sudo_main(2,desktop_args,(const char *const *)e)==1&&spawns==previous_spawns+4);
+    restart_exits=0;available[0]="/bin/id";spawn_path="/bin/id";written=0;
     generation_current=false;transitions=spawns=0;
     assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);generation_current=true;
     authorized=false;transitions=spawns=0;assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);

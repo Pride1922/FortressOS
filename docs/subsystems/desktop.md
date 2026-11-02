@@ -139,3 +139,34 @@ See [desktop package workflow](../desktop-packages.md) and
 [host acceptance evidence](../roadmap/desktop-packages.md). External clients use
 the existing protocol; package compatibility must respect its version and the
 base ABI. Built-in API 1 alone does not promise an external runtime library ABI.
+
+## Desktop command and process restart
+
+The updated sudo resolver searches fixed `/sbin`, `/bin`, `/usr/bin` directories,
+so `sudo desktop` resolves to the packaged `/usr/bin/desktop`. Caller PATH and
+relative paths cannot redirect privileged command lookup. Existing authentication,
+invoking-user identity and package admission remain in place.
+
+The foreground `sudo desktop` invocation also waits as a session launcher. The
+Activities menu's **Restart (save/close apps)** action requires all external app
+windows and pending child teardown to be closed first. It then exits the old
+compositor through normal input/framebuffer cleanup with a dedicated restart
+status. The sudo parent launches the new executable, retaining SUDO_UID/GID/groups;
+the new desktop performs the existing privilege drop. Normal exit and crashes
+return to the console. Repeated restart requests are bounded at three per launcher
+invocation; launch again from the console if that limit is reached.
+
+`pkg upgrade` now explains that a desktop-process restart is required after a
+changed `fortress-desktop` activation. It does not force a restart or discard open
+documents. A laptop reboot is unnecessary for application-only changes.
+
+Do not register this interactive desktop as a Watchtower service. Detached root
+service startup lacks the authenticated login identity and console ownership used
+here. A future graphical login/session manager is separate work.
+
+Delivery: these launcher/restart changes are locally implemented and host-checked,
+not yet published. They require both an updated base-owned `/bin/sudo` and a newer
+`fortress-desktop` package. Existing installations can exit to the console and run
+`sudo /usr/bin/desktop` immediately to load a newly installed desktop without reboot.
+The base update installing the new launcher requires its normal OS reboot once;
+subsequent application-only updates use desktop-process restart.

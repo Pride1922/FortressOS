@@ -33,6 +33,23 @@ fn parse_u32(text: &[u8]) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
+/// The authenticated sudo parent can relaunch a closed packaged desktop.
+pub fn desktop_session_from_env(envp: *const *const u8) -> bool {
+    if envp.is_null() {return false;}
+    for i in 0..256 {
+        let entry=unsafe{*envp.add(i)};
+        if entry.is_null(){break;}
+        let expected=b"SUDO_DESKTOP_SESSION=1\0";
+        let mut matches=true;
+        for (j,wanted) in expected.iter().enumerate(){
+            let actual=unsafe{*entry.add(j)};
+            if actual!=*wanted {matches=false;break;}
+        }
+        if matches{return true;}
+    }
+    false
+}
+
 /// Reads the sudo variables from a NULL-terminated envp. A present but
 /// malformed or incomplete identity is an error: never guess, never stay
 /// root by accident.

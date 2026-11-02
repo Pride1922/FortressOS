@@ -37,9 +37,11 @@ created that demo seed and published revision 2. Do not use that script for futu
 production publication. `/etc/fortress-keys` was never the deployed location.
 
 Production staging: `~/.cache/fortress-publish/production-rekey-20261102`.
-**Active production catalog:** revision 3, SHA-256
-`1755fb435bbe3479cccc223af9a14e13d483de30448a8fb59c3440e3e6a96add`.
-It offers rot13 build 2 and the four factory desktop packages at build 1.
+**Active production catalog:** revision 5, SHA-256
+`b2e93e019dc5beae7a6ad75a44f9397b7db13dc3aa99bfe81e17eb384d80baa5`.
+It offers `fortress-desktop` build 3 (new top panel), with Files, Notepad, Terminal
+and rot13 still at build 2. The three client FPKs match the installer from
+commit `1300c5e`; the compositor is a newer separately published app update.
 Both rot13 objects remain available. The previous catalog is retained at
 `~/.cache/fortress-publish/production-rekey-20261102/catalog-before-production-key.v1`.
 
@@ -311,3 +313,45 @@ by its installed SHA-256, and the kernel revalidates ownership independently.
 See [bounded upgrade contracts and verification](plans/PKG3_BOUNDED_UPGRADE.md).
 The former deterministic demo signing key is retired from release trust; use
 the production signing path recorded above.
+
+## Desktop build-2 synchronization (2026-11-02)
+
+The refreshed installer contains app build 2. Catalog revision 3 still offered
+build 1, causing `pkg upgrade` to refuse it with `catalog rollback or equal-build
+substitution fortress-desktop`. That refusal preserved installed packages.
+Catalog revision 4 now offers the exact build-2 factory FPKs; both old rot13 objects
+and all prior desktop objects remain available. Signing used the existing
+production key; no client trust changes or reflash are needed for this correction.
+
+Publication staging: `~/.cache/fortress-publish/desktop-build-2-1300c5e`. The
+revision-3 catalog is backed up there as `catalog-before-production-key.v1` (the
+activation helper's generic filename; this publication did not change keys).
+Public HTTPS/signature/object verification:
+`build/desktop-build-2-repository-verification.json`.
+
+Retry `sudo pkg upgrade` on the freshly installed build-2 image. The desktop
+packages should report current, because the catalog now matches their exact hashes.
+Only genuinely newer offers should produce upgrades. Future image production and
+repository publication must be coordinated before asking for package acceptance.
+
+## Taskbar compositor release (2026-11-02)
+
+`fortress-desktop` build 3 is published in revision 5. Artifact SHA-256:
+`e67df98dbceecfb44bef01993e3c75b863ea4a50e5c0740f11d6fe3a06f26207`.
+The package contains the updated top panel in `user/compositor/src/window.rs`:
+Activities, centered clock, grouped tray and aligned window snap margins.
+No client protocol or base-service change is included. The published version
+string remains 0.2.0; the monotonic package build is 3.
+
+Source window-file SHA-256:
+`74a8c3e22625dae93366ab5978c0f679ea68baf58422cbbb31217c58f302c3c3`.
+The change was uncommitted at packaging; exact source/executable provenance is in
+`build/desktop-release3-current.json`. The actual package/ELF verifier passed.
+Public HTTPS signature, full offered-artifact hashes and retained prior-object
+checks passed (`build/desktop-build-3-repository-verification.json` and `.log`).
+No image was rebuilt and no physical device was written. Dell upgrade/GUI
+acceptance remains pending.
+
+Server staging: `~/.cache/fortress-publish/desktop-build-3-taskbar`. Stop the desktop
+to the console, run `sudo pkg upgrade fortress-desktop`, then `sudo desktop`.
+Use `sudo pkg info fortress-desktop` to inspect the installed package build.
