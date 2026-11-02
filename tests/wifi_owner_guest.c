@@ -57,7 +57,12 @@ int wifi_owner_main(int argc,char **argv) {
     }
     if (mode=='h') { CHECK(!observe(1)); return 0; }
     if (mode=='u') { CHECK(!observe(2)); return 0; }
-    if (mode=='p') { CHECK(observe(3)>0); return 0; }
+    if (mode=='p') {
+        /* The shell's background-job announcement precedes child admission.
+         * Wait for the observable held ticket before testing cancellation. */
+        for (unsigned i=0;i<500 && !observe(3);++i) pause_ms(10);
+        CHECK(observe(3)>0); return 0;
+    }
     if (mode=='f') {
         for (unsigned i=0;i<500 && observe(3)!=4;++i) pause_ms(10);
         CHECK(observe(3)==4); return 0;
