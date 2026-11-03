@@ -1,6 +1,16 @@
 # Single complete installer — 2026-11-02
 
-## Current installer: ext4 metadata performance, 2026-11-03
+## Current installer: payload batching, 2026-11-03
+
+Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
+`7d9e2c14162949ab8967c3086563ab99dc9694ddf7ae100c2435dc7bf7c7eec2`.
+Clean source `3db7077` includes the earlier metadata fixes and bounded 16 KiB
+payload requests with fresh target validation. Host fault/oracle tests and
+BIOS/UEFI installation, four installed boots and Linux filesystem audits pass.
+Parallel uncommitted ACPI/Vault/terminal work is excluded. Physical performance
+acceptance is pending. [Release evidence](installer-payload-batching.md).
+
+## Earlier installer: ext4 metadata performance, 2026-11-03
 
 Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
 `e4a2650597c39117f00682da993fc481a09395f37f3e6dea40ab402599393f92`.

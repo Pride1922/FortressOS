@@ -1,5 +1,11 @@
 # Storage & Memory Subsystem Annex
 
+2026-11-03 payload-copy follow-up: trusted installer payload requests batch to
+16 KiB while hardware transfers stay bounded to 4 KiB. Complete target identity
+validation remains per request; failed prefixes fence further I/O. Host fault
+matrix and BIOS/UEFI installed-root acceptance pass; physical timing is pending.
+[Implementation and release evidence](../roadmap/installer-payload-batching.md).
+
 2026-11-03 performance implementation: bounded installer/recovery-preview bulk
 I/O and table CRC32C preserve admission, identity and durability contracts. Host
 ASan/UBSan, Linux journal crash-cut oracles, BIOS/UEFI installation and four
