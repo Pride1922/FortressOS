@@ -1,6 +1,15 @@
 # Single complete installer — 2026-11-02
 
-## Current diagnostic media: live USB
+## Current installer: desktop and Calculator, 2026-11-03
+
+Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
+`6296e1610d3405c156d8341e506a67cde2a51043e7607a5f0d0ebe86cb4a81e9`.
+Includes all five desktop applications, the terminal resize correction and the
+latest network fixes. Built from clean source `64f16bd` with complete A/B base
+slots. [Release evidence](desktop-calculator-installer-2026-11-03.md) and
+[Dell acceptance](../dell-acceptance-2026-11-03.md).
+
+## Earlier diagnostic media: live USB
 
 Use `bin/fortress-live.img` (130 MiB), SHA-256
 `ef68e355d424201d4ffdd67f250f7220fb65f8d3135807989df3569c8c55157e`.
@@ -9,8 +18,7 @@ desktop changes, Wi-Fi diagnostics,
 [GTK delivery and scoped profile-save corrections](wifi-gtk-delivery.md).
 Battery hardware telemetry is explicitly unavailable after withdrawing fabricated
 readings; [physical failure and correction](battery-telemetry-unavailable.md). BIOS/UEFI live USB tests
-PASS 2/2. The installer-only file below has been retired, leaving one published
-image. [Live commands, source identity and evidence](acpi-live-usb.md).
+PASS 2/2. This live image has since been superseded by the installer above. [Live commands, source identity and evidence](acpi-live-usb.md).
 
 ## Earlier installer: Wi-Fi receive-stage diagnostics
 

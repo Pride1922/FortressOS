@@ -2,19 +2,16 @@
 
 [Implementation evidence and acceptance limits](roadmap/base-repository-updates.md).
 
-The currently published diagnostic media is the [ACPI live USB](roadmap/acpi-live-usb.md)
-`bin/fortress-live.img`. The installer described below is historical and has been
-removed locally; rebuild it before following the installer/update sequence.
-
 The complete A/B installer is `bin/fortress-base-installer.img` (528 MiB).
-SHA-256: `09ab399d209efae3938458519719c9d15754ad1ee7e92c66854ca847b01a58cf`. The earlier
-`fortress-ready-2026-11-02-installer.img` is superseded: it does not provision
-complete base-update slots. Use the complete A/B baseline for the intended last
-reflash. Installation erases the selected target; flashing/installing remain
-user-operated.
+SHA-256: `6296e1610d3405c156d8341e506a67cde2a51043e7607a5f0d0ebe86cb4a81e9`.
+It supersedes the live-only diagnostic image and earlier installers, and provisions
+complete base-update slots. Installation erases the selected target;
+flashing/installing remain user-operated.
 
-The image includes the four [desktop application packages](desktop-packages.md)
-as ordinary installed packages, plus the base recovery compositor and services.
+The image includes five [desktop application packages](desktop-packages.md):
+Desktop, Files, Notepad, Terminal and Calculator, plus the base recovery compositor
+and services. [Release evidence](roadmap/desktop-calculator-installer-2026-11-03.md)
+and [Dell acceptance checklist](dell-acceptance-2026-11-03.md).
 
 After installation, use the existing repository for applications and the base OS:
 
