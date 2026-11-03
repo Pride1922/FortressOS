@@ -22,6 +22,7 @@ def create(output, sequence=1, abi=1, platform=bytes.fromhex('42'*32), app_seque
     output = Path(output)
     if output.is_symlink() or output.resolve().parent != (ROOT/'bin').resolve():
         raise ValueError('output must be a regular bin image')
+    (ROOT/'build/root-phase4').mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='base-installer-',dir=ROOT/'build/root-phase4'))
     kernel = out/'kernel.elf'
     subprocess.run(['objcopy','--strip-debug',str(ROOT/'bin/fortress.elf'),str(kernel)],check=True)

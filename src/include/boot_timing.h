@@ -27,6 +27,14 @@ static inline void boot_timing_begin(boot_timing_t *t,const char *phase) {
     if (!t->hz || t->hz>UINT64_MAX/1000) {t->hz=0;return;}
     t->start=t->last=BOOT_TIMING_READ();t->phase=phase;t->valid=true;
 }
+/* Calibrate an earlier raw TSC sample only after the clock is available. */
+static inline void boot_timing_begin_at(boot_timing_t *t,const char *phase,uint64_t entry) {
+    boot_timing_begin(t,phase);
+    if (!t->hz) return;
+    if (entry>t->last) {t->valid=false;return;}
+    t->entries[0].name="early-platform";t->entries[0].ticks=t->last-entry;
+    t->count=1;t->start=entry;t->total=t->last-entry;
+}
 static inline void boot_timing_mark(boot_timing_t *t,const char *next) {
     if (!t->hz || !t->valid) return;
     uint64_t now=BOOT_TIMING_READ();

@@ -4917,6 +4917,7 @@ static void test_pipe_kernel_lifecycle(void) {
 #undef PIPE_REQUIRE
 
 void kmain(void) {
+    uint64_t kernel_entry_ticks=apic_poll_clock_read();
 
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
@@ -5958,7 +5959,7 @@ pf_boot_guard_done:
     }
     rtc_init(century_reg);
     time_init();
-    boot_timing_begin(&boot_profile,"clock-ready");
+    boot_timing_begin_at(&boot_profile,"clock-ready",kernel_entry_ticks);
     random_init(&boot_info, time_get_epoch_seconds());
     serial_puts(random_ready() ? "[RANDOM] hardware-seeded HMAC-DRBG ready\n" :
                                "[RANDOM] unavailable; strong randomness fails closed\n");
@@ -6644,6 +6645,7 @@ pf_boot_guard_done:
     /* Keep discovery visible near the shell on hardware without COM1. */
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
+    boot_timing_mark(&boot_profile,"Network controllers");
     net_boot_probe();
     if (iwlwifi_probe()) {
         iwlwifi_map_mmio();
