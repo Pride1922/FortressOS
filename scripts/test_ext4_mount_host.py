@@ -72,10 +72,10 @@ def smoke(root):
         'vfs_sha256':hashlib.sha256((ROOT/'src/fs/vfs.c').read_bytes()).hexdigest()},indent=2)+'\n')
     print(f'EXT4 latest VFS mount/lifetime/recovery/admission/freeze/concurrency smoke PASS 12/12: {out}')
 
-def profile(out,source,bs,ss,wrap):
+def profile(out,source,bs,ss,wrap,*,timeout=900):
     prefix=out/f'{source.stem}-{ss}';cmd=[str(EVIDENCE/'bin/ext4_mount_host'),str(source),str(ss),str(prefix)]
     logfile=out/f'{prefix.name}.log'
-    with logfile.open('w') as stream:result=subprocess.run(cmd,stdout=stream,stderr=subprocess.STDOUT,timeout=900)
+    with logfile.open('w') as stream:result=subprocess.run(cmd,stdout=stream,stderr=subprocess.STDOUT,timeout=timeout)
     text=logfile.read_text();print(text,end='',flush=True);assert result.returncode==0,f'{cmd}: retained {logfile}'
     for suffix in ('lifecycle-clean','pending-seed','activation-clean','recovery-clean','freeze-pending','freeze-recovered'):
         image=Path(str(prefix)+f'-{suffix}.img')
@@ -106,12 +106,15 @@ def main():
             for ss in (512,4096):
                 jobs.append((out,source,bs,ss,wrap))
         (out/f'generation-{bs}.log').write_text(log)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        records=list(pool.map(lambda args:profile(*args),jobs))
+    workers=int(os.environ.get('FORTRESS_EXT4_HOST_JOBS','3'))
+    assert 1<=workers<=12, 'FORTRESS_EXT4_HOST_JOBS must be between 1 and 12'
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        records=list(pool.map(lambda args:profile(*args,timeout=900*max(1,(workers+2)//3)),jobs))
     (out/'manifest.json').write_text(json.dumps(records,indent=2)+'\n')
     (out/'source-context.json').write_text(json.dumps({'argv':sys.argv,
         'binary_sha256':hashlib.sha256((EVIDENCE/'bin/ext4_mount_host').read_bytes()).hexdigest(),
-        'vfs_sha256':hashlib.sha256((ROOT/'src/fs/vfs.c').read_bytes()).hexdigest()},indent=2)+'\n')
+        'vfs_sha256':hashlib.sha256((ROOT/'src/fs/vfs.c').read_bytes()).hexdigest(),
+        'workers':workers,'per_case_timeout_seconds':900*max(1,(workers+2)//3)},indent=2)+'\n')
     print(f'EXT4 mount host PASS 12/12; evidence: {out}')
 if __name__=='__main__':
     if len(sys.argv)==3 and sys.argv[1]=='--audit':audit_completed(Path(sys.argv[2]))

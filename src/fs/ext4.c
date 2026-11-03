@@ -11,6 +11,7 @@
 #include "spinlock.h"
 #include "ext4_engine.h"
 #include "ext4_time.h"
+#include "ext4_bitmap.h"
 
 #if defined(HOST_TEST) || defined(__linux__)
 __attribute__((weak)) uint64_t time_get_epoch_seconds(void) { return 1726500000; }
@@ -305,6 +306,16 @@ static void e4_range_sort(e4_range_t *ranges,unsigned count) {
         e4_range_t swap=ranges[0];ranges[0]=ranges[i-1];ranges[i-1]=swap;
         e4_range_heap(ranges,0,i-1);
     }
+}
+/* Admission sorts reservations before journal file/ownership validation.
+ * Locate the first range beginning in a group without rescanning earlier groups. */
+static unsigned e4_reserved_first(const ext4_mount_t *fs,uint32_t start) {
+    unsigned lo=0,hi=fs->ranges;
+    while (lo<hi) {
+        unsigned mid=lo+(hi-lo)/2;
+        if (fs->reserved[mid].lo<start) lo=mid+1;else hi=mid;
+    }
+    return lo;
 }
 static bool e4_data_range(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
     if (!len || lo<fs->first || lo>=fs->blocks || len>fs->blocks-lo) return false;
@@ -853,6 +864,7 @@ static int e4_admit(ext4_mount_t *fs) {
         memcpy(copy,d,32); copy[30]=copy[31]=0; e4_p32(number,g);
         if ((uint16_t)e4_crc(e4_crc(fs->seed,number,4),copy,32)!=e4_u16(d+30) &&
             (!fs->journal_bootstrap || !e4_journal_descriptor_backup(fs,g,d))) return -VFS_EIO;
+        unsigned group_ranges=fs->ranges;
         uint32_t start=fs->first+g*fs->bpg, end=fs->blocks-start;
         if (end>fs->bpg) end=fs->bpg;
         if (e4_u16(d+18)&~7u || e4_u32(d+20) || e4_u16(d+12)>end ||
@@ -869,7 +881,7 @@ static int e4_admit(ext4_mount_t *fs) {
         if (!fs->journal_bootstrap && !(e4_u16(d+18)&2)) {
             if (!e4_bytes(fs,(uint64_t)b*fs->bs,fs->scratch,fs->bs) ||
                 (uint16_t)e4_crc(fs->seed,fs->scratch,fs->bpg/8)!=e4_u16(d+24)) return -VFS_EIO;
-            for (unsigned j=0;j<fs->ranges;j++) {
+            for (unsigned j=group_ranges;j<fs->ranges;j++) {
                 e4_range_t range=fs->reserved[j];
                 if (range.lo>=start && range.lo<start+end)
                     for (uint32_t k=0;k<range.len;k++)

@@ -169,7 +169,7 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         if (!lazy && !e4_bitmap(fs,g,false)) { r=-VFS_EIO;goto done; }
         if (lazy) {
             memset(fs->scratch,0,fs->bs);
-            for (unsigned i=0;i<fs->ranges;i++) if (fs->reserved[i].lo>=start && fs->reserved[i].lo<start+count)
+            for (unsigned i=e4_reserved_first(fs,start);i<fs->ranges && fs->reserved[i].lo<start+count;i++)
                 for (uint32_t k=0;k<fs->reserved[i].len;k++) e4_set_bit(fs->scratch,fs->reserved[i].lo-start+k,true);
         }
         unsigned free=0;
@@ -181,7 +181,7 @@ static int e4_orphan_validate(ext4_engine_t *e) {
             uint8_t expected=owned[index]>>shift;
             if (shift) expected|=(uint8_t)(owned[index+1]<<(8-shift));
             if (value!=expected) {r=-VFS_EIO;goto done;}
-            for (unsigned bit=0;bit<8;bit++) free+=!(value&(1u<<bit));
+            free+=8-e4_bitmap_used_byte(value);
         }
         for (uint32_t bit=count-count%8;bit<count;bit++) {
             bool allocated=e4_bit(fs->scratch,bit);

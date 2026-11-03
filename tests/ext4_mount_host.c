@@ -35,6 +35,10 @@ void serial_puts(const char *s) { (void)s; }
 void serial_raw_putc(char c) { (void)c; }
 void console_terminal_write(const char *s,size_t n) { (void)s;(void)n; }
 void console_inc_generation(void) {}
+struct vfs_node;
+/* Input devices are outside this filesystem-only host fixture. */
+void mouse_dev_init(struct vfs_node *node) { (void)node; }
+void kbd_dev_init(struct vfs_node *node) { (void)node; }
 bool console_is_quiet(void) { return false; }
 int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
 bool block_read_sector(block_dev_t *dev,uint64_t lba,void *bytes) {

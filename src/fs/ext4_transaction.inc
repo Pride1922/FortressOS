@@ -152,9 +152,9 @@ static int e4_open_journal_files_owned(block_dev_t *dev,bool admitted,bool orpha
             if (!e4_bitmap(fs,g,kind!=0)) { r=-VFS_EIO;goto fail; }
             uint32_t start=fs->first+g*fs->bpg,count=kind ? fs->ipg : fs->blocks-start;
             if (!kind && count>fs->bpg) count=fs->bpg;
-            unsigned free=0;for (uint32_t bit=0;bit<count;bit++) free+=!e4_bit(fs->scratch,bit);
+            unsigned free=e4_bitmap_free_count(fs->scratch,count);
             if (free!=e4_u16(fs->gd[g].raw+(kind ? 14 : 12))) { r=-VFS_EIO;goto fail; }
-            if (!kind) for (unsigned i=0;i<fs->ranges;i++) {
+            if (!kind) for (unsigned i=e4_reserved_first(fs,start);i<fs->ranges && fs->reserved[i].lo<start+count;i++) {
                 e4_range_t range=fs->reserved[i];
                 if (range.lo>=start && range.lo<start+count) for (unsigned k=0;k<range.len;k++)
                     if (!e4_bit(fs->scratch,range.lo-start+k)) { r=-VFS_EIO;goto fail; }

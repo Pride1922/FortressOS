@@ -1,5 +1,10 @@
 # Storage & Memory Subsystem Annex
 
+2026-11-03 boot-scan follow-up: byte-level bitmap counting and bounded group
+reservation searches reduce CPU work while retaining full replay/ownership
+validation. The Dell-sized host mount benchmark improves about 28% with unchanged
+read and checksum counts. [Checkpoint, implementation, tests and limitations](../roadmap/ext4-boot-scan.md).
+
 2026-11-03 payload-copy follow-up: trusted installer payload requests batch to
 16 KiB while hardware transfers stay bounded to 4 KiB. Complete target identity
 validation remains per request; failed prefixes fence further I/O. Host fault
