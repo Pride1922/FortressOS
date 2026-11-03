@@ -15,7 +15,7 @@ from create_installer_media import elf_load_image
 
 MAX = 128 + 16384 + 8*1024*1024
 BANK = 8*1024*1024
-APPLICATION_BINARIES = frozenset(("bin/notepad", "bin/files", "bin/terminal"))
+APPLICATION_BINARIES = frozenset(("bin/notepad", "bin/files", "bin/terminal", "bin/calc"))
 
 
 def release(build, abi, platform):

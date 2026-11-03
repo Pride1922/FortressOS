@@ -30,10 +30,10 @@ def main():
         archive=out/'base.tar';archive.write_bytes(bootstrap((ROOT/'bin/initramfs.tar').read_bytes(),1,1,platform))
         with tarfile.open(archive) as tar:
             names=set(tar.getnames());assert 'bin/compositor' in names
-            assert not {'bin/notepad','bin/files','bin/terminal'}&names
+            assert not {'bin/notepad','bin/files','bin/terminal','bin/calc'}&names
         # Template generation uses the stripped base archive; full live media's
         # archive is independently checked for the original bundled clients.
-        with tarfile.open(ROOT/'bin/initramfs.tar') as tar:assert {'bin/notepad','bin/files','bin/terminal'}<=set(tar.getnames())
+        with tarfile.open(ROOT/'bin/initramfs.tar') as tar:assert {'bin/notepad','bin/files','bin/terminal','bin/calc'}<=set(tar.getnames())
         result=subprocess.run(['python3','scripts/create_installer_payload.py','--kernel',str(ROOT/'bin/fortress.elf'),
             '--bootstrap',str(archive)],cwd=ROOT,capture_output=True,text=True,check=True,timeout=600)
         (out/'payload.log').write_text(result.stdout+result.stderr);templates=Path(result.stdout.strip().splitlines()[-1])

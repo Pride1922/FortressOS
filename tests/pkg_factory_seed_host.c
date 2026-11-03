@@ -7,8 +7,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "install_payload.h"
-static const char *packages[]={"fortress-desktop","fortress-files","fortress-notepad","fortress-terminal"};
-static const char *commands[]={"desktop","files","notepad","terminal"};
+static const char *packages[]={"fortress-calc","fortress-desktop","fortress-files","fortress-notepad","fortress-terminal"};
+static const char *commands[]={"calc","desktop","files","notepad","terminal"};
+enum { PACKAGE_COUNT = sizeof packages / sizeof packages[0], SEED_ARGC = 3 + PACKAGE_COUNT, UPGRADE_ARGC = SEED_ARGC + 2 + PACKAGE_COUNT };
+_Static_assert(sizeof commands / sizeof commands[0] == PACKAGE_COUNT, "factory command count");
 static void write_file(ext4_mount_t *fs,const char *path,const uint8_t *bytes,size_t n,unsigned mode,bool existing){
     creds_t root;creds_init_root(&root);int error;char parent[192],leaf[64];size_t at=strlen(path);
     while(at&&path[at-1]!='/')at--;
@@ -77,9 +79,9 @@ static void output(const char *path,ext4_fault_disk_t *d){
     assert(f&&fwrite(d->stable,1,d->bytes,f)==d->bytes&&!fflush(f)&&!fsync(fileno(f))&&!fclose(f));
 }
 int main(int argc,char **argv){
-    assert(argc==7||argc==13);struct stat st;
+    assert(argc==SEED_ARGC||argc==UPGRADE_ARGC);struct stat st;
     assert(!lstat(argv[1],&st)&&S_ISREG(st.st_mode)&&st.st_size==256*1024*1024);
-    for(unsigned i=0;i<4;i++)assert(!lstat(argv[3+i],&st)&&S_ISREG(st.st_mode)&&st.st_size>128&&st.st_size<=FPK_HEADER_SIZE+FPK_MANIFEST_MAX+FPK_COMPRESSED_MAX);
+    for(unsigned i=0;i<PACKAGE_COUNT;i++)assert(!lstat(argv[3+i],&st)&&S_ISREG(st.st_mode)&&st.st_size>128&&st.st_size<=FPK_HEADER_SIZE+FPK_MANIFEST_MAX+FPK_COMPRESSED_MAX);
     size_t n;uint8_t *initial=load(argv[1],&n);
     ext4_fault_disk_t d={.stable=malloc(n),.volatile_bytes=malloc(n),.bytes=n,.cut=-1};assert(d.stable&&d.volatile_bytes);
     memcpy(d.stable,initial,n);memcpy(d.volatile_bytes,initial,n);
@@ -88,26 +90,26 @@ int main(int argc,char **argv){
     px_inventory *existing=px_allocate(sizeof *existing);assert(existing&&!px_inventory_read(fs,existing));
     for(unsigned i=0;i<PX_PACKAGES;i++)assert(!existing->present[i]);
     kfree(existing);
-    uint8_t *artifacts[4];size_t sizes[4];
-    for(unsigned i=0;i<4;i++){artifacts[i]=load(argv[3+i],sizes+i);seed(fs,i,artifacts[i],sizes[i]);}
+    uint8_t *artifacts[PACKAGE_COUNT];size_t sizes[PACKAGE_COUNT];
+    for(unsigned i=0;i<PACKAGE_COUNT;i++){artifacts[i]=load(argv[3+i],sizes+i);seed(fs,i,artifacts[i],sizes[i]);}
     pkg_transaction_status status;assert(!ext4_pkg_status(fs,&status)&&status.phase==PKG_TX_IDLE);
     assert(!ext4_freeze_and_sync(fs));output(argv[2],&d);teardown();
-    if(argc==13){
+    if(argc==UPGRADE_ARGC){
         size_t bytes=320u*1024*1024;
         d.stable=realloc(d.stable,bytes);d.volatile_bytes=realloc(d.volatile_bytes,bytes);assert(d.stable&&d.volatile_bytes);
         memset(d.stable+d.bytes,0,bytes-d.bytes);memset(d.volatile_bytes+d.bytes,0,bytes-d.bytes);d.bytes=bytes;
         install_target_t target={.context=&d,.sector_size=512,.sectors=bytes/512+INSTALL_ROOT_LBA+33,.read=grow_read,.write=grow_write,.flush=grow_flush};
         install_expand_work_t *growth=calloc(1,sizeof *growth);assert(growth&&!install_root_expand(&target,bytes/512,growth));free(growth);dev.sector_count=bytes/512;
         vfs_init();fs=NULL;assert(!ext4_mount_journal_fixture(&dev,"/mnt",admitted,&fs));
-        size_t tn,cn;uint8_t *trust=load(argv[7],&tn),*catalog=load(argv[8],&cn);
+        size_t tn,cn;uint8_t *trust=load(argv[SEED_ARGC],&tn),*catalog=load(argv[SEED_ARGC+1],&cn);
         /* Test copy only: factory output above retains the real trust config. */
         int error;creds_t root;creds_init_root(&root);
         vfs_node_t *tf=vfs_lookup_at_creds(&fs->cached[0]->node,"/etc/pkg/trust.conf",&root,&error);assert(tf&&tf->truncate&&!tf->truncate(tf,0));
         uint64_t off=0;assert(tf->write(tf,&off,false,trust,tn)==(int64_t)tn);vfs_node_put(tf);
-        for(unsigned i=0;i<4;i++){
-            size_t next_n;uint8_t *next=load(argv[9+i],&next_n),name[32]={0};memcpy(name,packages[i],strlen(packages[i]));
+        for(unsigned i=0;i<PACKAGE_COUNT;i++){
+            size_t next_n;uint8_t *next=load(argv[SEED_ARGC+2+i],&next_n),name[32]={0};memcpy(name,packages[i],strlen(packages[i]));
             size_t before=d.events;
-            assert(ext4_pkg_upgrade_source(fs,name,catalog,cn,next,next_n,artifacts[(i+1)%4],sizes[(i+1)%4],&status));assert(d.events==before&&!px);
+            assert(ext4_pkg_upgrade_source(fs,name,catalog,cn,next,next_n,artifacts[(i+1)%PACKAGE_COUNT],sizes[(i+1)%PACKAGE_COUNT],&status));assert(d.events==before&&!px);
             catalog[cn-1]^=1;assert(ext4_pkg_upgrade_source(fs,name,catalog,cn,next,next_n,artifacts[i],sizes[i],&status));assert(d.events==before&&!px);catalog[cn-1]^=1;
             int upgraded=ext4_pkg_upgrade_source(fs,name,catalog,cn,next,next_n,artifacts[i],sizes[i],&status);
             fprintf(stderr,"factory upgrade %s result=%d free-inodes=%llu\n",packages[i],upgraded,(unsigned long long)px_free(fs->engine,true,false));
@@ -116,9 +118,9 @@ int main(int argc,char **argv){
             free(next);
         }
         assert(!ext4_freeze_and_sync(fs));char path[1024];snprintf(path,sizeof path,"%s.upgraded.img",argv[2]);output(path,&d);teardown();free(trust);free(catalog);
-        puts("PASS all four factory packages upgraded through actual signed-source callbacks; foreign predecessor/signature zero-write refusals and verified repeat no-ops");
+        puts("PASS all factory packages upgraded through actual signed-source callbacks; foreign predecessor/signature zero-write refusals and verified repeat no-ops");
     }
-    for(unsigned i=0;i<4;i++)free(artifacts[i]);
+    for(unsigned i=0;i<PACKAGE_COUNT;i++)free(artifacts[i]);
     free(initial);free(d.stable);free(d.volatile_bytes);
     puts("PASS factory FPK verification, installed inventory and local source retention; no catalog/signing policy injected");return 0;
 }
