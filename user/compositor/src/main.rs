@@ -552,8 +552,10 @@ fn event_loop(
             } else {
                 false
             };
-            if !handled && handle_action(action, scene, &mut clients, &mut last_info_sec) {
-                break 0;
+            if !handled {
+                if let Some(code) = handle_action(action, scene, &mut clients, &mut last_info_sec) {
+                    break 'event_loop code;
+                }
             }
             if frame_count % 8 == 0 {
                 windows.monitor_mouse(scene, (cursor.x, cursor.y));
@@ -831,10 +833,10 @@ fn handle_action(
     scene: &mut Surface,
     clients: &mut clients::Clients,
     last_info_sec: &mut i64,
-) -> bool {
+) -> Option<i32> {
     match action {
         window::Action::OpenDesktopApp(_) => {}
-        window::Action::Exit => return true,
+        window::Action::Exit => return Some(3), // 3 = exit to console
         window::Action::Restart => {
             if !RESTART_SUPPORTED.load(core::sync::atomic::Ordering::Relaxed) {
                 sys::write(2,b"[compositor] Restart requires the updated sudo desktop launcher\n");
@@ -842,7 +844,7 @@ fn handle_action(
                 sys::write(2,b"[compositor] Save and close application windows before restarting\n");
             } else {
                 RESTART_REQUESTED.store(true,core::sync::atomic::Ordering::Relaxed);
-                return true;
+                return Some(0);
             }
         }
 
@@ -869,5 +871,5 @@ fn handle_action(
         }
         window::Action::None => {}
     }
-    false
+    None
 }

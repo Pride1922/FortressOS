@@ -95,6 +95,97 @@ fn epoch_to_datetime(epoch: u64) -> Option<(u32, u8, u8, u8, u8, u8)> {
     Some((year, month, day, hour, min, sec))
 }
 
+const DAYS: [&str; 7] = [
+    "Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"
+];
+const MONTHS: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+];
+
+fn read_timezone_offset() -> i64 {
+    let fd = unsafe {
+        raw_sys::syscall2(
+            raw_sys::SYS_OPEN,
+            b"/etc/timezone\0".as_ptr() as usize,
+            0, // VFS_O_RDONLY
+        )
+    };
+    if fd < 0 {
+        return 0;
+    }
+    let mut buf = [0u8; 64];
+    let n = raw_sys::read(fd as i32, &mut buf);
+    raw_sys::close(fd as i32);
+    if n <= 0 {
+        return 0;
+    }
+    let len = (n as usize).min(buf.len());
+    let tz_str = core::str::from_utf8(&buf[..len]).unwrap_or("").trim_ascii();
+
+    if tz_str.contains("Brussels") || tz_str.contains("Paris") || tz_str.contains("Berlin")
+        || tz_str.contains("Amsterdam") || tz_str.contains("Madrid") || tz_str.contains("Rome")
+        || tz_str == "CET" {
+        return 3600;
+    }
+    if tz_str.contains("Helsinki") || tz_str.contains("Athens") || tz_str.contains("Kyiv") || tz_str == "EET" {
+        return 7200;
+    }
+    0
+}
+
+fn find_primary_user(out: &mut [u8; 32]) -> usize {
+    let fd = unsafe {
+        raw_sys::syscall2(
+            raw_sys::SYS_OPEN,
+            b"/etc/passwd\0".as_ptr() as usize,
+            0, // VFS_O_RDONLY
+        )
+    };
+    if fd < 0 {
+        let def = b"operator";
+        out[..def.len()].copy_from_slice(def);
+        return def.len();
+    }
+    let fd_i32 = fd as i32;
+    let mut buf = [0u8; 1024];
+    let n = raw_sys::read(fd_i32, &mut buf);
+    raw_sys::close(fd_i32);
+    if n <= 0 {
+        let def = b"operator";
+        out[..def.len()].copy_from_slice(def);
+        return def.len();
+    }
+
+    let slice = &buf[..(n as usize).min(buf.len())];
+    for line in slice.split(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        let mut parts = line.split(|&b| b == b':');
+        let Some(name) = parts.next() else { continue; };
+        let Some(_pw) = parts.next() else { continue; };
+        let Some(uid_bytes) = parts.next() else { continue; };
+        let mut uid = 0u32;
+        let mut valid = false;
+        for &b in uid_bytes {
+            if b >= b'0' && b <= b'9' {
+                uid = uid.saturating_mul(10).saturating_add((b - b'0') as u32);
+                valid = true;
+            } else {
+                break;
+            }
+        }
+        if valid && uid >= 1000 && !name.is_empty() {
+            let len = name.len().min(out.len());
+            out[..len].copy_from_slice(&name[..len]);
+            return len;
+        }
+    }
+
+    let def = b"operator";
+    out[..def.len()].copy_from_slice(def);
+    def.len()
+}
+
 fn append_u32_digits(buf: &mut [u8], pos: &mut usize, val: u32, digits: usize) {
     let mut divisor = 1u32;
     for _ in 1..digits {
@@ -121,20 +212,21 @@ fn log_greeter_msg(msg: &str) {
     };
 
     if r == 0 && ts.tv_sec > 1000000 {
-        if let Some((y, m, d, hh, mm, ss)) = epoch_to_datetime(ts.tv_sec as u64) {
+        let tz_offset = read_timezone_offset();
+        let local_epoch = (ts.tv_sec as i64 + tz_offset).max(0) as u64;
+        if let Some((y, m, d, hh, mm, ss)) = epoch_to_datetime(local_epoch) {
             buf[pos] = b'['; pos += 1;
             append_u32_digits(&mut buf, &mut pos, y, 4);
             buf[pos] = b'-'; pos += 1;
             append_u32_digits(&mut buf, &mut pos, m as u32, 2);
             buf[pos] = b'-'; pos += 1;
             append_u32_digits(&mut buf, &mut pos, d as u32, 2);
-            buf[pos] = b'T'; pos += 1;
+            buf[pos] = b' '; pos += 1;
             append_u32_digits(&mut buf, &mut pos, hh as u32, 2);
             buf[pos] = b':'; pos += 1;
             append_u32_digits(&mut buf, &mut pos, mm as u32, 2);
             buf[pos] = b':'; pos += 1;
             append_u32_digits(&mut buf, &mut pos, ss as u32, 2);
-            buf[pos] = b'Z'; pos += 1;
             buf[pos] = b']'; pos += 1;
             buf[pos] = b' '; pos += 1;
         }
@@ -230,7 +322,7 @@ fn log_greeter_auth(user: &str, success: bool, reason: &str) {
 struct GreeterState {
     username: TextField<32>,
     password: TextField<64>,
-    focus: usize, // 0 = user, 1 = pass, 2 = login btn, 3 = restart, 4 = shutdown
+    focus: usize, // 0 = user, 1 = pass, 2 = login btn, 3 = restart, 4 = shutdown, 5 = console
     error: Option<&'static str>,
     card_rect: Rect,
     user_rect: Rect,
@@ -238,14 +330,18 @@ struct GreeterState {
     login_btn_rect: Rect,
     restart_btn_rect: Rect,
     shutdown_btn_rect: Rect,
+    console_btn_rect: Rect,
 }
 
 impl GreeterState {
     fn new(screen_w: usize, screen_h: usize) -> Self {
+        let mut user_buf = [0u8; 32];
+        let ulen = find_primary_user(&mut user_buf);
+        let user_str = core::str::from_utf8(&user_buf[..ulen]).unwrap_or("operator");
         let mut username = TextField::new();
-        username.set_text("operator");
+        username.set_text(user_str);
 
-        let cw = 400.min(screen_w.saturating_sub(40));
+        let cw = 420.min(screen_w.saturating_sub(40));
         let ch = 340.min(screen_h.saturating_sub(40));
         let cx = (screen_w.saturating_sub(cw)) / 2;
         let cy = (screen_h.saturating_sub(ch)) / 2;
@@ -254,13 +350,16 @@ impl GreeterState {
         let user_rect = rect(cx + 32, cy + 110, cw - 64, 34);
         let pass_rect = rect(cx + 32, cy + 180, cw - 64, 34);
         let login_btn_rect = rect(cx + 32, cy + 240, cw - 64, 38);
-        let restart_btn_rect = rect(cx + 32, cy + 295, (cw - 74) / 2, 28);
-        let shutdown_btn_rect = rect(cx + 32 + (cw - 74) / 2 + 10, cy + 295, (cw - 74) / 2, 28);
+
+        let btn_w = (cw.saturating_sub(64 + 16)) / 3;
+        let restart_btn_rect = rect(cx + 32, cy + 295, btn_w, 28);
+        let shutdown_btn_rect = rect(cx + 32 + btn_w + 8, cy + 295, btn_w, 28);
+        let console_btn_rect = rect(cx + 32 + (btn_w + 8) * 2, cy + 295, btn_w, 28);
 
         Self {
             username,
             password: TextField::new(),
-            focus: 1, // Start focused on password since operator is default
+            focus: 1, // Start focused on password
             error: None,
             card_rect,
             user_rect,
@@ -268,6 +367,7 @@ impl GreeterState {
             login_btn_rect,
             restart_btn_rect,
             shutdown_btn_rect,
+            console_btn_rect,
         }
     }
 
@@ -276,23 +376,28 @@ impl GreeterState {
             return Action::None;
         }
 
-        // Tab / Shift+Tab navigation
+        // F2 key switches directly to console login
+        if ev.keycode == 60 { // KEY_F2
+            return Action::Console;
+        }
+
+        // Tab / Shift+Tab navigation (6 focus items)
         if ev.keycode == 15 { // KEY_TAB
             if ev.modifiers & 1 != 0 { // Shift
-                self.focus = (self.focus + 4) % 5;
+                self.focus = (self.focus + 5) % 6;
             } else {
-                self.focus = (self.focus + 1) % 5;
+                self.focus = (self.focus + 1) % 6;
             }
             return Action::Redraw;
         }
 
         // Arrow keys
         if ev.keycode == 103 { // KEY_UP
-            self.focus = (self.focus + 4) % 5;
+            self.focus = (self.focus + 5) % 6;
             return Action::Redraw;
         }
         if ev.keycode == 108 { // KEY_DOWN
-            self.focus = (self.focus + 1) % 5;
+            self.focus = (self.focus + 1) % 6;
             return Action::Redraw;
         }
 
@@ -306,6 +411,7 @@ impl GreeterState {
                 1 | 2 => return Action::AttemptLogin,
                 3 => return Action::Restart,
                 4 => return Action::Shutdown,
+                5 => return Action::Console,
                 _ => return Action::AttemptLogin,
             }
         }
@@ -347,6 +453,7 @@ enum Action {
     AttemptLogin,
     Restart,
     Shutdown,
+    Console,
 }
 
 fn open_keyboard() -> i32 {
@@ -506,6 +613,65 @@ fn render_greeter(
     // 2. Central Glass Card
     let cr = state.card_rect;
     let card_bg = 0xff161b22;
+
+    // Clock and Date Header above Card
+    let mut ts = raw_sys::Timespec::default();
+    if unsafe { raw_sys::syscall2(raw_sys::SYS_CLOCK_GETTIME, 0, &mut ts as *mut _ as usize) } == 0 {
+        let tz_offset = read_timezone_offset();
+        let local_epoch = (ts.tv_sec as i64 + tz_offset).max(0) as u64;
+        if let Some((_year, month, day, hour, min, _sec)) = epoch_to_datetime(local_epoch) {
+            let mut time_str = [0u8; 8];
+            time_str[0] = b'0' + (hour / 10);
+            time_str[1] = b'0' + (hour % 10);
+            time_str[2] = b':';
+            time_str[3] = b'0' + (min / 10);
+            time_str[4] = b'0' + (min % 10);
+            let time_view = core::str::from_utf8(&time_str[..5]).unwrap_or("");
+
+            let days_since_epoch = local_epoch / 86400;
+            let dow_idx = ((days_since_epoch + 4) % 7) as usize;
+            let dow = DAYS[dow_idx];
+            let mon = MONTHS[(month.saturating_sub(1) as usize).min(11)];
+
+            let mut date_buf = [0u8; 48];
+            let mut dlen = 0;
+            let dbytes = dow.as_bytes();
+            date_buf[dlen..dlen + dbytes.len()].copy_from_slice(dbytes);
+            dlen += dbytes.len();
+            date_buf[dlen..dlen + 2].copy_from_slice(b", ");
+            dlen += 2;
+            let mbytes = mon.as_bytes();
+            date_buf[dlen..dlen + mbytes.len()].copy_from_slice(mbytes);
+            dlen += mbytes.len();
+            date_buf[dlen] = b' ';
+            dlen += 1;
+            if day >= 10 {
+                date_buf[dlen] = b'0' + (day / 10);
+                dlen += 1;
+            }
+            date_buf[dlen] = b'0' + (day % 10);
+            dlen += 1;
+            let date_view = core::str::from_utf8(&date_buf[..dlen]).unwrap_or("");
+
+            if cr.y >= 70 {
+                let pill_w = 260.min(screen_w.saturating_sub(20));
+                let pill_h = 58;
+                let pill_x = (screen_w.saturating_sub(pill_w)) / 2;
+                let pill_y = cr.y.saturating_sub(pill_h + 16);
+
+                p.sheet_card(rect(pill_x, pill_y, pill_w, pill_h), 0xdd161b22, 0xff30363d, true);
+
+                let time_w = 5 * 10;
+                let tx = pill_x + (pill_w.saturating_sub(time_w)) / 2;
+                p.label_bold(tx, pill_y + 8, time_w, 20, time_view, 0xffffffff, 0xdd161b22);
+
+                let date_w = dlen * 8;
+                let dx = pill_x + (pill_w.saturating_sub(date_w)) / 2;
+                p.label_bg(dx, pill_y + 30, date_w, date_view, theme::MUTED, 0xdd161b22);
+            }
+        }
+    }
+
     p.sheet_card(cr, card_bg, 0xff30363d, true);
 
     // 3. Brand Header
@@ -531,13 +697,17 @@ fn render_greeter(
     // 6. Login Button
     p.button_accent(state.login_btn_rect, "Sign In", state.focus == 2);
 
-    // 7. Power Buttons
+    // 7. Power & Session Buttons
     p.button(state.restart_btn_rect, "Restart", false, state.focus == 3);
     p.button(state.shutdown_btn_rect, "Shut Down", false, state.focus == 4);
+    p.button(state.console_btn_rect, "Console", false, state.focus == 5);
 }
 
-fn launch_user_session(_username: &str) {
-    log_greeter_msg("[greeter] releasing framebuffer lease and launching session\n");
+fn launch_user_session(_username: &str) -> i32 {
+    log_greeter_msg("[greeter] clearing console and releasing display lease for user session\n");
+    // Clear text console buffer so session startup doesn't flash old boot/shell text
+    raw_sys::write(1, b"\x1b[2J\x1b[H");
+
     // Release framebuffer so the compositor user session can acquire it
     raw_sys::fb_release();
 
@@ -580,6 +750,10 @@ fn launch_user_session(_username: &str) {
                 0,
             );
         }
+        if status == 3 {
+            log_greeter_msg("[greeter] user requested exit to console, releasing display\n");
+            return 3;
+        }
         log_greeter_msg("[greeter] user session terminated, returning to greeter\n");
     } else {
         log_greeter_msg("[greeter] failed to spawn desktop session\n");
@@ -587,6 +761,7 @@ fn launch_user_session(_username: &str) {
 
     // Re-acquire framebuffer for greeter when session ends
     raw_sys::fb_acquire();
+    0
 }
 
 fn main(_args: Args) -> i32 {
@@ -649,7 +824,21 @@ fn main(_args: Args) -> i32 {
         revents: 0,
     }];
 
+    let mut last_minute = -1i64;
+
     loop {
+        let mut ts = raw_sys::Timespec::default();
+        if unsafe { raw_sys::syscall2(raw_sys::SYS_CLOCK_GETTIME, 0, &mut ts as *mut _ as usize) } == 0 {
+            let minute = (ts.tv_sec / 60) as i64;
+            if minute != last_minute {
+                last_minute = minute;
+                if let Some(mut p) = Painter::new(&mut back_buf, screen_w, screen_h, screen_w) {
+                    render_greeter(&mut p, &state, screen_w, screen_h);
+                    present(&back_buf);
+                }
+            }
+        }
+
         let poll_res = unsafe {
             raw_sys::syscall3(
                 raw_sys::SYS_POLL,
@@ -681,7 +870,11 @@ fn main(_args: Args) -> i32 {
                             if authenticate(u, p) {
                                 state.error = None;
                                 state.password.clear();
-                                launch_user_session(u);
+                                if launch_user_session(u) == 3 {
+                                    raw_sys::write(1, b"\x1b[2J\x1b[H");
+                                    raw_sys::fb_release();
+                                    return 3;
+                                }
                                 needs_redraw = true;
                             } else {
                                 state.error = Some("Authentication failed");
@@ -701,6 +894,12 @@ fn main(_args: Args) -> i32 {
                             unsafe {
                                 raw_sys::syscall1(raw_sys::SYS_REBOOT, 2); // REBOOT_CMD_POWEROFF
                             }
+                        }
+                        Action::Console => {
+                            log_greeter_msg("[greeter] console mode requested by user\n");
+                            raw_sys::write(1, b"\x1b[2J\x1b[H");
+                            raw_sys::fb_release();
+                            return 3;
                         }
                         Action::None => {}
                     }

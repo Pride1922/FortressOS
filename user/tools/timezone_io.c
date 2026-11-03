@@ -19,6 +19,9 @@ static bool packed(const char *name, int64_t s, tz_result_t *out) {
     long fd = tool_syscall(SYS_OPEN, (uintptr_t) "/usr/share/zoneinfo.tzdb",
                            VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
     if (fd < 0)
+        fd = tool_syscall(SYS_OPEN, (uintptr_t) "/etc/zoneinfo.tzdb",
+                          VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    if (fd < 0)
         return false;
     uint8_t head[12];
     bool ok = false;
@@ -136,9 +139,7 @@ bool tz_resolve(const char *const *envp, int64_t s, tz_result_t *out) {
         }
     if (!spec) {
         int r = read_setting("/etc/timezone");
-        if (r < 0)
-            return false;
-        if (r)
+        if (r > 0)
             spec = setting;
         else {
             int rl = read_localtime(s, out);
@@ -215,7 +216,7 @@ bool tz_spec(const char *spec, int64_t s, tz_result_t *out) {
     }
 #endif
     if (fd < 0)
-        return fd == SYSCALL_ENOENT ? packed(name, s, out) : false;
+        return packed(name, s, out);
     size_t used = 0;
     long n = 0;
     while (used < sizeof(tz_bytes)) {

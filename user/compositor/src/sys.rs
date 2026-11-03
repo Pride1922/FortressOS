@@ -451,7 +451,8 @@ fn path_call(nr: usize, first: &str, second: Option<&str>, mode: usize) -> isize
 }
 
 /// Temp names are exclusive; failure never truncates the previous setting.
-pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isize> {
+pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8], mode: usize) -> Result<(), isize> {
+    let _ = path_call(12 /* SYS_UNLINK */, temporary, None, 0);
     let fd = path_call(
         SYS_OPEN,
         temporary,
@@ -462,7 +463,7 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isi
     if fd < 0 {
         return Err(fd);
     }
-    let _ = unsafe { syscall2(60 /* SYS_FCHMOD */, fd as usize, 0o600) };
+    let _ = unsafe { syscall2(60 /* SYS_FCHMOD */, fd as usize, mode) };
     let mut at = 0;
     while at < bytes.len() {
         let n = write(fd as i32, &bytes[at..]);
@@ -666,12 +667,12 @@ pub fn clock_sync_status() -> isize {
     }
 }
 
-/// (target, exclusive temporary) for each setting.
-pub fn setting_paths(kind: u8) -> Option<(&'static str, &'static str)> {
+/// (target, exclusive temporary, mode) for each setting.
+pub fn setting_paths(kind: u8) -> Option<(&'static str, &'static str, usize)> {
     match kind {
-        SETTING_PREFERENCES => Some((crate::preferences::PATH, "/etc/.desktop.conf.new")),
-        SETTING_TIMEZONE => Some(("/etc/timezone", "/etc/.desktop-timezone.new")),
-        SETTING_WLAN => Some(("/etc/network/wlan.conf", "/etc/network/.wlan.conf.new")),
+        SETTING_PREFERENCES => Some((crate::preferences::PATH, "/etc/.desktop.conf.new", 0o644)),
+        SETTING_TIMEZONE => Some(("/etc/timezone", "/etc/.desktop-timezone.new", 0o644)),
+        SETTING_WLAN => Some(("/etc/network/wlan.conf", "/etc/network/.wlan.conf.new", 0o600)),
         _ => None,
     }
 }
@@ -696,8 +697,8 @@ pub fn write_setting(kind: u8, bytes: &[u8]) -> Result<(), isize> {
     use core::sync::atomic::Ordering::Acquire;
     let (request, reply) = (BROKER_FDS[0].load(Acquire), BROKER_FDS[1].load(Acquire));
     if request < 0 || reply < 0 {
-        let (path, temporary) = setting_paths(kind).ok_or(EINVAL)?;
-        return atomic_write(path, temporary, bytes);
+        let (path, temporary, mode) = setting_paths(kind).ok_or(EINVAL)?;
+        return atomic_write(path, temporary, bytes, mode);
     }
     if bytes.len() > SETTING_MAX {
         return Err(EINVAL);

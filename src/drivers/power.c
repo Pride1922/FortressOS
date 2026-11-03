@@ -23,6 +23,11 @@ static uint16_t parse_aml_val(const uint8_t **pptr, const uint8_t *end) {
         *pptr += 2;
         return val;
     }
+    if (b == 0x0C && *pptr + 3 < end) { /* DWordPrefix */
+        uint16_t val = *(const uint16_t *)*pptr;
+        *pptr += 4;
+        return val;
+    }
     if (b == 0x00) return 0;
     if (b == 0x01) return 1;
     if (b == 0xFF) return 0xFF;
@@ -153,13 +158,41 @@ void power_reboot(void) {
     }
 }
 
+static uint16_t get_pm1a_port(void) {
+    if (!g_fadt) return 0;
+    if (g_fadt->header.length >= 172 + sizeof(acpi_gas_t) &&
+        g_fadt->x_pm1a_cnt_blk.address != 0 &&
+        g_fadt->x_pm1a_cnt_blk.address_space == 1) {
+        return (uint16_t)g_fadt->x_pm1a_cnt_blk.address;
+    }
+    return (uint16_t)g_fadt->pm1a_cnt_blk;
+}
+
+static uint16_t get_pm1b_port(void) {
+    if (!g_fadt) return 0;
+    if (g_fadt->header.length >= 184 + sizeof(acpi_gas_t) &&
+        g_fadt->x_pm1b_cnt_blk.address != 0 &&
+        g_fadt->x_pm1b_cnt_blk.address_space == 1) {
+        return (uint16_t)g_fadt->x_pm1b_cnt_blk.address;
+    }
+    return (uint16_t)g_fadt->pm1b_cnt_blk;
+}
+
+static bool is_hypervisor(void) {
+    uint32_t a = 0, b = 0, c = 0, d = 0;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    return (c & (1U << 31)) != 0;
+}
+
 void power_shutdown(void) {
     __asm__ volatile("cli");
     serial_puts("[POWER] Shutdown initiated...\n");
 
+    uint16_t pm1a_port = get_pm1a_port();
+    uint16_t pm1b_port = get_pm1b_port();
+
     /* 1. Enable ACPI mode if SCI_EN is not active */
-    if (g_fadt && g_fadt->smi_cmd && g_fadt->acpi_enable && g_fadt->pm1a_cnt_blk) {
-        uint16_t pm1a_port = (uint16_t)g_fadt->pm1a_cnt_blk;
+    if (g_fadt && g_fadt->smi_cmd && g_fadt->acpi_enable && pm1a_port) {
         if ((inw(pm1a_port) & 1) == 0) { /* SCI_EN is bit 0 */
             outb((uint16_t)g_fadt->smi_cmd, g_fadt->acpi_enable);
             for (int i = 0; i < 10000; i++) {
@@ -172,23 +205,24 @@ void power_shutdown(void) {
     /* 2. ACPI S5 Sleep State write to PM1a / PM1b control blocks */
     if (g_s5_available && g_fadt) {
         uint16_t slp_en = (1 << 13);
-        if (g_fadt->pm1a_cnt_blk) {
+        if (pm1a_port) {
             uint16_t val = (uint16_t)((g_slp_typa << 10) | slp_en);
-            outw((uint16_t)g_fadt->pm1a_cnt_blk, val);
+            outw(pm1a_port, val);
         }
-        if (g_fadt->pm1b_cnt_blk) {
+        if (pm1b_port) {
             uint16_t val = (uint16_t)((g_slp_typb << 10) | slp_en);
-            outw((uint16_t)g_fadt->pm1b_cnt_blk, val);
+            outw(pm1b_port, val);
         }
         for (volatile int i = 0; i < 50000; i++) io_wait();
     }
 
     /* 3. Hypervisor / Emulator standard ACPI shutdown I/O ports */
-    outw(0x604, 0x2000);  /* QEMU default ACPI shutdown */
-    outw(0xB004, 0x2000); /* Bochs / older QEMU */
-    outw(0x4004, 0x3400); /* VirtualBox */
-
-    for (volatile int i = 0; i < 50000; i++) io_wait();
+    if (is_hypervisor()) {
+        outw(0x604, 0x2000);  /* QEMU default ACPI shutdown */
+        outw(0xB004, 0x2000); /* Bochs / older QEMU */
+        outw(0x4004, 0x3400); /* VirtualBox */
+        for (volatile int i = 0; i < 50000; i++) io_wait();
+    }
 
     /* 4. Fallback infinite halt */
     for (;;) {

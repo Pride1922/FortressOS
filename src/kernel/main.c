@@ -6816,6 +6816,9 @@ pf_boot_guard_done:
         sched_reap_dead();
         if (g_installed_boot && !installed_ready) recovery_shell=!recovery_shell && status==0;
         else if (g_installed_boot && (status==125 || status>=128)) {installed_ready=false;installed_root_login_failed();installed_root_recovery_notice();}
+        else if (status==3 && !strcmp(initial_program, "/bin/desktop-greeter")) {
+            initial_program = "/bin/login";
+        }
         serial_puts("[SHELL] Process exited; restarting.\n");
     }
 }

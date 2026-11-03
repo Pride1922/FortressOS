@@ -161,6 +161,8 @@ static long mocked(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, 
     }
     if (nr == SYS_NETCTL)
         return net_result;
+    if (nr == SYS_WIFI)
+        return SYSCALL_ENOSYS;
     assert(!"unexpected syscall in DHCP timezone publication");
     return SYSCALL_ENOSYS;
 }

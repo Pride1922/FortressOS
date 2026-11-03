@@ -296,7 +296,7 @@ fn handle(kind: u8, payload: &[u8]) -> isize {
 
 fn write(kind: u8, bytes: &[u8]) -> isize {
     match sys::setting_paths(kind) {
-        Some((path, temporary)) => match sys::atomic_write(path, temporary, bytes) {
+        Some((path, temporary, mode)) => match sys::atomic_write(path, temporary, bytes, mode) {
             Ok(()) => 0,
             Err(e) => e,
         },

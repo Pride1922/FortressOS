@@ -389,16 +389,20 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
 
 #ifndef INPUT_HOST_TEST
 static bool kbc_write(uint16_t port, uint8_t value) {
-    for (unsigned i = 0; i < KBC_LIMIT; i++) {
+    for (unsigned i = 0; i < 50000; i++) {
         uint8_t status = inb(KBC_STATUS);
         if (status == 0xff) return false;
-        if (!(status & 2)) { outb(port, value); return true; }
-        __asm__ volatile("pause");
+        if (!(status & 2)) {
+            outb(port, value);
+            io_wait();
+            return true;
+        }
+        io_wait();
     }
     return false;
 }
 static bool kbc_read(uint8_t *value) {
-    for (unsigned i = 0; i < KBC_LIMIT; i++) {
+    for (unsigned i = 0; i < 50000; i++) {
         uint8_t status = inb(KBC_STATUS);
         if (status == 0xff) return false;
         if (status & 1) {
@@ -407,7 +411,7 @@ static bool kbc_read(uint8_t *value) {
             *value = byte;
             return true;
         }
-        __asm__ volatile("pause");
+        io_wait();
     }
     return false;
 }
@@ -530,7 +534,7 @@ void input_inject_bytes(const char *bytes, size_t count) {
 }
 
 static bool kbc_read_aux(uint8_t *value) {
-    for (unsigned i = 0; i < KBC_LIMIT * 5; i++) {
+    for (unsigned i = 0; i < 50000; i++) {
         uint8_t status = inb(KBC_STATUS);
         if (status == 0xff) return false;
         if (status & 1) {
@@ -540,22 +544,36 @@ static bool kbc_read_aux(uint8_t *value) {
                 return true;
             }
         }
-        __asm__ volatile("pause");
+        io_wait();
     }
     return false;
 }
 
 static bool mouse_write_byte(uint8_t byte) {
     if (!kbc_write(KBC_STATUS, 0xd4)) return false;
+    io_wait();
     return kbc_write(KBC_DATA, byte);
 }
 
 static bool mouse_cmd(uint8_t cmd) {
     for (unsigned retry = 0; retry < 3; retry++) {
         uint8_t reply = 0;
-        if (!mouse_write_byte(cmd) || !kbc_read_aux(&reply)) return false;
+        if (!mouse_write_byte(cmd)) {
+            io_wait();
+            continue;
+        }
+        if (!kbc_read_aux(&reply)) {
+            io_wait();
+            continue;
+        }
         if (reply == 0xfa) return true;
-        if (reply != 0xfe) return false;
+        if (reply == 0xfe) continue;
+        /* If trackpad returns self-test completion (0xaa) or ID (0x00), drain and retry */
+        if (reply == 0xaa || reply == 0x00) {
+            uint8_t extra = 0;
+            (void)kbc_read_aux(&extra);
+            continue;
+        }
     }
     return false;
 }
@@ -565,14 +583,27 @@ static bool mouse_cmd_arg(uint8_t cmd, uint8_t arg) {
 }
 
 static bool mouse_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
-    for (unsigned i = 0; i < 32 && (inb(KBC_STATUS) & 1); i++) (void)inb(KBC_DATA);
+    /* 1. Flush any stale bytes */
+    for (unsigned i = 0; i < 32 && (inb(KBC_STATUS) & 1); i++) {
+        (void)inb(KBC_DATA);
+        io_wait();
+    }
 
-    /* Set defaults (sample rate 100, resolution 4, 1:1 scaling) */
+    /* 2. Disable data reporting before setup to silence stream mode */
+    (void)mouse_cmd(0xf5);
+
+    /* 3. Drain again after silencing */
+    for (unsigned i = 0; i < 32 && (inb(KBC_STATUS) & 1); i++) {
+        (void)inb(KBC_DATA);
+        io_wait();
+    }
+
+    /* 4. Set defaults (sample rate 100, resolution 4, 1:1 scaling) */
     if (!mouse_cmd(0xf6)) {
         return false;
     }
 
-    /* Try Intellimouse 4-byte wheel probe: 200 -> 100 -> 80 */
+    /* 5. Try Intellimouse 4-byte wheel probe: 200 -> 100 -> 80 */
     if (mouse_cmd_arg(0xf3, 200) && mouse_cmd_arg(0xf3, 100) && mouse_cmd_arg(0xf3, 80)) {
         if (mouse_write_byte(0xf2)) {
             uint8_t ack = 0, id = 0;
@@ -584,21 +615,21 @@ static bool mouse_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
         }
     }
 
-    /* Set resolution: 8 counts/mm for smooth responsive movement */
+    /* 6. Set resolution: 8 counts/mm for smooth responsive movement */
     (void)mouse_cmd_arg(0xe8, 0x03);
 
-    /* Set sample rate: 100 Hz */
+    /* 7. Set sample rate: 100 Hz */
     (void)mouse_cmd_arg(0xf3, 100);
 
-    /* Enable packet streaming */
+    /* 8. Enable packet streaming */
     if (!mouse_cmd(0xf4)) {
         return false;
     }
 
-    /* Register IDT handler */
+    /* 9. Register IDT handler */
     idt_register_hardware_handler(MOUSE_VECTOR, ps2_mouse_irq);
 
-    /* Route ISA IRQ 12 in IOAPIC */
+    /* 10. Route ISA IRQ 12 in IOAPIC */
     if (!ioapic_route_isa(madt, 12, MOUSE_VECTOR, apic_id)) {
         return false;
     }
