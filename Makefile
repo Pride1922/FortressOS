@@ -2048,7 +2048,17 @@ test-dhcpc-v2-host:
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/dhcp_codec.c tests/dhcpc_v2_host.c -o $(BUILD_DIR)/dhcpc_v2_host
 	@$(BUILD_DIR)/dhcpc_v2_host
 
-test-dhcpc-host: test-dhcpc-v2-host
+.PHONY: test-dhcpc-contention
+test-dhcpc-contention: test-dhcpc-contention-host
+	@python3 scripts/test_dhcpc_contention.py
+
+.PHONY: test-dhcpc-contention-host
+test-dhcpc-contention-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser tests/dhcpc_contention_host.c user/timezone.c user/tools/timezone_io.c user/dhcp_codec.c -o $(BUILD_DIR)/dhcpc-contention-host
+	@$(BUILD_DIR)/dhcpc-contention-host
+
+test-dhcpc-host: test-dhcpc-v2-host test-dhcpc-contention-host
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/dhcp_codec.c tests/dhcpc_host.c -o $(BUILD_DIR)/dhcpc_host
 	@$(BUILD_DIR)/dhcpc_host

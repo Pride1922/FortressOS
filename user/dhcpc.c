@@ -577,6 +577,9 @@ static void dhcpc_apply_random_jitter(dhcp_offer_t *offer) {
     dhcp_apply_jitter(offer->lease_time, &offer->t1, &offer->t2, d1, d2);
 }
 
+/* Distinguish local client contention from protocol timeout. */
+#define DHCPC_BIND_BUSY (-9)
+
 /* Perform full 4-way handshake (DISCOVER -> OFFER -> REQUEST -> ACK) */
 static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dry_run, dhcp_offer_t *out_offer) {
     long fd = sys_call(SYS_SOCKET, NET_AF_INET, NET_SOCK_DGRAM | NET_SOCK_CLOEXEC, 0, 0, 0, 0);
@@ -591,7 +594,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
     long ret = sys_call(SYS_BIND, (uintptr_t)fd, (uintptr_t)&local_addr, sizeof(local_addr), 0, 0, 0);
     if (ret != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
-        return -2;
+        return ret == SYSCALL_EEXIST ? DHCPC_BIND_BUSY : -2;
     }
 
     net_sockaddr_in_t bcast_addr;
@@ -738,6 +741,40 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
 
     if (out_offer) *out_offer = offer;
     return 0;
+}
+
+/* A running daemon can acquire the new link at the same time as the Wi-Fi
+ * CLI's foreground client. A busy local port is not a lost OFFER. Observe the
+ * owner's configured lease without opening another socket, sending signals,
+ * rewriting configuration or stealing ownership. The original MAC must remain
+ * selected; stale/partial lease files never establish success. */
+static bool dhcp_wait_for_managed_lease(const uint8_t mac[6], netctl_ifget_t *ready) {
+    int64_t pid = read_dhcpc_pid();
+    if (pid <= 0 || !is_process_alive(pid)) return false;
+    uint64_t start = get_monotonic_ms();
+    static char lease[512];
+    for (unsigned turn = 0; turn < 200 && !g_term_requested; ++turn) {
+        uint64_t now = get_monotonic_ms();
+        if (now < start || now - start >= 10000 || !is_process_alive(pid)) return false;
+        netctl_ifget_t current = { .struct_version = 1 };
+        if (sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&current, sizeof(current), 0, 0, 0) ||
+            current.link_state != NET_IF_LINK_UP || mem_cmp(current.mac, mac, 6)) return false;
+        long lease_bytes = current.local_ipv4 ? read_file("/run/dhcpc.lease", lease, sizeof(lease)) : 0;
+        if (lease_bytes > 0 && lease[lease_bytes - 1] == '\n') {
+            uint32_t ip = 0, server = 0, mask = 0, expires = 0;
+            int64_t epoch = get_realtime_epoch();
+            if (extract_val_ip(lease, "IP", &ip) && ip == current.local_ipv4 &&
+                extract_val_ip(lease, "SERVER", &server) && server &&
+                extract_val_ip(lease, "NETMASK", &mask) && mask && mask == current.netmask_ipv4 &&
+                extract_val_u32(lease, "EXPIRE_EPOCH", &expires) &&
+                epoch >= 0 && (uint64_t)expires > (uint64_t)epoch) {
+                *ready = current;
+                return true;
+            }
+        }
+        sleep_ms(50);
+    }
+    return false; /* Iteration ceiling also bounds a stalled monotonic clock. */
 }
 
 /* Unicast renewal DHCPREQUEST */
@@ -1664,6 +1701,17 @@ int dhcpc_main(int argc, char **argv) {
     static dhcp_offer_t offer;
     int hret = dhcp_do_handshake(ifget.mac, timeout_sec, dry_run, &offer);
 
+    if (hret == DHCPC_BIND_BUSY && !boot_mode && !dry_run &&
+        dhcp_wait_for_managed_lease(ifget.mac, &ifget)) {
+        char msg[128]; size_t pos = 0;
+        append_str(msg, sizeof(msg), &pos, get_ifname(ifget.mac));
+        append_str(msg, sizeof(msg), &pos, ": acquired lease ");
+        append_ip(msg, sizeof(msg), &pos, ifget.local_ipv4);
+        append_str(msg, sizeof(msg), &pos, " via running DHCP daemon\n");
+        print_out(msg);
+        return 0;
+    }
+
     if (hret != 0) {
         if (boot_mode) {
             const char *ifname = get_ifname(ifget.mac);
@@ -1674,7 +1722,14 @@ int dhcpc_main(int argc, char **argv) {
             spawn_daemon();
             return 0;
         }
-        print_err("dhcpc: no DHCP offer/ack received (timeout)\n");
+        if (hret == DHCPC_BIND_BUSY)
+            print_err("dhcpc: DHCP client port busy; no matching managed lease became ready\n");
+        else if (hret == -2)
+            print_err("dhcpc: failed to bind DHCP client port\n");
+        else if (hret == -5 || hret == -8)
+            print_err("dhcpc: no DHCP offer/ack received (timeout)\n");
+        else
+            print_err("dhcpc: DHCP acquisition failed (socket, packet, send or server rejection)\n");
         return 1;
     }
 
