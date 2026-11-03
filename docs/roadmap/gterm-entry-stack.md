@@ -40,3 +40,29 @@ The supplied commands also show root-owned mode 04755 `/bin/sudo` and successful
 absolute-path password authentication/elevation. Earlier plain `sudo` failures
 are unresolved: the same-command plain/absolute comparison and shell resolution
 output are still needed to distinguish lookup from a transient account snapshot.
+
+
+## Authenticated Dell SSH follow-up
+
+Authenticated SSH to the same running Dell confirms real UID 1000 and wheel
+membership. `type sudo` resolves `/bin/sudo`, and PATH is `/bin:/sbin`.
+Plain `sudo /bin/id` authenticates and reports UID/GID 0. Plain `sudo -s` also
+opens a root shell and `id` confirms elevation. The earlier startup failure
+remains unexplained; this rules out a persistent lookup or installed-mode defect,
+without proving which early check failed. No credential policy was changed.
+
+The boot-log and base-confirm one-shot services both exited cleanly with status
+0. Stopped state for those completed services is expected. `battery` reports
+"Battery telemetry read failed" on the physical laptop.
+
+The same boot still reports no ext4 read failures/anomalies. Its bitmap counters
+increased from 102301696 bytes / 4881517942 cycles in the user's capture to
+149012480 bytes / 5495098686 cycles after further commands. Checksum counters
+also increased from 47778052 to 54187652 bytes. This directly demonstrates that
+the counters include post-boot activity; they cannot isolate mount duration.
+The original boot wall-clock marker remained `2026-11-03 20:34:09 UTC`.
+
+Only diagnostic reads and authenticated shells were used. No reboot, filesystem
+repair, permission changes, account changes or deployment was performed. The
+SSH session was closed. Sanitized captures are retained under
+`build/gterm-stack-fix/evidence/dell-ssh-*.log`.
