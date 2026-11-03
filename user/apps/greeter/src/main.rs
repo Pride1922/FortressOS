@@ -691,13 +691,15 @@ fn main(_args: Args) -> i32 {
                             }
                         }
                         Action::Restart => {
+                            log_greeter_msg("[greeter] reboot requested by user\n");
                             unsafe {
-                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 0);
+                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 1); // REBOOT_CMD_RESTART
                             }
                         }
                         Action::Shutdown => {
+                            log_greeter_msg("[greeter] poweroff requested by user\n");
                             unsafe {
-                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 1);
+                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 2); // REBOOT_CMD_POWEROFF
                             }
                         }
                         Action::None => {}
