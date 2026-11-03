@@ -118,6 +118,9 @@ pub struct Window {
     /// Outer bounds. Content starts at (1,25), excluding the titlebar and border.
     pub rect: Rect,
     pub content: Vec<u32>,
+    /// Built-in apps must reset their canvas after a geometry change, even
+    /// when several resizes return to the previous size before they repaint.
+    pub needs_app_repaint: bool,
     pub is_focused: bool,
     pub is_dragging: bool,
     pub is_resizing: bool,
@@ -177,6 +180,7 @@ impl Window {
             title: name,
             rect,
             content,
+            needs_app_repaint: true,
             is_focused: false,
             is_dragging: false,
             is_resizing: false,
@@ -244,7 +248,7 @@ impl Window {
             None => return false,
         };
         if self.content.capacity() < len {
-            let reserve_target = len + len / 4;
+            let reserve_target = len.saturating_add(len / 4);
             if self
                 .content
                 .try_reserve(reserve_target.saturating_sub(self.content.len()))
@@ -259,9 +263,37 @@ impl Window {
                 }
             }
         }
-        self.content.resize(len, self.bg_color);
+        // Keep the last client frame at its original pixel coordinates until
+        // EV_CONFIGURE is consumed and the client supplies a new frame. A
+        // plain Vec::resize would reinterpret packed rows with a new stride,
+        // visibly distorting text during every asynchronous resize.
+        let old_content_w = self.rect.w - 2;
+        let old_content_h = self.content.len() / old_content_w;
+        let kept_w = old_content_w.min(new_content_w);
+        let kept_h = old_content_h.min(new_content_h);
+        if new_content_w > old_content_w {
+            // Widen from the bottom so a destination never destroys a source
+            // row that has not moved yet. Resizing first also covers expansion.
+            self.content.resize(len, self.bg_color);
+            for row in (0..kept_h).rev() {
+                let src = row * old_content_w;
+                let dst = row * new_content_w;
+                self.content.copy_within(src..src + kept_w, dst);
+                self.content[dst + kept_w..dst + new_content_w].fill(self.bg_color);
+            }
+        } else {
+            // Narrow while the old source rows still exist; truncate only
+            // after compaction, including mixed width/height changes.
+            for row in 0..kept_h {
+                let src = row * old_content_w;
+                self.content.copy_within(src..src + kept_w, row * new_content_w);
+            }
+            self.content.resize(len, self.bg_color);
+        }
+        self.content[kept_h * new_content_w..].fill(self.bg_color);
         self.rect.w = new_w;
         self.rect.h = new_h;
+        self.needs_app_repaint = true;
         self.panel_ready = false;
         true
     }

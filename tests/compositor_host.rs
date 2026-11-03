@@ -3191,3 +3191,79 @@ fn notepad_file_dialog_modal_integration() {
     assert!(np.handle_key(0x1b));
     assert!(np.dialog.is_none());
 }
+
+#[test]
+fn window_resize_preserves_pixel_coordinates_before_client_repaint() {
+    let mut win = window::Window::new(100, "Resize", Rect { x: 20, y: 40, w: 520, h: 280 }).unwrap();
+    let width = win.rect.w - 2;
+    for (i, pixel) in win.content.iter_mut().enumerate() {
+        // Distinct pixels identify both the row and column after any reshape.
+        *pixel = 0xff000000 | ((i / width) as u32) << 12 | (i % width) as u32;
+    }
+    for (w, h) in [(750, 350), (320, 500), (680, 150), (160, 700), (900, 420), (520, 280), (520, 280)] {
+        let old_width = win.rect.w - 2;
+        let old_height = win.content.len() / old_width;
+        let old = win.content.clone();
+        assert!(win.resize(w, h));
+        let new_width = win.rect.w - 2;
+        for (i, &pixel) in win.content.iter().enumerate() {
+            let (x, y) = (i % new_width, i / new_width);
+            let expected = if x < old_width && y < old_height {
+                old[y * old_width + x]
+            } else {
+                win.bg_color
+            };
+            assert_eq!(pixel, expected, "pixel moved during resize to {w}x{h} at {x},{y}");
+        }
+    }
+    let before_rect = win.rect;
+    let before = win.content.clone();
+    for (w, h) in [(119, 280), (usize::MAX, usize::MAX), (usize::MAX / 20 + 2, 44)] {
+        assert!(!win.resize(w, h));
+        assert_eq!(win.rect, before_rect);
+        assert_eq!(win.content, before, "rejected geometry must retain the frame");
+    }
+
+}
+
+#[test]
+fn terminal_glyphs_keep_their_shape_while_configure_is_pending() {
+    let mut win = window::Window::new(100, "Terminal", Rect { x: 20, y: 40, w: 520, h: 280 }).unwrap();
+    let (width, height) = (win.rect.w - 2, win.content.len() / (win.rect.w - 2));
+    let mut term = terminal::Terminal::new();
+    let (cols, rows) = terminal::Terminal::grid_for(width, height);
+    term.set_dimensions(cols, rows);
+    term.write_bytes(b"operator@fortress:/ $ resize test\r\nABCDEFG 0123456789\r\nthird line");
+    term.render(&mut canvas::Canvas::new(&mut win.content, width, height, width).unwrap());
+    let rendered = win.content.clone();
+    assert!(win.resize(740, 380));
+    let resized_width = win.rect.w - 2;
+    // The isolated client has not consumed EV_CONFIGURE or sent DAMAGE yet.
+    // Every old text pixel must still be at the same coordinate, not reflowed
+    // by interpreting its old packed rows with the new width.
+    for y in 8..56 {
+        for x in 10..320 {
+            assert_eq!(win.content[y * resized_width + x], rendered[y * width + x], "glyph changed at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn built_in_app_repaints_after_resize_round_trip_between_frames() {
+    let mut scene = Surface::new(1280, 800).unwrap();
+    let mut windows = WindowManager::desktop();
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+    host.open(7, &mut windows, &mut scene);
+    let original = windows.windows[0].rect;
+    let expected = windows.windows[0].content.clone();
+    flush(&mut scene);
+    assert!(windows.windows[0].resize(300, 180));
+    assert!(windows.windows[0].resize(original.w, original.h));
+    // The final dimensions alone cannot reveal the intervening content loss.
+    host.paint_invalid(&mut windows, &mut scene);
+    assert_eq!(windows.windows[0].content, expected);
+    assert!(scene.damage_rect(0).is_some());
+    flush(&mut scene);
+    host.paint_invalid(&mut windows, &mut scene);
+    assert!(scene.damage_rect(0).is_none(), "idle apps must stop repainting");
+}

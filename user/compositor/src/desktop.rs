@@ -1165,7 +1165,7 @@ impl AppHost {
             return;
         };
         let dimensions = (window.rect.w, window.rect.h);
-        let reset = self.apps[index].size != dimensions;
+        let reset = self.apps[index].size != dimensions || window.needs_app_repaint;
         self.apps[index].size = dimensions;
         let visible = (window.rect.h - 26) / theme::scale(s.height);
         let maximum = ui::APPS[index]
@@ -1180,7 +1180,9 @@ impl AppHost {
             self.apps[index].scroll,
         );
         self.draw(index, &mut canvas);
-        if let Some(dirty) = canvas.finish() {
+        let dirty = canvas.finish();
+        window.needs_app_repaint = false;
+        if let Some(dirty) = dirty {
             s.damage(dirty);
         }
     }
@@ -1194,7 +1196,8 @@ impl AppHost {
         for index in 0..self.apps.len() {
             let id = self.apps[index].descriptor().id;
             if wm.windows.iter().any(|w| {
-                w.id == id && !w.is_minimized && self.apps[index].size != (w.rect.w, w.rect.h)
+                w.id == id && !w.is_minimized
+                    && (self.apps[index].size != (w.rect.w, w.rect.h) || w.needs_app_repaint)
             }) {
                 self.render(id, wm, s);
             }

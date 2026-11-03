@@ -5,6 +5,13 @@ acquiring the display. Run with existing root display authorization. The app
 interface includes **built-in app API 1** and isolated external clients using
 `src/include/desktop_proto.h` for SHM surfaces and input events.
 
+During a live resize, the last client frame stays at its original pixel scale:
+existing rows retain their coordinates, shrinking clips them, and newly exposed
+space uses the window background until EV_CONFIGURE/DAMAGE supplies a fresh
+frame. Text is not stretched while waiting for a client repaint. Built-in apps
+also invalidate their canvas after a geometry change, even when several resizes
+return to the old size before the next render. [Cause and regression evidence](../roadmap/terminal-resize-stride.md).
+
 ## Adding a built-in app
 
 Register a stable ID, title and initial size in `user/compositor/src/ui.rs`.
