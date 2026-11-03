@@ -1,0 +1,18 @@
+[package]
+name = "libui"
+version = "1.0.0"
+edition = "2024"
+description = "FortressOS App SDK: integer-only widgets, theme and desktop client runtime"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# Desktop client runtime: App/Event over the desktop protocol, raw syscalls,
+# and the app_main! entry/panic/allocator macro. Drawing never needs it.
+client = ["dep:spin", "dep:talc"]
+
+[dependencies]
+spin = { version = "0.9", default-features = false, features = ["spin_mutex", "lock_api"], optional = true }
+talc = { version = "4.4.3", default-features = false, features = ["lock_api", "counters"], optional = true }

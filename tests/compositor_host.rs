@@ -541,6 +541,8 @@ mod terminal;
 mod wallpaper;
 #[path = "../user/compositor/src/window.rs"]
 mod window;
+#[path = "libui_golden.rs"]
+mod libui_golden;
 use surface::{Rect, Surface};
 use window::WindowManager;
 

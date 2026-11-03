@@ -175,3 +175,21 @@ not yet published. They require both an updated base-owned `/bin/sudo` and a new
 `sudo /usr/bin/desktop` immediately to load a newly installed desktop without reboot.
 The base update installing the new launcher requires its normal OS reboot once;
 subsequent application-only updates use desktop-process restart.
+
+## The App SDK (`libui`)
+
+External desktop applications (and compositor widgets) share the freestanding
+`libui` crate (`user/libui`). It extracts:
+- Core 4x4 subpixel coverage and integer-only blending (`rounded_coverage`, `blend_coverage`).
+- The `SurfaceStyle` unified rounded-box primitive (`radius`, `fill`, `border`, `top_highlight`, `outer_bg`).
+- The immediate-mode `Painter` abstraction supporting scale, vertical scroll, clipping, and compare-before-write dirty rect tracking.
+- Common widgets: `label`, `button`, `button_accent`, `card`, `sheet_card`, `text_input`, `badge`, `pill_button`, `rounded_box`.
+- Interactive state helpers: `TextField<N>`, `FocusRing<N>`, `Grid`, and `hit(rect, x, y)`.
+- Client runtime (`--features client`): `App::connect`, `next_event`, `painter`, `present`, `app_main!` entry macro, panic handler, and minimal freestanding syscalls.
+
+Writing a new desktop application (such as the proof-of-concept Calculator at
+`user/apps/calc` in `/bin/calc`) requires ~50-80 lines of Rust code. Apps link
+statically using `user/libui/app.ld`. See [Building Desktop Applications with libui](../desktop-apps-guide.md)
+for a comprehensive tutorial, API reference, and packaging walkthrough. `libui`
+is a source-level SDK; binary compatibility with the compositor remains strictly
+governed by `desktop_proto.h` and base syscall contracts.

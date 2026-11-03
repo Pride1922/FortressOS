@@ -8,8 +8,8 @@ import tempfile
 from pathlib import Path
 from test_compositor import ROOT, Guest, QMP, pixel, wait_image
 
-ALPHA = (ROOT / "user/compositor/assets/ui-alpha.bin").read_bytes()
-ADVANCE = (ROOT / "user/compositor/assets/ui-advances.bin").read_bytes()
+ALPHA = (ROOT / "user/libui/assets/ui-alpha.bin").read_bytes()
+ADVANCE = (ROOT / "user/libui/assets/ui-advances.bin").read_bytes()
 PANEL = bytes.fromhex("1e1e1e")
 TEXT = bytes.fromhex("e0e0e0")
 MUTED = bytes.fromhex("989898")

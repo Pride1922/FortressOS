@@ -543,6 +543,43 @@ impl Clients {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalApp {
+    pub name: &'static str,
+    pub packaged: &'static core::ffi::CStr,
+    pub image: &'static core::ffi::CStr,
+}
+
+#[allow(dead_code)]
+pub const EXTERNAL_APPS: [ExternalApp; 4] = [
+    ExternalApp {
+        name: "Terminal",
+        packaged: c"/usr/bin/terminal",
+        image: c"/bin/terminal",
+    },
+    ExternalApp {
+        name: "Files",
+        packaged: c"/usr/bin/files",
+        image: c"/bin/files",
+    },
+    ExternalApp {
+        name: "Notepad",
+        packaged: c"/usr/bin/notepad",
+        image: c"/bin/notepad",
+    },
+    ExternalApp {
+        name: "Calculator",
+        packaged: c"/usr/bin/calc",
+        image: c"/bin/calc",
+    },
+];
+
+#[allow(dead_code)]
+pub fn get_app(name: &str) -> Option<&'static ExternalApp> {
+    EXTERNAL_APPS.iter().find(|app| app.name == name)
+}
+
 /// A desktop app's binary: the package-installed copy in /usr/bin when one
 /// exists (PKG-1 installs executables there), otherwise the image's /bin.
 pub fn installed(

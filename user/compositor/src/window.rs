@@ -1252,6 +1252,8 @@ pub enum Action {
     SpawnTerminal,
     SpawnNotepad,
     SpawnFileManager,
+    #[allow(dead_code)]
+    SpawnCalc,
     OpenDesktopApp(u32),
     WindowResized(u32),
     ClientClick(u32, usize, usize),

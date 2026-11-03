@@ -8,7 +8,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 root = Path(__file__).resolve().parents[1]
-out = root / "user/compositor/assets"
+out = root / "user/libui/assets"
 out.mkdir(parents=True, exist_ok=True)
 font = ImageFont.truetype(sys.argv[1], 14)
 atlas = bytearray()

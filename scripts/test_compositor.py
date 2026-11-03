@@ -288,8 +288,8 @@ def run_test(firmware):
                 pixel(rgb, iw, 90, 190) == panel)
             # Independent alpha-atlas oracle: SYS_SYSINFO reports one CPU in
             # this SMP=1 guest. Check the full proportional glyph and margins.
-            atlas = (ROOT / 'user/compositor/assets/ui-alpha.bin').read_bytes()
-            advance = (ROOT / 'user/compositor/assets/ui-advances.bin').read_bytes()[ord('1') - 32]
+            atlas = (ROOT / 'user/libui/assets/ui-alpha.bin').read_bytes()
+            advance = (ROOT / 'user/libui/assets/ui-advances.bin').read_bytes()[ord('1') - 32]
             foreground = bytes.fromhex('e0e0e0')
             for gy in range(18):
                 for gx in range(advance):

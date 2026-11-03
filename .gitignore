@@ -9,11 +9,13 @@ bin/
 *.d
 *.elf
 *.bin
-# Checked-in compositor font atlas; ordinary builds need no font rasterizer.
-!user/compositor/assets/ui-alpha.bin
-!user/compositor/assets/ui-advances.bin
+# Checked-in font atlas; ordinary builds need no font rasterizer.
+!user/libui/assets/ui-alpha.bin
+!user/libui/assets/ui-advances.bin
 *.iso
 *.img
+target/
+**/target/
 
 # Bootloader and UEFI firmware dependencies
 limine/

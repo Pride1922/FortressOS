@@ -25,6 +25,8 @@ APPS = {
               "FortressOS desktop file manager; app API v1"),
     "terminal": ("fortress-terminal", "build/terminal.elf",
                  "FortressOS desktop terminal; app API v1"),
+    "calc": ("fortress-calc", "build/calc.elf",
+             "FortressOS desktop calculator; app API v1"),
 }
 
 
@@ -34,7 +36,7 @@ def build_app(app, elf, platform, sequence, base_min, base_max, version):
     name, _, description = APPS[app]
     members = [
         (f"bin/{app}", 1, 0o755, regular(elf, 4 * 1024 * 1024)),
-        ("doc/DejaVu-LICENSE.txt", 2, 0o644, regular(ROOT / "user/compositor/assets/DejaVu-LICENSE.txt", 16*1024*1024)),
+        ("doc/DejaVu-LICENSE.txt", 2, 0o644, regular(ROOT / "user/libui/assets/DejaVu-LICENSE.txt", 16*1024*1024)),
     ]
     artifact = encode(name, app, version, platform, sequence, base_min, base_max, members, description)
     verify(artifact)
@@ -44,7 +46,7 @@ def build_app(app, elf, platform, sequence, base_min, base_max, version):
 def build(elf, platform, sequence, base_min, base_max, version):
     members = [
         ("bin/desktop", 1, 0o755, regular(elf, 4 * 1024 * 1024)),
-        ("doc/DejaVu-LICENSE.txt", 2, 0o644, regular(ROOT / "user/compositor/assets/DejaVu-LICENSE.txt", 16*1024*1024)),
+        ("doc/DejaVu-LICENSE.txt", 2, 0o644, regular(ROOT / "user/libui/assets/DejaVu-LICENSE.txt", 16*1024*1024)),
         ("doc/desktop.conf.example", 2, 0o644, regular(ROOT / "assets/desktop.conf", 16*1024*1024)),
         ("doc/desktop.md", 2, 0o644, regular(ROOT / "docs/subsystems/desktop.md", 16*1024*1024)),
     ]

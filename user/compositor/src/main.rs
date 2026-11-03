@@ -750,6 +750,15 @@ fn open_notepad(clients: &mut clients::Clients, path: Option<&str>, scene: &Surf
     }
 }
 
+/// Starts the calculator (/usr/bin/calc when packaged, else /bin/calc).
+fn open_calc(clients: &mut clients::Clients, scene: &Surface) {
+    let app = clients::installed(c"/usr/bin/calc", c"/bin/calc");
+    match clients.launch(app, &[], scene) {
+        Ok(pid) => privilege::report(1, "[OK]", "Calculator started", Some(pid)),
+        Err(e) => privilege::report(2, "[WARN]", "Calculator launch failed", Some(e)),
+    }
+}
+
 #[inline(never)]
 fn handle_key(
     b: u8,
@@ -821,6 +830,9 @@ fn handle_action(
         }
         window::Action::SpawnFileManager => {
             open_files(clients, scene);
+        }
+        window::Action::SpawnCalc => {
+            open_calc(clients, scene);
         }
         window::Action::WindowResized(id) => {
             if id == 6 {

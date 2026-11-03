@@ -59,7 +59,7 @@ existing 4096-byte per-event drain budget.
 Font atlas regeneration is optional and host-only:
 `python scripts/build_compositor_font.py /path/to/DejaVuSans.ttf` (Pillow).
 Normal builds use the checked-in atlas without Pillow. The source font's license
-is retained in `user/compositor/assets/DejaVu-LICENSE.txt` and copied into the
+is retained in `user/libui/assets/DejaVu-LICENSE.txt` and copied into the
 initramfs at `/usr/share/licenses/compositor/DejaVu-LICENSE.txt`.
 
 ## Verification

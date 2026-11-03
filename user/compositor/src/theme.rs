@@ -1,18 +1,13 @@
 //! Shared desktop styling. Integer-only, allocation-free raster operations.
-pub const PANEL: u32 = 0xff1e1e1e;
-pub const SURFACE: u32 = 0xff2d2d2d;
-pub const BORDER: u32 = 0xff3e3e3e;
-pub const TEXT: u32 = 0xffe0e0e0;
-pub const MUTED: u32 = 0xff989898;
-#[allow(dead_code)]
-pub const SUBTEXT: u32 = 0xff7e8796;
-pub const ACCENT: u32 = 0xff007aff;
-pub const ACCENT_BLUE: u32 = 0xff007aff;
-pub const AMBER: u32 = 0xfff59e0b;
-pub const RED: u32 = 0xffef4444;
-pub const YELLOW: u32 = 0xffeab308;
-const ALPHA: &[u8; 95 * 16 * 18] = include_bytes!("../assets/ui-alpha.bin");
-const ADVANCES: &[u8; 95] = include_bytes!("../assets/ui-advances.bin");
+#[allow(unused_imports)]
+pub use libui::font::{text_pixel, text_pixel_bold, text_width};
+#[allow(unused_imports)]
+pub use libui::gfx::{blend_coverage, rounded_coverage};
+#[allow(unused_imports)]
+pub use libui::theme::{
+    ACCENT, ACCENT_BLUE, AMBER, BORDER, MUTED, PANEL, RED, SUBTEXT, SURFACE, TEXT, YELLOW,
+};
+
 static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 pub fn set_scale(mode: u8) {
@@ -30,108 +25,6 @@ pub fn scale(height: usize) -> usize {
         _ => (),
     }
     if height >= 2160 { 2 } else { 1 }
-}
-
-/// 4x4 subpixel coverage, evaluated in physical pixels rather than enlarged
-/// logical pixels. Only the rounded corner squares need supersampling.
-pub fn rounded_coverage(x: usize, y: usize, width: usize, height: usize, radius: usize) -> u32 {
-    if x >= width || y >= height {
-        return 0;
-    }
-    let radius = radius.min(width / 2).min(height / 2);
-    if (x >= radius && x < width - radius) || (y >= radius && y < height - radius) {
-        return 16;
-    }
-    let cx = if x < radius {
-        radius * 8
-    } else {
-        (width - radius) * 8
-    } as i64;
-    let cy = if y < radius {
-        radius * 8
-    } else {
-        (height - radius) * 8
-    } as i64;
-    let r2 = (radius * 8) as i64 * (radius * 8) as i64;
-    let mut coverage = 0;
-    for sy in [1, 3, 5, 7] {
-        for sx in [1, 3, 5, 7] {
-            let dx = (x * 8 + sx) as i64 - cx;
-            let dy = (y * 8 + sy) as i64 - cy;
-            coverage += (dx * dx + dy * dy <= r2) as u32;
-        }
-    }
-    coverage
-}
-
-pub fn blend_coverage(fg: u32, bg: u32, coverage: u32) -> u32 {
-    let mut result = 0xff000000;
-    for shift in [0, 8, 16] {
-        let f = (fg >> shift) & 255;
-        let b = (bg >> shift) & 255;
-        result |= ((f * coverage + b * (16 - coverage) + 8) / 16) << shift;
-    }
-    result
-}
-
-fn glyph(c: char) -> usize {
-    if (' '..='~').contains(&c) {
-        c as usize - 32
-    } else {
-        b'?' as usize - 32
-    }
-}
-
-pub fn text_width(text: &str) -> usize {
-    text.chars().map(|c| ADVANCES[glyph(c)] as usize).sum()
-}
-
-pub fn text_pixel(text: &str, mut x: usize, y: usize, fg: u32, bg: u32) -> u32 {
-    if y >= 18 {
-        return bg;
-    }
-    for c in text.chars() {
-        let index = glyph(c);
-        let advance = ADVANCES[index] as usize;
-        if x < advance {
-            let a = ALPHA[index * 16 * 18 + y * 16 + x] as u32;
-            let mut color = 0xff000000;
-            for shift in [0, 8, 16] {
-                let f = (fg >> shift) & 255;
-                let b = (bg >> shift) & 255;
-                color |= ((f * a + b * (255 - a) + 127) / 255) << shift;
-            }
-            return color;
-        }
-        x -= advance;
-    }
-    bg
-}
-
-#[allow(dead_code)]
-pub fn text_pixel_bold(text: &str, mut x: usize, y: usize, fg: u32, bg: u32) -> u32 {
-    if y >= 18 {
-        return bg;
-    }
-    for c in text.chars() {
-        let index = glyph(c);
-        let advance = ADVANCES[index] as usize;
-        if x < advance {
-            let base = index * 16 * 18 + y * 16;
-            let a0 = ALPHA[base + x] as u32;
-            let a_prev = if x > 0 { ALPHA[base + x - 1] as u32 } else { 0 };
-            let a = (a0 + ((255 - a0) * (a_prev * 5 / 8)) / 255).min(255);
-            let mut color = 0xff000000;
-            for shift in [0, 8, 16] {
-                let f = (fg >> shift) & 255;
-                let b = (bg >> shift) & 255;
-                color |= ((f * a + b * (255 - a) + 127) / 255) << shift;
-            }
-            return color;
-        }
-        x -= advance;
-    }
-    bg
 }
 
 /// Row form of `desktop_pixel()`: the vertical term is computed once.
