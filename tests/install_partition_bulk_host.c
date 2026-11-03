@@ -25,5 +25,8 @@ int main(void){
  read_error=-5;before=reads;assert(!block_read_sectors(&dev,0,8,bytes));assert(reads==before+1);read_error=0;
  write_error=-5;before=writes;assert(!block_write_sectors(&dev,0,8,bytes));assert(writes==before+1);write_error=0;
  dev.read_sectors=NULL;before=identities;unsigned prior_reads=reads;assert(block_read_sectors(&dev,0,8,bytes));assert(identities==before+8&&reads==prior_reads+8);
+ uint8_t payload[16384];before=identities;prior_reads=reads;
+ assert(!raw_read(&owner,1,32,payload));assert(identities==before+1&&reads==prior_reads+1&&seen_count==32);
+ identity_value.generation++;before=reads;assert(raw_read(&owner,1,32,payload)<0&&reads==before);identity_value=owner.identity;
  puts("PASS actual installer partition: one identity per bounded run, complete bounds before I/O, changed identity refusal and no failure retry");return 0;
 }

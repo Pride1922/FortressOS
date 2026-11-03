@@ -50,6 +50,7 @@ static bool uuid(const uint8_t *p) {
 static int plan_valid(const install_target_t *t,const install_plan_t *p) {
     if (!t || !p || t->sector_size!=512 || t->sectors<INSTALL_MIN_SECTORS ||
         t->sectors>UINT64_MAX/512 || !t->admit || !t->read || !t->write || !t->flush || !t->provision ||
+        (t->payload_run_bytes && t->payload_run_bytes!=4096 && t->payload_run_bytes!=8192 && t->payload_run_bytes!=INSTALL_PAYLOAD_RUN_BYTES) ||
         p->readiness_lba>=INSTALL_ESP_BYTES/512 || p->secondary_readiness_lba>=INSTALL_ESP_BYTES/512 ||
         (p->secondary_readiness_lba && p->secondary_readiness_lba==p->readiness_lba) || !uuid(p->disk_guid) || zero(p->readiness,512)) return BAD;
     if (p->root_sectors && (p->root_sectors<INSTALL_ROOT_BYTES/512 || p->root_sectors>t->sectors-33-INSTALL_ROOT_LBA)) return BAD;
@@ -80,8 +81,8 @@ static void header(uint8_t *h,uint64_t current,uint64_t backup,uint64_t array,ui
     put32(h+16,crc32(0,h,92));
 }
 static int exact(int r) {return r>0 ? IO : r;}
-static int checked_write(const install_target_t *t,uint64_t lba,uint32_t count,const void *bytes,uint8_t verify[4096]) {
-    if (!count || count>8 || lba>=t->sectors || count>t->sectors-lba) return BAD;
+static int checked_write(const install_target_t *t,uint64_t lba,uint32_t count,const void *bytes,uint8_t *verify) {
+    if (!count || count>INSTALL_PAYLOAD_RUN_BYTES/512 || lba>=t->sectors || count>t->sectors-lba) return BAD;
     int r=exact(t->write(t->context,lba,count,bytes));if (r) return r;
     r=exact(t->read(t->context,lba,count,verify));if (r) return r;
     return memcmp(bytes,verify,count*512) ? IO : 0;
@@ -104,6 +105,7 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
     if (r || dry_run) {result->error=r;return r;}
     /* Caller keeps its source immutable for the whole operation. The engine also
      * rehashes each copied role; changed bytes cannot reach readiness publication. */
+    const uint32_t run=target->payload_run_bytes ? target->payload_run_bytes : INSTALL_CHUNK_BYTES;
     uint8_t *data=work->data,*verify=work->verify,*first=work->first,*mbr=work->mbr;
     result->stage=INSTALL_STAGE_ADMIT;if (target->progress) target->progress(target->context,INSTALL_STAGE_ADMIT);
     r=exact(target->admit(target->context));if (r) goto done;
@@ -133,16 +135,16 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
     const uint8_t *manifest=bytes;
     for (unsigned role=0;role<3;role++) {
         digest_t d;digest_init(&d,DIGEST_SHA256);
-        for (uint64_t off=0;off<lengths[role];off+=INSTALL_CHUNK_BYTES) {
-            r=exact(source->read(source->context,(install_role_t)role,off,data,INSTALL_CHUNK_BYTES));if (r) goto done;
-            if (!digest_update(&d,data,INSTALL_CHUNK_BYTES)) {r=BAD;goto done;}
+        for (uint64_t off=0;off<lengths[role];off+=run) {
+            r=exact(source->read(source->context,(install_role_t)role,off,data,run));if (r) goto done;
+            if (!digest_update(&d,data,run)) {r=BAD;goto done;}
             if (role==INSTALL_ESP && plan->secondary_readiness_lba && off<=plan->secondary_readiness_lba*512 &&
-                plan->secondary_readiness_lba*512-off<INSTALL_CHUNK_BYTES &&
+                plan->secondary_readiness_lba*512-off<run &&
                 !zero(data+plan->secondary_readiness_lba*512-off,512)) {r=BAD;goto done;}
-            if (role==INSTALL_ESP && off<=plan->readiness_lba*512 && plan->readiness_lba*512-off<INSTALL_CHUNK_BYTES &&
+            if (role==INSTALL_ESP && off<=plan->readiness_lba*512 && plan->readiness_lba*512-off<run &&
                 !zero(data+plan->readiness_lba*512-off,512)) {r=BAD;goto done;}
-            r=checked_write(target,starts[role]+off/512,8,data,verify);if (r) goto done;
-            result->copied_bytes+=INSTALL_CHUNK_BYTES;
+            r=checked_write(target,starts[role]+off/512,run/512,data,verify);if (r) goto done;
+            result->copied_bytes+=run;
         }
         uint8_t h[32];digest_final(&d,h);if (memcmp(h,manifest+48+role*32,32)) {r=BAD;goto done;}
     }
@@ -162,9 +164,9 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
      * against original payload hashes after legitimate account changes. */
     for (unsigned role=0;role<3;role+=2) {
         digest_t d;digest_init(&d,DIGEST_SHA256);
-        for (uint64_t off=0;off<lengths[role];off+=INSTALL_CHUNK_BYTES) {
-            r=exact(target->read(target->context,starts[role]+off/512,8,data));if (r) goto done;
-            (void)digest_update(&d,data,INSTALL_CHUNK_BYTES);
+        for (uint64_t off=0;off<lengths[role];off+=run) {
+            r=exact(target->read(target->context,starts[role]+off/512,run/512,data));if (r) goto done;
+            (void)digest_update(&d,data,run);
         }
         uint8_t h[32];digest_final(&d,h);if (memcmp(h,manifest+48+role*32,32)) {r=IO;goto done;}
     }

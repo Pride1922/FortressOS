@@ -14,12 +14,13 @@
  * fsync, faults return before dispatch unless 'after' is selected. No NVMe,
  * volatile-cache, IRQ, sector-tear or filesystem provisioning claim. */
 static bool two_slots;
+static unsigned payload_run;
 static const uint64_t sizes[]={INSTALL_ESP_BYTES,INSTALL_ROOT_BYTES,INSTALL_BIOS_BYTES,440};
 typedef struct {
     int fd;
     uint64_t sectors,writes,reads,flushes,admissions,provisions,source_reads;
     int fail_admit,fail_provision,fail_flush,after,short_write,corrupt_read;
-    uint64_t fail_write;
+    uint64_t fail_write,fail_read;
     bool bad_slot,source_corrupt;
 } fixture_t;
 static void put32(uint8_t *p,uint32_t n) {for (unsigned i=0;i<4;i++) p[i]=(uint8_t)(n>>(i*8));}
@@ -41,13 +42,14 @@ static int source_read(void *ctx,install_role_t role,uint64_t off,void *bytes,si
 }
 static int admit(void *ctx) {fixture_t *f=ctx;f->admissions++;return f->fail_admit ? -13 : 0;}
 static int read_disk(void *ctx,uint64_t lba,uint32_t count,void *p) {
-    fixture_t *f=ctx;assert(count && count<=8 && lba<f->sectors && count<=f->sectors-lba);f->reads++;
+    fixture_t *f=ctx;assert(count && count<=INSTALL_PAYLOAD_RUN_BYTES/512 && lba<f->sectors && count<=f->sectors-lba);f->reads++;
+    if (f->fail_read==f->reads) return -5;
     assert(pread(f->fd,p,count*512,(off_t)(lba*512))==(ssize_t)(count*512));
     if (f->corrupt_read) ((uint8_t *)p)[0]^=1;
     return 0;
 }
 static int write_disk(void *ctx,uint64_t lba,uint32_t count,const void *p) {
-    fixture_t *f=ctx;assert(count && count<=8 && lba<f->sectors && count<=f->sectors-lba);f->writes++;
+    fixture_t *f=ctx;assert(count && count<=INSTALL_PAYLOAD_RUN_BYTES/512 && lba<f->sectors && count<=f->sectors-lba);f->writes++;
     bool fail=f->fail_write==f->writes;
     if (fail && !f->after) return -5;
     size_t n=count*512;if (fail && f->short_write) n-=512;
@@ -84,10 +86,11 @@ static void reset(fixture_t *f,uint64_t sectors) {
 }
 static install_target_t target(fixture_t *f) {
     return (install_target_t){.context=f,.sectors=f->sectors,.sector_size=512,
-        .admit=admit,.read=read_disk,.write=write_disk,.flush=flush,.provision=provision};
+        .admit=admit,.read=read_disk,.write=write_disk,.flush=flush,.provision=provision,.payload_run_bytes=payload_run};
 }
 int main(int argc,char **argv) {
-    assert(argc==2);
+    assert(argc==2 || argc==3);
+    payload_run=argc==3 ? (unsigned)strtoul(argv[2],NULL,10) : 0;
     /* Never open an existing path. Runner supplies a fresh owned fixture directory. */
     int fd=open(argv[1],O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW,0600);assert(fd>=0);
     struct stat st;assert(!fstat(fd,&st) && S_ISREG(st.st_mode));
@@ -110,6 +113,8 @@ int main(int argc,char **argv) {
     memcpy(bad,m,256);bad[176]=1;hash(bad,224,bad+224);
     assert(install_payload_deploy(bad,256,&src,&t,&p,false,work,&result)==-22);cases++;
     t.sectors=INSTALL_MIN_SECTORS-1;assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-22);cases++;t=target(&f);
+    t.payload_run_bytes=512;assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-22);cases++;t=target(&f);
+    t.payload_run_bytes=32768;assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-22);cases++;t=target(&f);
     t.sector_size=4096;assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-22);cases++;t=target(&f);
     install_plan_t duplicate=p;memcpy(duplicate.disk_guid,duplicate.partition_guid[0],16);
     assert(install_payload_deploy(m,256,&src,&t,&duplicate,false,work,&result)==-22);cases++;
@@ -130,10 +135,16 @@ int main(int argc,char **argv) {
     }
     reset(&f,sectors);f.fail_provision=true;
     assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-28 && result.stage==INSTALL_STAGE_PROVISION && !result.complete);cases++;
-    reset(&f,sectors);f.fail_write=80;f.after=1;f.short_write=1;
-    assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && !result.complete && f.writes==80);cases++;
+    reset(&f,sectors);f.fail_write=74;f.after=1;f.short_write=1;
+    assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && !result.complete && f.writes==74);cases++;
     reset(&f,sectors);f.corrupt_read=1;
     assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && result.stage==INSTALL_STAGE_LAYOUT && !result.complete);cases++;
+    /* Payload readback failures must leave readiness invalid, without retry. */
+    for (unsigned cut=67;cut<=70;cut++) {
+        reset(&f,sectors);f.fail_read=cut;
+        assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5);
+        assert(!result.complete && result.stage==INSTALL_STAGE_PAYLOAD && f.reads==cut && !f.provisions);cases++;
+    }
     two_slots=true;manifest(m);p.secondary_readiness_lba=9;
     reset(&f,sectors);assert(!install_payload_deploy(m,256,&src,&t,&p,false,work,&result));
     assert(result.complete && f.flushes==5 && f.provisions==1);
@@ -151,7 +162,10 @@ int main(int argc,char **argv) {
     /* Leave the successful actual-engine output for an independent Python oracle. */
     reset(&f,sectors);assert(!install_payload_deploy(m,256,&src,&t,&p,false,work,&result));
     assert(result.complete && result.stage==INSTALL_STAGE_COMPLETE && result.copied_bytes==INSTALL_ESP_BYTES+(uint64_t)INSTALL_ROOT_BYTES+INSTALL_BIOS_BYTES);
-    assert(f.flushes==4 && f.admissions==1 && f.provisions==1);cases++;
+    assert(f.flushes==4 && f.admissions==1 && f.provisions==1);
+    uint64_t chunks=(INSTALL_ESP_BYTES+(uint64_t)INSTALL_ROOT_BYTES+INSTALL_BIOS_BYTES)/(payload_run ? payload_run : INSTALL_CHUNK_BYTES);
+    assert(f.writes==6+66+chunks+1+1);
+    printf("payload run %u bytes: %llu writes, %llu reads\n",payload_run ? payload_run : INSTALL_CHUNK_BYTES,(unsigned long long)f.writes,(unsigned long long)f.reads);cases++;
     free(work);assert(!close(fd));printf("installer deployment workbench: %u cases PASS\n",cases);
     return 0;
 }

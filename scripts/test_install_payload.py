@@ -22,7 +22,8 @@ def main():
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='payload-', dir=parent))
     paths = ['src/include/install_payload.h', 'src/lib/install_payload.c',
-             'tests/install_payload_host.c', 'scripts/test_install_payload.py',
+             'tests/install_payload_host.c', 'tests/install_transport_run_host.c',
+             'src/kernel/install_nvme.c', 'scripts/test_install_payload.py',
              'src/lib/crc32.c', 'user/tools/digest.c', 'Makefile',
              'src/include/install_archive.h', 'src/lib/install_archive.c',
              'tests/install_archive_host.c', 'src/kernel/root_boot.c',
@@ -35,6 +36,16 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix='fortress-install-payload-') as temporary:
             temp = Path(temporary)
+            transport = temp / 'transport-host'
+            command = ['gcc', '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+                       '-fsanitize=address,undefined', '-no-pie', '-ffunction-sections',
+                       '-fdata-sections', '-Wl,--gc-sections', '-I.', '-Isrc/include',
+                       '-Isrc/kernel', '-Isrc/fs', '-Isrc/drivers', '-Isrc/mm',
+                       '-Isrc/arch/x86_64', 'tests/install_transport_run_host.c', '-o', str(transport)]
+            manifest['commands'].append(command)
+            with (out / 'transport.log').open('w') as log:
+                subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+                subprocess.run([str(transport)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
             archive_binary, archive = temp / 'archive-host', out / 'bootstrap.tar'
             command = ['gcc', '-std=c11', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                        '-fsanitize=address,undefined', '-no-pie', '-ffunction-sections',
@@ -73,7 +84,11 @@ def main():
                 command = [str(binary), str(disk)]
                 manifest['commands'].append(command)
                 try:
-                    subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=1200)
+                    for run in (0, 8192, 16384):
+                        if disk.exists(): disk.unlink()
+                        invocation = command + [str(run)]
+                        manifest['commands'].append(invocation)
+                        subprocess.run(invocation, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=1200)
                 finally:
                     if disk.is_file() and not disk.is_symlink():
                         shutil.copyfile(disk, out / 'target.img')

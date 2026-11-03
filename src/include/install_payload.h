@@ -14,6 +14,7 @@
 #define INSTALL_ROOT_LBA 135168u
 #define INSTALL_BIOS_LBA 2048u
 #define INSTALL_CHUNK_BYTES 4096u
+#define INSTALL_PAYLOAD_RUN_BYTES 16384u
 
 typedef enum {
     INSTALL_STAGE_VALIDATE, INSTALL_STAGE_ADMIT, INSTALL_STAGE_INVALIDATE,
@@ -41,6 +42,9 @@ typedef struct {
     int (*provision)(void *);
     /* Optional unlocked, bounded stage notification; never authorizes I/O. */
     void (*progress)(void *,install_stage_t);
+    /* Optional payload-only run size: zero keeps 4 KiB; otherwise 4/8/16 KiB.
+     * Every callback still requires fresh identity validation and exact completion. */
+    uint32_t payload_run_bytes;
 } install_target_t;
 typedef struct {
     /* GPT on-disk little-endian UUIDs; all distinct, nonzero RFC4122 v4. */
@@ -66,7 +70,7 @@ typedef struct {
 /* Caller-owned heap/static workspace; no large frame on a 16KiB kernel stack.
  * Keep disjoint from immutable source/manifest/plan and adapter I/O storage. */
 typedef struct {
-    uint8_t data[4096],verify[4096],first[512],mbr[512];
+    uint8_t data[INSTALL_PAYLOAD_RUN_BYTES],verify[INSTALL_PAYLOAD_RUN_BYTES],first[512],mbr[512];
 } install_payload_work_t;
 /* Installer-only expansion of the audited 4 KiB/32768-block/128-inode seed.
  * Caller retains exclusive target ownership and invalid readiness throughout.

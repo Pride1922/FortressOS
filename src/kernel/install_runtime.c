@@ -290,7 +290,8 @@ int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *back
     r=personalize(w,req);if (r) goto done;
     install_log_target(id,w->username);
     install_target_t target={.context=w,.sectors=id->sector_count,.sector_size=id->sector_size,
-        .admit=admit,.read=raw_read,.write=raw_write,.flush=raw_flush,.provision=provision,.progress=progress};
+        .admit=admit,.read=raw_read,.write=raw_write,.flush=raw_flush,.provision=provision,.progress=progress,
+        .payload_run_bytes=INSTALL_PAYLOAD_RUN_BYTES};
     install_result_t result;
     r=install_payload_deploy(w->manifest,256,&source,&target,&w->plan,false,&w->copy,&result);
     status->stage=result.stage;status->copied_bytes=result.copied_bytes;status->complete=result.complete;

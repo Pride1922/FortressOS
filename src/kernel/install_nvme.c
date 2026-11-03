@@ -136,15 +136,31 @@ static void progress_update(void) {
     if (key==progress_last) return;
     progress_last=key;progress_draw(progress_stage,pct);
 }
+/* One admitted logical request, bounded independently of the transport's DMA
+ * page. Complete bounds precede dispatch; a failed prefix is never retried. */
+static bool valid_run(uint64_t lba,uint32_t count,const void *bytes) {
+    uint64_t sectors=storage_get_sector_count();
+    return bytes && count && count<=32 && lba<sectors && count<=sectors-lba;
+}
 static int read_run(void *context,uint64_t lba,uint32_t count,void *bytes) {
     (void)context;
-    if (failed || !storage_read_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
+    if (failed || !valid_run(lba,count,bytes)) return -VFS_EIO;
+    for (uint32_t off=0;off<count;) {
+        uint32_t n=count-off>8 ? 8 : count-off;
+        if (!storage_read_sectors(lba+off,n,(uint8_t *)bytes+off*512)) {failed=true;return -VFS_EIO;}
+        off+=n;
+    }
     if (deploying && progress_stage==6) {progress_read+=(uint64_t)count*512;progress_update();}
     return 0;
 }
 static int write_run(void *context,uint64_t lba,uint32_t count,const void *bytes) {
     (void)context;
-    if (failed || !storage_write_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
+    if (failed || !valid_run(lba,count,bytes)) return -VFS_EIO;
+    for (uint32_t off=0;off<count;) {
+        uint32_t n=count-off>8 ? 8 : count-off;
+        if (!storage_write_sectors(lba+off,n,(const uint8_t *)bytes+off*512)) {failed=true;return -VFS_EIO;}
+        off+=n;
+    }
     if (deploying && progress_stage==4) {progress_written+=(uint64_t)count*512;progress_update();}
     return 0;
 }
