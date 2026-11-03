@@ -57,3 +57,17 @@ capture contained 209 lines in normal mode versus 792 in diagnostic mode. This i
 QEMU output volume, not a measured Dell boot-time improvement. Final release-source
 verification and logs are under `build/boot-selftests/`; physical acceptance of the
 next image remains pending. Parallel ACPI/battery edits are not part of this change.
+
+Clean-source confirmation: isolated commit `538aa97` also passes 8/8 boots with
+both normal and diagnostic login/userspace/shutdown. All four SMP=4 cases report
+all four CPUs online. Evidence: `.codex-remote-attachments/boot-selftests-check/`
+`build/boot-selftests-om3jxkai/manifest.json`; build/matrix logs are mirrored under
+`build/boot-selftests/`. The checkout was clean during verification, excluding
+parallel ACPI changes. The earlier parser-host failure was an incorrect test
+capacity (the opt-in string needs 17 bytes including NUL); corrected before the
+passing sanitizer run. No failed kernel boot is omitted from the matrix result.
+
+Normal-boot BIOS/UEFI dmesg integration also passes from this clean checkout,
+including explicit disposable storage-fixture admission, sudo, standalone/builtin
+logging, file output, severity/tail filters and shutdown. The test's separate
+`dmesg_test` sample key does not enable the extensive boot suites.
