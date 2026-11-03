@@ -3044,3 +3044,9 @@ test-ext4-bitmap-host:
 .PHONY: test-gterm-stack
 test-gterm-stack: $(USER_COMPOSITOR_ELF)
 	@python3 scripts/check_gterm_stack.py $(BUILD_DIR)/gterm.elf
+
+.PHONY: test-boot-timing-host
+test-boot-timing-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/drivers tests/boot_timing_host.c -o $(BUILD_DIR)/boot_timing_host
+	@$(BUILD_DIR)/boot_timing_host

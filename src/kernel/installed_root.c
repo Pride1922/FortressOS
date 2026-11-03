@@ -1,4 +1,5 @@
 #include "installed_root.h"
+#include "boot_timing.h"
 #include "base_system.h"
 #include "ext4.h"
 #include "storage.h"
@@ -138,7 +139,7 @@ static bool validate_tree(ext4_mount_t *mount) {
     db_wipe(&database,sizeof(database));
     return ok && executable(root,"/bin/login",false) && executable(root,"/bin/shell",false) && executable(root,"/bin/sudo",true);
 }
-bool installed_root_boot(const boot_info_t *info) {
+static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timing) {
     root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
     size_t n;char record[512];
     creds_t actor;creds_init_root(&actor);int error;
@@ -161,11 +162,14 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="invalid or incomplete boot readiness";
     if (!info->installed_modules_valid || !root_readiness_validate((void *)info->readiness_vaddr,info->readiness_size,&recovery,
         (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size)) return false;
+    boot_timing_mark(timing,"bootstrap-cli");
     /* Keep a current package CLI available on installations predating /bin/pkg. */
     int tool=pkg_boot_cli_publish(info);
     if(tool&&tool!=-VFS_ENOENT)serial_puts("[PKG] Bootstrap CLI unavailable; installed tools unchanged\n");
+    boot_timing_mark(timing,"device-inventory");
     reason="ambiguous storage inventory";
     if (!select_root_controller(&c.partuuid)) return false;
+    boot_timing_mark(timing,"selected-disk-gpt");
     reason="unsupported storage device/geometry";
     if (!storage_init() || !storage_has_unique_namespace() || !storage_root_geometry_supported() || storage_get_sector_size()!=512) return false;
     block_init();if (!storage_register_selected()) return false;
@@ -195,13 +199,16 @@ bool installed_root_boot(const boot_info_t *info) {
     if (fail_flush) selected->flush=rejected_flush;
     if (fail_replay_write) {selected->write_sector=rejected_write;selected->write_sectors=NULL;}
 #endif
+    boot_timing_mark(timing,"base-boot-set");
     if(c.base_layout){
         reason="complete base boot-set admission failed";
         if(!base_system_boot(info))return false;
         complete_base=true;
         if(vfs_boot_enable_base())return false;
     }
+    boot_timing_mark(timing,"flush-preflight");
     reason="Storage flush preflight failed";if (!block_flush(selected)) return false;
+    boot_timing_mark(timing,"filesystem");
     reason="filesystem admission/replay failed";ext4_mount_t *mount=NULL;const char *stage="root preparation";
     if (ext4_prepare_root_diagnose(selected,true,&mount,&stage)) {
         const char *after[]={"journal-replay","reopened-state","map-allocation","journal-activation","orphan-recovery","final-barrier","root-inode"};
@@ -209,6 +216,7 @@ bool installed_root_boot(const boot_info_t *info) {
         serial_puts(may_write ? "[ROOT] Recovery writes may have occurred; failed stage: " : "[ROOT] Rejected before recovery writes; failed stage: ");
         serial_puts(stage);serial_puts("\n");return false;
     }
+    boot_timing_mark(timing,"installed-system-validation");
     reason="mandatory installed-system validation failed (recovery may have written)";
     if (!validate_tree(mount)) {
         accounts_abandon();
@@ -216,12 +224,20 @@ bool installed_root_boot(const boot_info_t *info) {
          * is never reported clean, and tainted state is never reopened in place. */
         (void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;
     }
+    boot_timing_mark(timing,"publication");
     reason="root publication failed";
     if (ext4_publish_root(mount)) {accounts_abandon();(void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;}
     published=true;
     if(complete_base)base_system_published();
     ext4_pkg_bind();
     serial_puts("[ROOT] Installed root admitted by PARTUUID; volatile namespaces attached\n");return true;
+}
+bool installed_root_boot(const boot_info_t *info) {
+    boot_timing_t timing;boot_timing_begin(&timing,"boot-credentials");
+    bool ok=installed_root_boot_impl(info,&timing);
+    boot_timing_mark(&timing,NULL);boot_timing_emit(&timing,"ROOT");
+    if (timing.hz) serial_puts(ok ? "[BOOT TIME] ROOT result: admitted\n" : "[BOOT TIME] ROOT result: rejected\n");
+    return ok;
 }
 void installed_root_login_failed(void) {accounts_disable();reason="installed login failed; installed authentication disabled";}
 bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(storage_quiesce)==0;}

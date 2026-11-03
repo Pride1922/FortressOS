@@ -1,3 +1,4 @@
+#include "boot_timing.h"
 #include "boot_diagnostics.h"
 #include "install_control.h"
 #include "kernel_release.h"
@@ -188,12 +189,14 @@ static void render_boot_logo(const boot_info_t *boot_info) {
     logo_render_boot(boot_info);
 }
 
+static boot_timing_t boot_profile;
 static bool verbose_boot = false;
 static bool boot_selftests;
 
 /* Display boot status update on splash ticker and log to serial */
 static void boot_status(const char *msg) {
     if (!msg) return;
+    boot_timing_mark(&boot_profile,msg);
     if (console_is_quiet()) {
         logo_update_status(msg);
     }
@@ -5955,6 +5958,7 @@ pf_boot_guard_done:
     }
     rtc_init(century_reg);
     time_init();
+    boot_timing_begin(&boot_profile,"clock-ready");
     random_init(&boot_info, time_get_epoch_seconds());
     serial_puts(random_ready() ? "[RANDOM] hardware-seeded HMAC-DRBG ready\n" :
                                "[RANDOM] unavailable; strong randomness fails closed\n");
@@ -6750,6 +6754,8 @@ pf_boot_guard_done:
         initial_program="/bin/desktop-greeter";
     }
     boot_status(installed_ready ? "Interactive shell ready." : "Recovery environment selected.");
+    boot_timing_mark(&boot_profile,NULL);
+    boot_timing_emit(&boot_profile,"KERNEL");
     if (console_is_quiet()) {
         console_set_quiet(false);
         console_clear();

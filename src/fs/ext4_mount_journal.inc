@@ -34,83 +34,92 @@ static int e4_journal_mark(ext4_engine_t *e,bool clean) {
     } else ext4_engine_abort(e);
     e4_semantic_invalidate(e);return r;
 }
-static void e4_mount_stage(const char **stage,const char *name) {
+static void e4_mount_stage(const char **stage,const char *name,boot_timing_t *timing) {
+    boot_timing_mark(timing,name);
     if (stage) *stage=name;
 }
-static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
-    bool admitted,ext4_mount_t **out,const char **stage,bool detached) {
-    e4_mount_stage(stage,"arguments");
+static int e4_mount_journal_admitted_impl(block_dev_t *dev,const char *path,
+    bool admitted,ext4_mount_t **out,const char **stage,bool detached,boot_timing_t *timing) {
+    e4_mount_stage(stage,"arguments",timing);
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !path || (detached ? strcmp(path,"/") : strcmp(path,"/mnt")) || !dev->read_sector ||
         (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
         dev->sector_count>UINT32_MAX || dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
-    e4_mount_stage(stage,"writable-admission");
+    e4_mount_stage(stage,"writable-admission",timing);
     if (!admitted ||
         !dev->write_sector || !dev->flush) return -VFS_EROFS;
-    e4_mount_stage(stage,"exclusive-mount");
+    e4_mount_stage(stage,"exclusive-mount",timing);
     uint64_t flags=spin_lock_irqsave(&e4_lock);vfs_node_t *parent=vfs_lookup_kernel("/");
     int r=!parent ? -VFS_EINVAL : e4_active || e4_engine_busy || (!detached && vfs_lookup_kernel(path)) ? -VFS_EEXIST : 0;
     if (!r) e4_engine_busy=true;
     spin_unlock_irqrestore(&e4_lock,flags);if (r) return r;
-    e4_mount_stage(stage,"workspace-allocation");
+    e4_mount_stage(stage,"workspace-allocation",timing);
     ext4_mount_t *bootstrap=kcalloc(1,sizeof(*bootstrap));
     e4_node_t *node=kcalloc(1,sizeof(*node));ext4_engine_t *engine=NULL;
     jbd2_plan_t *plan=NULL;uint32_t *map=NULL;e4_journal_guard_t guard={.lifecycle=true};
     r=-VFS_ENOMEM;if (!bootstrap || !node) goto fail;
     bootstrap->dev=dev;bootstrap->bs=dev->sector_size;bootstrap->blocks=(uint32_t)dev->sector_count;
     bootstrap->journal_bootstrap=true;jbd2_source_t source;
-    e4_mount_stage(stage,"journal-source");
+    e4_mount_stage(stage,"journal-source",timing);
     r=e4_journal_source(bootstrap,&guard,&map,&source);
-    if (!r) { e4_mount_stage(stage,"journal-analyze");r=jbd2_analyze(dev,&source,&plan,NULL); }
+    if (!r) { e4_mount_stage(stage,"journal-analyze",timing);r=jbd2_analyze(dev,&source,&plan,NULL); }
     kfree(map);map=NULL;e4_discard(bootstrap);bootstrap=NULL;if (r) goto fail;
     block_dev_t preview={.sector_size=dev->sector_size,.sector_count=dev->sector_count,
         .read_sector=e4_preview_sector,.write_sector=e4_preview_write,.flush=e4_preview_flush,.priv=plan,
         .read_sectors=e4_preview_sectors,.max_run_bytes=4096};
-    e4_mount_stage(stage,"recovery-preview");
+    e4_mount_stage(stage,"recovery-preview",timing);
     r=e4_open_journal_orphans_owned(&preview,true,&engine,true,true);if (r) goto fail;
     /* Constructor checks complete allocation/reference ownership and orphans.
      * Neither preview adapter nor any preflight is permitted to write. */
     e4_engine_dispose(engine);engine=NULL;
-    e4_mount_stage(stage,"journal-replay");
+    e4_mount_stage(stage,"journal-replay",timing);
     r=jbd2_replay(plan,true);if (r) goto fail;
     jbd2_release(plan);plan=NULL;
-    e4_mount_stage(stage,"reopened-state");
+    e4_mount_stage(stage,"reopened-state",timing);
     r=e4_open_journal_orphans_owned(dev,true,&engine,true,true);if (r) goto fail;
     ext4_mount_t *fs=engine->fs;
-    e4_mount_stage(stage,"map-allocation");
+    e4_mount_stage(stage,"map-allocation",timing);
     fs->rw_map=kmalloc(sizeof(*fs->rw_map)+E4_MAP_MAX*sizeof(e4_extent_t));
     if (!fs->rw_map) { r=-VFS_ENOMEM;goto fail; }
     /* Activate dirty+RECOVER durably before orphan cleanup or publication.
      * A crash during activation has changed no namespace/allocation metadata;
      * explicit fixture mount always analyzes the journal, even if RECOVER=0. */
-    e4_mount_stage(stage,"journal-activation");
+    e4_mount_stage(stage,"journal-activation",timing);
     r=e4_journal_mark(engine,false);if (r) goto fail;
-    e4_mount_stage(stage,"orphan-recovery");
+    e4_mount_stage(stage,"orphan-recovery",timing);
     r=ext4_engine_orphan_recover(engine);if (r) goto fail;
-    e4_mount_stage(stage,"final-barrier");
+    e4_mount_stage(stage,"final-barrier",timing);
     if (!block_flush(dev)) { engine->tainted=true;e4_cache_drop(fs,true);r=-VFS_EIO;goto fail; }
     fs->engine=engine;fs->journal_mounted=true;
     e4_inode_t root;
-    e4_mount_stage(stage,"root-inode");
+    e4_mount_stage(stage,"root-inode",timing);
     r=e4_inode(fs,2,&root);if (r) goto fail;
     if (detached) {
         fs->detached=true;fs->trusted_root=true;
         memcpy(node->node.name,"/",2);memcpy(node->node.path,"/",2);e4_setup(node,&root);
         fs->cached[fs->nodes++]=node;*out=fs;
-        e4_mount_stage(stage,"prepared");return 0;
+        e4_mount_stage(stage,"prepared",timing);return 0;
     }
-    e4_mount_stage(stage,"publication");
+    e4_mount_stage(stage,"publication",timing);
     flags=spin_lock_irqsave(&e4_lock);
     if (e4_active || vfs_lookup_kernel(path)) { r=-VFS_EEXIST;spin_unlock_irqrestore(&e4_lock,flags);goto fail; }
     memcpy(node->node.name,"mnt",4);memcpy(node->node.path,"/mnt",5);node->node.parent=parent;e4_setup(node,&root);
     fs->cached[fs->nodes++]=node;node->node.next=parent->children;parent->children=&node->node;
     e4_active=fs;e4_engine_busy=false;*out=fs;
-    spin_unlock_irqrestore(&e4_lock,flags);e4_mount_stage(stage,"mounted");return 0;
+    spin_unlock_irqrestore(&e4_lock,flags);e4_mount_stage(stage,"mounted",timing);return 0;
 fail:
     kfree(map);jbd2_release(plan);e4_discard(bootstrap);kfree(node);
     if (engine) { engine->fs->journal_mounted=false;e4_engine_dispose(engine); }
     flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags);return r;
 }
+static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
+    bool admitted,ext4_mount_t **out,const char **stage,bool detached) {
+    boot_timing_t timing;boot_timing_begin(&timing,NULL);
+    int r=e4_mount_journal_admitted_impl(dev,path,admitted,out,stage,detached,&timing);
+    boot_timing_mark(&timing,NULL);boot_timing_emit(&timing,"EXT4-MOUNT");
+    return r;
+}
+
 int ext4_mount_journal_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
     return e4_mount_journal_admitted(dev,path,true,out,NULL,false);
 }
