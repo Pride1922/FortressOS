@@ -1,6 +1,15 @@
 # Single complete installer — 2026-11-02
 
-## Current installer: desktop and Calculator, 2026-11-03
+## Current installer: ext4 metadata performance, 2026-11-03
+
+Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
+`e4a2650597c39117f00682da993fc481a09395f37f3e6dea40ab402599393f92`.
+Clean source `c33d397` includes bounded metadata bulk I/O, table CRC32C and the
+committed desktop/Calculator and networking work. BIOS/UEFI installation, four
+installed boots, persistence and Linux filesystem audits pass. Dell performance
+acceptance remains pending. [Measurements and release evidence](ext4-performance-first-release.md).
+
+## Earlier installer: desktop and Calculator, 2026-11-03
 
 Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
 `6296e1610d3405c156d8341e506a67cde2a51043e7607a5f0d0ebe86cb4a81e9`.

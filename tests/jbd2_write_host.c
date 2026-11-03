@@ -15,6 +15,16 @@ void kfree(void *p) { if (p) { assert(live);live--;free(p); } }
 bool block_read_sector(block_dev_t *d,uint64_t l,void *p) { reads++;if (!fail_read) return false;if (fail_read>0) fail_read--;return d->read_sector(d,l,p); }
 bool block_write_sector(block_dev_t *d,uint64_t l,const void *p) { return d->write_sector(d,l,p); }
 bool block_flush(block_dev_t *d) { return d->flush(d); }
+/* Bulk device shim deliberately accepts a sector prefix before an injected
+ * cut, then fails the whole request. The writer must poison without retry. */
+static bool bulk_read(block_dev_t *d,uint64_t l,uint32_t n,void *p) {
+    for (uint32_t i=0;i<n;i++) if (!block_read_sector(d,l+i,(uint8_t *)p+i*d->sector_size)) return false;
+    return true;
+}
+static bool bulk_write(block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
+    for (uint32_t i=0;i<n;i++) if (!block_write_sector(d,l+i,(const uint8_t *)p+i*d->sector_size)) return false;
+    return true;
+}
 void vfs_set_last_create_error(int e) { (void)e; }
 vfs_node_t *vfs_lookup(const char *p) { return strcmp(p,"/") ? NULL : &root; }
 static uint8_t *load(const char *path,size_t *size) {
@@ -88,7 +98,8 @@ int main(int argc,char **argv) {
     assert(argc==7);size_t n,cn;uint8_t *initial=load(argv[1],&n),*config=load(argv[2],&cn);assert(cn==20);
     unsigned ss=(unsigned)strtoul(argv[3],NULL,10);
     ext4_fault_disk_t d={.stable=malloc(n),.volatile_bytes=malloc(n),.bytes=n,.cut=-1};assert(d.stable && d.volatile_bytes);
-    block_dev_t dev={.sector_size=ss,.sector_count=n/ss,.read_sector=ext4_fault_read,.write_sector=ext4_fault_write,.flush=ext4_fault_flush,.priv=&d};
+    block_dev_t dev={.sector_size=ss,.sector_count=n/ss,.read_sector=ext4_fault_read,.write_sector=ext4_fault_write,.flush=ext4_fault_flush,.priv=&d,
+        .read_sectors=ss==512 ? bulk_read : NULL,.write_sectors=ss==512 ? bulk_write : NULL};
     reset(&d,initial);fixture_t f=fixture(&dev,initial,config);jbd2_writer_t *w=NULL;
     assert(jbd2_writer_open(&dev,&f.source,false,&w)==-VFS_EROFS && !w && !d.events);
     assert(!jbd2_writer_open(&dev,&f.source,true,&w));

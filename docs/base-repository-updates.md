@@ -3,14 +3,14 @@
 [Implementation evidence and acceptance limits](roadmap/base-repository-updates.md).
 
 The complete A/B installer is `bin/fortress-base-installer.img` (528 MiB).
-SHA-256: `6296e1610d3405c156d8341e506a67cde2a51043e7607a5f0d0ebe86cb4a81e9`.
+SHA-256: `e4a2650597c39117f00682da993fc481a09395f37f3e6dea40ab402599393f92`.
 It supersedes the live-only diagnostic image and earlier installers, and provisions
 complete base-update slots. Installation erases the selected target;
 flashing/installing remain user-operated.
 
 The image includes five [desktop application packages](desktop-packages.md):
 Desktop, Files, Notepad, Terminal and Calculator, plus the base recovery compositor
-and services. [Release evidence](roadmap/desktop-calculator-installer-2026-11-03.md)
+and services. [Release evidence](roadmap/ext4-performance-first-release.md)
 and [Dell acceptance checklist](dell-acceptance-2026-11-03.md).
 
 After installation, use the existing repository for applications and the base OS:

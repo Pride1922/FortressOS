@@ -1,8 +1,14 @@
 # Storage & Memory Subsystem Annex
 
-2026-11-03 performance investigation: reproduced capacity-dependent metadata
+2026-11-03 performance implementation: bounded installer/recovery-preview bulk
+I/O and table CRC32C preserve admission, identity and durability contracts. Host
+ASan/UBSan, Linux journal crash-cut oracles, BIOS/UEFI installation and four
+installed boots pass; physical performance acceptance is pending.
+[Implementation, measurements and release evidence](../roadmap/ext4-performance-first-release.md).
+
+Earlier 2026-11-03 performance investigation: reproduced capacity-dependent metadata
 admission, sector-split installer/recovery-preview reads, expensive bitwise CRC32C
-and high installer NVMe IDENTIFY counts. Production storage behavior is unchanged.
+and high installer NVMe IDENTIFY counts. Production storage behavior was unchanged during that investigation.
 [Measurements, methods, limitations and recommended order](../roadmap/ext4-metadata-performance-investigation.md).
 
 This annex documents the current status, hardware facts, verification evidence, and scope boundaries of the FortressOS storage, filesystem, and physical/virtual memory subsystems. Binding contracts, locking rules (L1–L4, especially `ext2_lock`), memory ownership (M1–M4), and block/VFS interfaces live in [`AGENTS.md`](../../AGENTS.md) (§4 and §9).
