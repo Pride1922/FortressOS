@@ -1,5 +1,9 @@
 # Storage & Memory Subsystem Annex
 
+2026-11-03 calibrated boot phase timings: KERNEL, ROOT and EXT4-MOUNT scopes
+separate early platform work, base boot-set validation and filesystem recovery.
+[Release, tests and nested timing interpretation](../roadmap/boot-timing-installer-2026-11-03.md).
+
 2026-11-03 boot-scan follow-up: byte-level bitmap counting and bounded group
 reservation searches reduce CPU work while retaining full replay/ownership
 validation. The Dell-sized host mount benchmark improves about 28% with unchanged

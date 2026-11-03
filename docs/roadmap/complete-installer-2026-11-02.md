@@ -1,6 +1,16 @@
 # Single complete installer — 2026-11-02
 
-## Current installer: payload batching, 2026-11-03
+## Current installer: boot timing and gterm fix, 2026-11-03
+
+Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
+`c90403dcf73940630b334cc0021882a5af553f8e47c25256c3783d287d0c2063`.
+Clean source `11df26d` includes all committed platform/desktop/Vault/terminal,
+networking and storage work, plus calibrated boot timings and the gterm stack
+fix. BIOS/UEFI installation and four installed boots, persistence, timing output,
+gterm entry and Linux audits pass. Banner: `boot-timing-2026-11-03`.
+[Release evidence and timing interpretation](boot-timing-installer-2026-11-03.md).
+
+## Earlier installer: payload batching, 2026-11-03
 
 Use `bin/fortress-base-installer.img` (528 MiB), SHA-256
 `7d9e2c14162949ab8967c3086563ab99dc9694ddf7ae100c2435dc7bf7c7eec2`.
