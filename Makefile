@@ -3040,3 +3040,7 @@ test-ext4-bitmap-host:
 	@$(BUILD_DIR)/ext4_bitmap_host
 	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -DFORTRESS_PKG_ENGINE=0 -DFORTRESS_DAC_ENFORCED -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/ext4_scan_ranges_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/ext4_scan_ranges_host
 	@$(BUILD_DIR)/ext4_scan_ranges_host
+
+.PHONY: test-gterm-stack
+test-gterm-stack: $(USER_COMPOSITOR_ELF)
+	@python3 scripts/check_gterm_stack.py $(BUILD_DIR)/gterm.elf

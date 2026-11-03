@@ -403,7 +403,9 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
     let mut gterm = GTermApp::new();
     gterm.restore_session(app.width, app.height);
 
-    let mut buf = [0u8; 16384];
+    // Keep PTY throughput buffering off the bounded process stack. A large
+    // local is reserved in the entry prologue, before heap initialization.
+    let mut buf = alloc::vec![0u8; 16384];
 
     loop {
         // Build PollFd array: FD_EVENTS (0) + active master fds
