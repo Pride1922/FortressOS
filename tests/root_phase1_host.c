@@ -5,7 +5,6 @@
 #undef main
 #include <unistd.h>
 /* Host-only device adapter; these storage tests do not exercise mouse input. */
-void mouse_dev_init(vfs_node_t *directory){(void)directory;}
 static unsigned offset_seen[512];
 static void *offset_reader(void *arg) {
     uint32_t value;

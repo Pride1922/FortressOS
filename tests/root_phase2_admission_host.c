@@ -35,7 +35,6 @@ static size_t io_writes;
 void serial_print_dec(uint64_t n) {(void)n;}
 void serial_print_hex(uint64_t n) {(void)n;}
 void console_puts(const char *s) {(void)s;}
-void mouse_dev_init(vfs_node_t *directory) {(void)directory;}
 void block_init(void) {devices=0;}
 bool block_register_dev(block_dev_t *d) {if (devices==16) return false;registry[devices++]=d;return true;}
 bool block_unregister_dev(block_dev_t *d) {
