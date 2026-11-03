@@ -2970,3 +2970,12 @@ test-dmesg-snapshot-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/dmesg_snapshot_host.c src/kernel/creds.c src/fs/permission_values.c -o $(BUILD_DIR)/dmesg_snapshot_host
 	@$(BUILD_DIR)/dmesg_snapshot_host
+
+.PHONY: test-boot-selftests-host test-boot-selftests
+test-boot-selftests-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include tests/boot_diagnostics_host.c -o $(BUILD_DIR)/boot_diagnostics_host
+	@$(BUILD_DIR)/boot_diagnostics_host
+
+test-boot-selftests: $(BOOTABLE_ISO) test-boot-selftests-host
+	@python3 scripts/test_boot_selftests.py

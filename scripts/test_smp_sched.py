@@ -5,7 +5,7 @@ Verifies:
 1. BIOS and UEFI single-CPU baseline (-smp 1):
    - Dual-lock forward and inverted ordering (sched_lock_pair) passes
    - Single-CPU skip cleanly logged
-   - Shell prompt reached
+   - Login prompt reached
 2. BIOS and UEFI multi-core execution (-smp 4 and -smp 8):
    - Dual-lock ordering passes
    - Pinned workers execute concurrently on their assigned CPU cores
@@ -18,9 +18,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+from test_net_eth import build_iso
 
 REPO = Path(__file__).resolve().parent.parent
-PROMPT_PATTERN = r'(?:fortress> |fortress:[^\r\n]* \$ )'
+PROMPT_PATTERN = r'(?:FortressOS login: |fortress> |fortress:[^\r\n]* \$ )'
 
 
 def run_sched_test(mode, cpus):
@@ -30,9 +31,10 @@ def run_sched_test(mode, cpus):
         log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-sched-") as temp:
         temp = Path(temp)
+        iso = build_iso(temp, "boot_mode=live boot_selftests=1 console=text")
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", str(cpus), "-display", "none", "-no-reboot", "-monitor", "none",
-               "-serial", f"file:{log}", "-boot", "d", "-cdrom", "bin/fortress.iso"]
+               "-serial", f"file:{log}", "-boot", "d", "-cdrom", str(iso)]
         if mode == "uefi":
             shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", temp / "vars.fd")
             cmd += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
@@ -46,7 +48,7 @@ def run_sched_test(mode, cpus):
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
             else:
-                raise TimeoutError(f"Shell prompt not reached in {mode} -smp {cpus}")
+                raise TimeoutError(f"Login prompt not reached in {mode} -smp {cpus}")
         finally:
             child.terminate()
             child.wait()
@@ -61,7 +63,7 @@ def run_sched_test(mode, cpus):
                 f"Pinned worker execution missing for {cpus} cores"
             assert "AP work-stealing verified" in output, "Work-stealing verification missing"
         assert "[ OK ] SMP Piece 4 (Scheduler & Work-Stealing) complete." in output, "Piece 4 completion missing"
-        print(f"PASS {mode} -smp {cpus}: dual-lock ordering, pinned execution, work-stealing={cpus > 1}, shell reached")
+        print(f"PASS {mode} -smp {cpus}: dual-lock ordering, pinned execution, work-stealing={cpus > 1}, login ready")
 
 
 def main():

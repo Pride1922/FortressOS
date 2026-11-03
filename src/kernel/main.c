@@ -1,3 +1,4 @@
+#include "boot_diagnostics.h"
 #include "install_control.h"
 #include "kernel_release.h"
 #include "input.h"
@@ -188,6 +189,7 @@ static void render_boot_logo(const boot_info_t *boot_info) {
 }
 
 static bool verbose_boot = false;
+static bool boot_selftests;
 
 /* Display boot status update on splash ticker and log to serial */
 static void boot_status(const char *msg) {
@@ -3648,9 +3650,9 @@ static void test_ext2_and_audits(void) {
  * See docs/roadmap/smp-piece1-ap-discovery.md for how to verify this.
  * ========================================================================= */
 static void test_smp_piece1_ap_discovery(const acpi_madt_info_t *madt_info) {
-    serial_puts("========================================================\n");
-    serial_puts("SMP Piece 1: AP Discovery\n");
-    serial_puts("========================================================\n");
+    if (boot_selftests) serial_puts("========================================================\n");
+    if (boot_selftests) serial_puts("SMP Piece 1: AP Discovery\n");
+    if (boot_selftests) serial_puts("========================================================\n");
 
     size_t online_aps = smp_init(madt_info);
     size_t total_cpus = smp_get_cpu_count();
@@ -3673,7 +3675,8 @@ static void test_smp_piece1_ap_discovery(const acpi_madt_info_t *madt_info) {
         serial_puts(" AP(s)), matching MADT\n");
     }
 
-    serial_puts("[ OK ] SMP Piece 1 (AP discovery) complete.\n\n");
+    if (boot_selftests) serial_puts("[ OK ] SMP Piece 1 (AP discovery) complete.\n");
+    serial_puts("[BOOT] CPU discovery complete\n");
 }
 
 /* =========================================================================
@@ -4920,10 +4923,15 @@ void kmain(void) {
     if (kernel_file_request.response && kernel_file_request.response->kernel_file &&
         kernel_file_request.response->kernel_file->cmdline) {
         const char *cmd = kernel_file_request.response->kernel_file->cmdline;
+        boot_selftests = boot_selftests_requested(cmd, 4096);
         if (strstr(cmd, "verbose")) {
             verbose_boot = true;
         }
     }
+
+    if (qemu_fw_cfg_has_key("opt/fortress/boot_selftests")) boot_selftests=true;
+    serial_puts(boot_selftests ? "[BOOT] Diagnostic self-tests enabled\n" :
+                                 "[BOOT] Normal startup; diagnostic self-tests disabled\n");
 
     /* By default, keep boot output quiet on the framebuffer display;
      * full diagnostics are preserved in dmesg (RAM) and COM1 (UART). */
@@ -4974,6 +4982,7 @@ void kmain(void) {
     /* 4. Interrupt Descriptor Table (IDT) & 64-bit Exception Gates */
     idt_init();
 
+    if (boot_selftests) {
     /* 5. Safe Exception Self-Test: Trigger INT 3 (Breakpoint Trap) */
     serial_puts("[TEST] Triggering software breakpoint exception (int $3)...\n");
     __asm__ volatile("int $3");
@@ -5004,6 +5013,8 @@ void kmain(void) {
         hcf();
     }
     if (verbose_boot) serial_puts("       [PASS] memset, memcpy, memmove, memcmp, strlen verified\n\n");
+
+    }
 
     /* 7. Higher Half Direct Map (HHDM) */
     if (hhdm_request.response == NULL) {
@@ -5064,6 +5075,7 @@ void kmain(void) {
     serial_print_dec(PMM_BITMAP_MAX_RAM_BYTES / (1024ULL * 1024 * 1024));
     serial_puts(" GiB capacity verified)\n\n");
     /* pmm_high_memory_probe(); */
+    if (boot_selftests) {
     /* 9. PMM Self-Test */
     if (verbose_boot) serial_puts("[TEST] Executing Physical Memory Manager self-test...\n");
 
@@ -5130,6 +5142,8 @@ void kmain(void) {
 
     serial_puts("[ OK ] Physical Memory Manager self-tests passed successfully!\n\n");
 
+    }
+
     /* 10. Deep-Copy Boot Metadata into Kernel-Owned Storage */
     static boot_info_t boot_info;
     boot_info_init(&boot_info,
@@ -5157,6 +5171,7 @@ void kmain(void) {
 
     uint64_t *kernel_pml4 = vmm_get_kernel_pml4_virt();
 
+    if (boot_selftests) {
     /* Step 4: Verify Exception Handling under New CR3 via Breakpoint Trap (int $3) */
     if (verbose_boot) serial_puts("[TEST] Verifying exception handling under new CR3 (int $3)...\n");
     __asm__ volatile("int $3");
@@ -5383,6 +5398,13 @@ pf_boot_guard_done:
         hcf();
     }
 
+    }
+
+    extern uint8_t kernel_stack_guard[];
+    if (vmm_is_mapped(kernel_pml4,(uintptr_t)kernel_stack_guard)) {
+        serial_puts("[FAIL] Active boot stack guard is mapped\n");hcf();
+    }
+
     /* 12. Dynamic Kernel Heap Allocator (Phase 4B) */
     heap_init();
     if (!heap_verify_integrity()) {
@@ -5390,6 +5412,7 @@ pf_boot_guard_done:
         hcf();
     }
 
+    if (boot_selftests) {
     serial_puts("[TEST] Executing Dynamic Kernel Heap verification suite...\n");
 
     /* Test 1: Semantics (kmalloc(0) == NULL, kfree(NULL) == no-op) */
@@ -5777,6 +5800,8 @@ pf_boot_guard_done:
 
     serial_puts("       [PASS] Deterministic mixed-size stress test passed (all blocks coalesced & audit verified)\n");
     serial_puts("[ OK ] Dynamic Kernel Heap Allocator (Phase 4B) verified successfully!\n\n");
+    }
+
     if (qemu_fw_cfg_has_key("opt/fortress/memory_pressure_test")) memory_pressure_test_run();
 
     /* 13. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
@@ -5829,12 +5854,7 @@ pf_boot_guard_done:
      * Phase 5: ACPI Discovery, 8259 PIC Masking, LAPIC Setup & APIC Timer
      * ========================================================================= */
     boot_status("Configuring ACPI and interrupts...");
-    serial_puts("\n========================================================\n");
-    serial_puts("Phase 5: ACPI Discovery & APIC Timer Verification Suite\n");
-    serial_puts("========================================================\n");
-
-    /* Test 1: Limine RSDP Query & ACPI Initialization */
-    serial_puts("[TEST 1] Verifying Limine RSDP Query & ACPI Header Checksums...\n");
+    if (boot_selftests) serial_puts("[TEST] ACPI and timer verification suite\n");
     if (!boot_info.has_rsdp) {
         serial_puts("       [FAIL] Limine RSDP response missing!\n");
         hcf();
@@ -5847,10 +5867,10 @@ pf_boot_guard_done:
     power_init();
     acpi_battery_init();
 
-    acpi_parser_selftest();
+    if (boot_selftests) acpi_parser_selftest();
 
     /* Test 2: ACPI MADT Parsing */
-    serial_puts("[TEST 2] Parsing Multiple APIC Description Table (MADT)...\n");
+    if (boot_selftests) serial_puts("[TEST 2] Parsing Multiple APIC Description Table (MADT)...\n");
     acpi_madt_info_t madt_info;
     if (!acpi_parse_madt(&madt_info)) {
         serial_puts("       [FAIL] Failed to parse MADT!\n");
@@ -5871,7 +5891,7 @@ pf_boot_guard_done:
     serial_puts("\n");
 
     /* Test 3: Disable / Mask Legacy 8259 PIC */
-    serial_puts("[TEST 3] Disabling Legacy 8259 PIC...\n");
+    if (boot_selftests) serial_puts("[TEST 3] Disabling Legacy 8259 PIC...\n");
     pic_disable();
     uint8_t pic1_mask = pic1_get_mask();
     uint8_t pic2_mask = pic2_get_mask();
@@ -5882,7 +5902,7 @@ pf_boot_guard_done:
     serial_puts("       [PASS] 8259 PIC verified disabled (PIC1=0xFF, PIC2=0xFF)\n");
 
     /* Test 4: Local APIC (LAPIC) MMIO Mapping & Initialization */
-    serial_puts("[TEST 4] Initializing Local APIC (LAPIC) MMIO & SVR...\n");
+    if (boot_selftests) serial_puts("[TEST 4] Initializing Local APIC (LAPIC) MMIO & SVR...\n");
     if (!lapic_init(madt_info.lapic_phys_addr) || !lapic_configure_nmi(&madt_info)) {
         serial_puts("       [FAIL] Failed to initialize Local APIC!\n");
         hcf();
@@ -5900,17 +5920,20 @@ pf_boot_guard_done:
     serial_puts("       [PASS] LAPIC initialized (SVR verified 0x1FF, TPR=0)\n");
 
     /* Test 5: APIC Timer Calibration & Periodic Tick Verification */
-    serial_puts("[TEST 5] Calibrating APIC Timer (100 Hz Target) & Verifying Interrupts...\n");
+    if (boot_selftests) serial_puts("[TEST 5] Calibrating APIC Timer (100 Hz Target) & Verifying Interrupts...\n");
     __asm__ volatile("cli" ::: "memory");
     if (!ioapic_init(&madt_info) || !apic_timer_init(100)) hcf();
+    if (boot_selftests) {
     if (apic_timer_init(0) || ioapic_route_gsi(UINT32_MAX, 0x21, 0, false, false) ||
         ioapic_route_gsi(0, 0x10, 0, false, false)) hcf();
     /* Negative liveness check: a masked timer must fail the reference test. */
     if (apic_timer_verify(NULL)) hcf();
     serial_puts("[PASS] Masked timer and invalid routing/rate requests rejected\n");
+    }
+
     apic_timer_start();
     __asm__ volatile("sti" ::: "memory");
-    bool timer_ok = apic_timer_verify(timer_heap_work);
+    bool timer_ok = apic_timer_verify(boot_selftests ? timer_heap_work : NULL);
     __asm__ volatile("cli" ::: "memory");
     apic_timer_stop();
     if (!timer_ok || !heap_verify_integrity()) {
@@ -5922,7 +5945,7 @@ pf_boot_guard_done:
         hcf();
     }
     serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
-    serial_puts("[ OK ] Phase 5: ACPI Discovery & APIC Timer completed successfully!\n\n");
+    serial_puts("[BOOT] ACPI, interrupt controllers and timer ready\n");
 
     /* Initialize CMOS RTC and Kernel Timekeeper */
     uint8_t century_reg = 0;
@@ -5940,12 +5963,15 @@ pf_boot_guard_done:
      * Phase 6 (Checkpoint 1): Cooperative Multitasking Suite
      * ========================================================================= */
     boot_status("Starting kernel scheduler...");
+    sched_init();
+    uint64_t *master_kernel_pml4 = vmm_get_kernel_pml4_virt();
+    uintptr_t master_kernel_pml4_phys = vmm_get_kernel_pml4();
+    if (boot_selftests) {
     serial_puts("========================================================\n");
     serial_puts("Phase 6 (Checkpoint 1): Cooperative Multitasking Suite\n");
     serial_puts("========================================================\n");
 
-    /* Initialize Thread Scheduler */
-    sched_init();
+    /* Scheduler is initialized outside diagnostic worker suites. */
 
     /* Spawn Worker A and Worker B */
     tcb_t *t_a = thread_create("WorkerA", worker_a, NULL);
@@ -6123,9 +6149,6 @@ pf_boot_guard_done:
     serial_puts("========================================================\n");
     serial_puts("Phase 7 (Checkpoint 0): Address-Space Lifecycle & Isolation\n");
     serial_puts("========================================================\n");
-
-    uint64_t *master_kernel_pml4 = vmm_get_kernel_pml4_virt();
-    uintptr_t master_kernel_pml4_phys = vmm_get_kernel_pml4();
 
     /* 1. Address Space Creation & Higher-Half Mirroring Test */
     serial_puts("[TEST 1] Creating User Address Space (PML4) & Validating Mirroring...\n");
@@ -6421,11 +6444,12 @@ pf_boot_guard_done:
     serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
 
     serial_puts("[ OK ] Phase 7 (Checkpoint 0) completed successfully!\n\n");
+    }
 
     /* =========================================================================
      * Phase 7 (Checkpoint 1): Ring 3 Privilege Transition via iretq & Trap Hook
      * ========================================================================= */
-    if (!root_boot_workflow_requested()) {
+    if (boot_selftests && !root_boot_workflow_requested()) {
     test_phase7_checkpoint1_ring3(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
     /* =========================================================================
@@ -6454,22 +6478,26 @@ pf_boot_guard_done:
     test_phase7_checkpoint5_fast_syscall(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
     } else syscall_init();
+    if (!syscall_verify_msrs()) {
+        serial_puts("[FAIL] BSP syscall MSR initialization failed\n");hcf();
+    }
     /* =========================================================================
      * Phase 8 (Step 8A): Basic Framebuffer Text Console
      * ========================================================================= */
-    test_phase8a_framebuffer_console(&boot_info);
+    if (boot_selftests) test_phase8a_framebuffer_console(&boot_info);
 
     /* =========================================================================
      * Phase 8 (Step 8B): Initramfs, Minimal VFS & File Descriptors
      * ========================================================================= */
-    if (!root_boot_workflow_requested()) test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+    if (boot_selftests && !root_boot_workflow_requested()) test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
     /* =========================================================================
      * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
      * ========================================================================= */
     boot_status("Probing storage devices...");
     g_ext4_physical_cmd=boot_info.cmdline;
-    test_phase9a_pci_discovery(&boot_info);
+    if (boot_selftests) test_phase9a_pci_discovery(&boot_info);
+    else pci_init(boot_info.hhdm_offset);
 
     /* The following storage acceptance suite assumes a disposable QEMU image,
      * including its exact geometry and fixture files. Do not apply it to a
@@ -6486,7 +6514,11 @@ pf_boot_guard_done:
             usb_fixture.vendor_id==0x1b36 && usb_fixture.device_id==0x000d,
             "exclusive QEMU USB journal fixture admission");
     }
-    if (root_boot_workflow_requested() || g_explicit_live_boot || ext4_physical_requested() || !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
+    bool storage_tests=qemu_fw_cfg_has_key("opt/fortress/write_test") ||
+        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") ||
+        qemu_fw_cfg_has_key("opt/fortress/ext4_write_test") ||
+        qemu_fw_cfg_has_key("opt/fortress/ext4_read_test");
+    if (!storage_tests || root_boot_workflow_requested() || g_explicit_live_boot || ext4_physical_requested() || !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
                          PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
         storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
         serial_puts("[BOOT] Hardware diagnostics complete. QEMU storage fixture tests skipped.\n");
@@ -6525,7 +6557,8 @@ pf_boot_guard_done:
      * SMP Piece 1: AP Discovery & Piece 3: Lock Discipline
      * ========================================================================= */
     boot_status("Synchronizing CPU cores (SMP)...");
-    if (boot_info.cmdline[0] != '\0') {
+    smp_set_test_mode(boot_selftests ? SMP_TEST_MODE_CONTENTION : SMP_TEST_MODE_NONE);
+    if (boot_selftests && boot_info.cmdline[0] != '\0') {
         if (strstr(boot_info.cmdline, "smp_test=inversion")) {
             smp_set_test_mode(SMP_TEST_MODE_INVERSION);
         } else if (strstr(boot_info.cmdline, "smp_test=assert_held")) {
@@ -6537,8 +6570,8 @@ pf_boot_guard_done:
         }
     }
     test_smp_piece1_ap_discovery(&madt_info);
-    test_smp_piece3_lock_discipline();
-    if (root_boot_workflow_requested()) {
+    if (boot_selftests) test_smp_piece3_lock_discipline();
+    if (!boot_selftests || root_boot_workflow_requested()) {
         /* Preserve scheduler startup without unrelated diagnostic worker cohorts
          * or the legacy TCG-sensitive TSC timing tolerance. */
         apic_timer_start();sched_enable_preemption();

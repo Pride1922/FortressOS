@@ -4,13 +4,13 @@
 Verifies:
 1. BIOS and UEFI single-CPU baseline (-smp 1):
    - Single-CPU skip cleanly logged
-   - Shell prompt reached
+   - Login prompt reached
 2. BIOS and UEFI multi-core execution (-smp 4 and -smp 8):
    - Unicast IPI delivery (BSP -> AP 1)
    - Synchronous broadcast TLB shootdown acknowledged by all online APs
    - Remote core wakeup via reschedule IPI (AP 1 awakened from idle)
    - Real VMM page unmap and synchronous shootdown barrier (SM14, SM15)
-   - Interactive shell prompt reached
+   - Interactive login prompt reached
 """
 from pathlib import Path
 import re
@@ -18,9 +18,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+from test_net_eth import build_iso
 
 REPO = Path(__file__).resolve().parent.parent
-PROMPT_RE = re.compile(r"(?:fortress> |fortress:[^\r\n]* \$ )")
+PROMPT_RE = re.compile(r"(?:FortressOS login: |fortress> |fortress:[^\r\n]* \$ )")
 
 
 def run_ipi_test(mode, cpus):
@@ -30,9 +31,10 @@ def run_ipi_test(mode, cpus):
         log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-ipi-") as temp:
         temp = Path(temp)
+        iso = build_iso(temp, "boot_mode=live boot_selftests=1 console=text")
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", str(cpus), "-display", "none", "-no-reboot", "-monitor", "none",
-               "-serial", f"file:{log}", "-boot", "d", "-cdrom", "bin/fortress.iso"]
+               "-serial", f"file:{log}", "-boot", "d", "-cdrom", str(iso)]
         if mode == "uefi":
             shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", temp / "vars.fd")
             cmd += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
@@ -46,7 +48,7 @@ def run_ipi_test(mode, cpus):
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
             else:
-                raise TimeoutError(f"Shell prompt not reached in {mode} -smp {cpus}")
+                raise TimeoutError(f"Login prompt not reached in {mode} -smp {cpus}")
         finally:
             child.terminate()
             child.wait()
@@ -68,7 +70,7 @@ def run_ipi_test(mode, cpus):
             assert "Full TLB flush via CR3 reload acknowledged across all online APs" in output, \
                 f"Full CR3 reload shootdown missing for {cpus} cores"
         assert "[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete." in output, "Piece 5 completion missing"
-        print(f"PASS {mode} -smp {cpus}: unicast, broadcast TLB shootdown, contention deadlock breaking, remote wake, VMM unmap, CR3 flush, shell reached")
+        print(f"PASS {mode} -smp {cpus}: unicast, broadcast TLB shootdown, contention deadlock breaking, remote wake, VMM unmap, CR3 flush, login ready")
 
 
 def main():

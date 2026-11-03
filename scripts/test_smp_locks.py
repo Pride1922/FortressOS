@@ -2,7 +2,7 @@
 """SMP Piece 3: Lock discipline & per-CPU tracking verification runner.
 
 Verifies:
-1. BIOS and UEFI single-CPU baseline (-smp 1): selftests pass, shell reached.
+1. BIOS and UEFI single-CPU baseline (-smp 1): selftests pass, login ready.
 2. BIOS and UEFI multi-core atomic contention (-smp 4 and -smp 8):
    - BSP + AP 1 concurrently perform 100,000 increments each on a shared counter
    - Final counter strictly equals 200,000 (zero lost updates)
@@ -22,9 +22,10 @@ import struct
 import subprocess
 import tempfile
 import time
+from test_net_eth import build_iso
 
 REPO = Path(__file__).resolve().parent.parent
-PROMPT_RE = re.compile(r"(?:fortress> |fortress:[^\r\n]* \$ )")
+PROMPT_RE = re.compile(r"(?:FortressOS login: |fortress> |fortress:[^\r\n]* \$ )")
 
 
 
@@ -118,9 +119,10 @@ def run_contention_test(mode, cpus):
         log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-locks-") as temp:
         temp = Path(temp)
+        iso = build_iso(temp, "boot_mode=live boot_selftests=1 console=text")
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", str(cpus), "-display", "none", "-no-reboot", "-monitor", "none",
-               "-serial", f"file:{log}", "-boot", "d", "-cdrom", "bin/fortress.iso"]
+               "-serial", f"file:{log}", "-boot", "d", "-cdrom", str(iso)]
         if mode == "uefi":
             shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", temp / "vars.fd")
             cmd += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
@@ -134,7 +136,7 @@ def run_contention_test(mode, cpus):
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
             else:
-                raise TimeoutError(f"Shell prompt not reached in {mode} -smp {cpus}")
+                raise TimeoutError(f"Login prompt not reached in {mode} -smp {cpus}")
         finally:
             child.terminate()
             child.wait()
@@ -148,7 +150,7 @@ def run_contention_test(mode, cpus):
             assert "Counter value: 200000 (expected: 200000)" in output, "Counter mismatch"
             assert "Two-core lock contention test passed" in output, "Contention pass missing"
         assert "[ OK ] SMP Piece 3 (Lock discipline) complete." in output, "Piece 3 completion missing"
-        print(f"PASS {mode} -smp {cpus}: contention={cpus > 1}, selftest, shell reached")
+        print(f"PASS {mode} -smp {cpus}: contention={cpus > 1}, selftest, login ready")
 
 
 def run_inversion_test(mode):
@@ -156,10 +158,11 @@ def run_inversion_test(mode):
     log = REPO / "build" / f"smp-locks-inversion-{mode}.log"
     with tempfile.TemporaryDirectory(prefix="fortress-locks-inv-") as temp:
         temp = Path(temp)
+        iso = build_iso(temp, "boot_mode=live boot_selftests=1 console=text")
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", "4", "-display", "none", "-S", "-no-reboot", "-monitor", "none",
                "-serial", f"file:{log}", "-gdb", f"unix:{temp}/gdb,server=on,wait=off",
-               "-boot", "d", "-cdrom", "bin/fortress.iso"]
+               "-boot", "d", "-cdrom", str(iso)]
         if mode == "uefi":
             shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", temp / "vars.fd")
             cmd += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
@@ -180,7 +183,7 @@ def run_inversion_test(mode):
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
             else:
-                raise TimeoutError(f"Shell prompt not reached during inversion test in {mode}")
+                raise TimeoutError(f"Login prompt not reached during inversion test in {mode}")
         finally:
             child.terminate()
             child.wait()
@@ -191,7 +194,7 @@ def run_inversion_test(mode):
         assert "AP 1 rank inversion caught and isolated via spin_panic_ap; BSP unharmed" in output, "Inversion pass missing"
         assert "[ OK ] SMP Piece 3 (Lock discipline) complete." in output, "Piece 3 completion missing"
         assert PROMPT_RE.search(output), "Shell prompt missing"
-        print(f"PASS {mode} rank inversion: AP 1 trapped & halted via spin_panic_ap, BSP unharmed, shell reached")
+        print(f"PASS {mode} rank inversion: AP 1 trapped & halted via spin_panic_ap, BSP unharmed, login ready")
 
 
 def run_assert_held_test(mode):
@@ -199,10 +202,11 @@ def run_assert_held_test(mode):
     log = REPO / "build" / f"smp-locks-assert-{mode}.log"
     with tempfile.TemporaryDirectory(prefix="fortress-locks-assert-") as temp:
         temp = Path(temp)
+        iso = build_iso(temp, "boot_mode=live boot_selftests=1 console=text")
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", "1", "-display", "none", "-S", "-no-reboot", "-monitor", "none",
                "-serial", f"file:{log}", "-gdb", f"unix:{temp}/gdb,server=on,wait=off",
-               "-boot", "d", "-cdrom", "bin/fortress.iso"]
+               "-boot", "d", "-cdrom", str(iso)]
         if mode == "uefi":
             shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", temp / "vars.fd")
             cmd += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
