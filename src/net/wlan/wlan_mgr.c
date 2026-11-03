@@ -666,7 +666,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     } else if (auth_seq == 2) {
                         /* AP SAE Confirm -> verify confirm token and transition to ASSOCIATING */
                         if (wlan_sae_verify_confirm(&s_sae_ctx, frame + 30, len - 30) == 0) {
-                            serial_puts("[WLAN] WPA3-SAE Confirm verified, sending Assoc Req\n");
                             s_wlan_state = WLAN_STATE_ASSOCIATING;
                             if (s_hw_ops && s_hw_ops->send_raw_80211) {
                                 size_t assoc_len = wlan_build_current_assoc_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf));
@@ -678,7 +677,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                         }
                     }
                 } else if (status == 0) {
-                    serial_puts("[WLAN] Auth response SUCCESS from AP\n");
                     /* Auth Success -> Transition to ASSOCIATING and send Assoc Req */
                     s_wlan_state = WLAN_STATE_ASSOCIATING;
                     if (s_hw_ops && s_hw_ops->send_raw_80211) {
@@ -701,9 +699,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 uint16_t status = frame[26] | ((uint16_t)frame[27] << 8);
                 uint16_t aid    = (uint16_t)((frame[28] | ((uint16_t)frame[29] << 8)) & 0x3FFFu);
                 if (status == 0) {
-                    serial_puts("[WLAN] Assoc response SUCCESS from AP, AID=");
-                    serial_print_dec(aid);
-                    serial_puts("\n");
                     s_gtk_rx_pn  = 0;
                     s_gtk_rx_bitmap = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
@@ -713,7 +708,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     }
                     if (s_target_is_open) {
                         /* Open / Public network: skip 4-way handshake and authorize port immediately */
-                        serial_puts("[WLAN] Open network associated, Port AUTHORIZED (Connected)\n");
                         s_wpa2_sm.port_authorized = true;
                         s_wpa2_sm.handshake_step = 4;
                         s_wlan_state = WLAN_STATE_CONNECTED;
@@ -824,13 +818,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 int resp_len = wpa2_sm_rx_eapol(&s_wpa2_sm, payload + 8, payload_len - 8,
                                                 s_resp_eapol, sizeof(s_resp_eapol));
                 if (resp_len > 0) {
-                    if (s_wpa2_sm.handshake_step == 2) {
-                        serial_puts("[WLAN] EAPOL M1 received, sent M2\n");
-                    } else if (s_wpa2_sm.handshake_step == 4) {
-                        serial_puts("[WLAN] EAPOL M3 received, sent M4; GTK bytes=");
-                        serial_print_dec(s_wpa2_sm.gtk_len);
-                        serial_puts("\n");
-                    }
                     /* Encapsulate response EAPOL frame into 802.11 QoS Data frame and transmit */
                     memcpy(s_tx_eapol_eth, s_target_bssid, 6);
                     memcpy(s_tx_eapol_eth + 6, s_local_mac, 6);
@@ -863,7 +850,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 }
 
                 if (wpa2_sm_is_authorized(&s_wpa2_sm)) {
-                    serial_puts("[WLAN] 4-Way Handshake COMPLETE, Port AUTHORIZED (Connected)\n");
                     s_wlan_state = WLAN_STATE_CONNECTED;
                     s_wlan_net_dev.flags |= NET_RUNNING;
                     if (s_has_pending_pmk) {

@@ -280,12 +280,6 @@ static bool net_service_active_interface(uint64_t now, uint64_t freq) {
     }
 
     if (target && target != s_if) {
-        serial_puts("[NET] Active interface switched from ");
-        serial_puts(s_if ? s_if->name : "none");
-        serial_puts(" to ");
-        serial_puts(target->name);
-        serial_puts("\n");
-
         /* Only a working wired link may evict Wi-Fi. Device presence alone
          * must never abort an association/reconnection already in progress. */
         if (s_if == cand_wlan && ((target == cand_eth && eth_online) ||
