@@ -105,3 +105,24 @@ and test results are retained. This is verified software contention handling,
 not a claim that the laptop's original failure was definitely a bind collision.
 Physical acceptance requires a reboot, one Wi-Fi connection, and a valid DHCP
 address without a separate manual `dhcpc` invocation.
+
+## Physical live-USB initial acquisition PASS — 2026-11-03
+
+The user reflashed the current candidate, booted it, and confirmed they ran only
+`wifi connect` and `ifconfig`. DHCP acquired 192.168.0.194/24 in approximately
+three seconds (user-estimated), without a manual `dhcpc` retry.
+
+Subsequent Bazzite-initiated checks passed: `arping -b -I wlo1 -c 4 -w 5
+192.168.0.194` returned 4/4 broadcast-probe replies, and `ping -c 4 -W 1
+192.168.0.194` returned 4/4 with zero loss. Ping min/avg/max/mdev was
+15.721/138.940/437.456/174.753 ms; reachability passed, not latency performance.
+No FortressOS-to-Bazzite ping or static-neighbor insertion was requested for
+this test. The confirmation/tool outputs are transcribed with provenance in
+`build/dhcp-contention-evidence/physical/acceptance.json`.
+
+This closes the bounded physical live-USB gate for automatic DHCP after Wi-Fi
+connection and subsequent inbound reachability. The physical connection output
+was not captured to distinguish the managed-join and free-port branches; the
+synthetic and QEMU tests separately prove the contention correction. Installed
+saved-profile auto-connect/reboot, later key rotation and long endurance remain
+separate acceptance gates. The live configuration is volatile by design.

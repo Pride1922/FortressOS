@@ -4,6 +4,12 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-11-03 physical live-USB DHCP retest PASS: user confirms `wifi connect`
+obtained 192.168.0.194/24 in about three seconds, followed only by `ifconfig`,
+without manual DHCP retry. Bazzite broadcast ARP and inbound ICMP PASS 4/4 each.
+This is bounded live initial-connection acceptance; installed saved-network
+reboot persistence remains open. [Confirmation, commands and limits](../roadmap/dhcp-acquisition-contention.md#physical-live-usb-initial-acquisition-pass--2026-11-03).
+
 2026-11-03 DHCP acquisition contention: a foreground `dhcpc` losing port 68 to
 the running daemon now observes that owner's matching, unexpired configured
 lease instead of falsely reporting an OFFER timeout. Host error gates and real
