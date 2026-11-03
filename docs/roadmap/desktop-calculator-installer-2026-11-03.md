@@ -40,3 +40,24 @@ Release build and verification logs: `build/dell-nov3-release/`. The image recei
 and checksum sit beside the published image. Physical installation, saved Wi-Fi
 reconnection and graphical usability remain Dell acceptance gates; use the
 [short Dell checklist](../dell-acceptance-2026-11-03.md).
+
+## Dell user acceptance — 2026-11-03
+
+The user reports PASS for wrong-password rejection, correct-password connection,
+window resizing, outbound ping, installed reboot persistence and cold-power-on
+auto-connect. Bazzite cleared its neighbour entry before probing FortressOS at
+192.168.0.194: 3/4 replies initially, with no static neighbour workaround;
+FortressOS also reached 1.1.1.1. The subsequent requested cold-boot/stability test
+was user-reported PASS without a transcript. This is bounded user-confirmed
+acceptance, not a zero-loss or long-duration reliability claim. Calculator's
+arithmetic, credential permissions and power telemetry were not separately
+confirmed by these reports.
+
+Post-image quality-of-life correction: remove routine kernel WLAN success,
+EAPOL progress and active-interface announcement prints. Authentication rejection,
+key validation failure, disconnect and timeout diagnostics remain; `wifi status`
+and on-demand RX counters remain available. No connection, DHCP, key handling,
+CPU-0 ownership or driver behavior changes. This source-only correction is not
+in the published 64f16bd installer. Actual-code profile, radio and owner host
+checks pass (including 21 radio cases and 4800 concurrent owner calls); strict
+native compilation covers both modified objects. Evidence: `build/wifi-quiet-console/`.

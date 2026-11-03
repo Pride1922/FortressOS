@@ -4,6 +4,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-11-03 installed Dell follow-up: user-confirmed reboot and cold-power-on
+saved Wi-Fi auto-connect, DHCP, inbound ping after neighbour clearing, and
+outbound internet PASS. Initial inbound sample was 3/4; later stability check
+reported PASS without transcript. Routine success/progress console prints are
+removed in source after that image; error diagnostics remain.
+[Evidence and limits](../roadmap/desktop-calculator-installer-2026-11-03.md#dell-user-acceptance--2026-11-03).
+
 2026-11-03 physical live-USB DHCP retest PASS: user confirms `wifi connect`
 obtained 192.168.0.194/24 in about three seconds, followed only by `ifconfig`,
 without manual DHCP retry. Bazzite broadcast ARP and inbound ICMP PASS 4/4 each.

@@ -2,6 +2,13 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-03 installed Dell follow-up: user-confirmed reboot and cold-power-on
+saved Wi-Fi auto-connect, DHCP, inbound ping after neighbour clearing, and
+outbound internet PASS. Initial inbound sample was 3/4; later stability check
+reported PASS without transcript. Routine success/progress console prints are
+removed in source after that image; error diagnostics remain.
+[Evidence and limits](../roadmap/desktop-calculator-installer-2026-11-03.md#dell-user-acceptance--2026-11-03).
+
 2026-11-02 physical live-USB follow-up: replacement now installs the 32-byte
 GTK, with successful group decrypts and no group failures in the user's snapshot.
 Bazzite-originated broadcast ARP PASS 10/10 and inbound ICMP PASS 4/4. This is
