@@ -5,7 +5,7 @@
 /* Boot-owner local observations only. No locks, allocation, media I/O or policy.
  * Host filesystem fixtures leave this disabled unless a clock is injected. */
 #ifndef BOOT_TIMING_HZ
-#if defined(HOST_TEST) || defined(__linux__)
+#if defined(HOST_TEST) || (defined(__STDC_HOSTED__) && __STDC_HOSTED__)
 #define BOOT_TIMING_HZ() 0ULL
 #define BOOT_TIMING_READ() 0ULL
 #else
