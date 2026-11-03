@@ -53,6 +53,7 @@ struct VaultAppState {
     revealed_secret: Option<String>,
     is_revealed: bool,
     copied_timer: usize,
+    idle_seconds: usize,
 
     // Add Modal State
     add_key: TextField<32>,
@@ -83,6 +84,7 @@ impl VaultAppState {
             revealed_secret: None,
             is_revealed: false,
             copied_timer: 0,
+            idle_seconds: 0,
 
             add_key: TextField::new(),
             add_type: 0,
@@ -104,6 +106,7 @@ impl VaultAppState {
         self.is_revealed = false;
         self.selected_idx = None;
         self.view = View::Locked;
+        self.idle_seconds = 0;
         self.error_msg = None;
         self.info_msg = Some("Vault locked");
     }
@@ -210,22 +213,41 @@ impl VaultAppState {
     }
 }
 
+fn format_u64(mut val: u64, buf: &mut [u8]) -> &str {
+    if val == 0 {
+        buf[0] = b'0';
+        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
+    }
+    let mut temp = [0u8; 32];
+    let mut len = 0;
+    while val > 0 {
+        temp[len] = b'0' + (val % 10) as u8;
+        val /= 10;
+        len += 1;
+    }
+    for i in 0..len {
+        buf[i] = temp[len - 1 - i];
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[..len]) }
+}
+
 fn copy_to_clipboard(text: &str) {
     let path = b"/run/clipboard/current\0";
     let fallback = b"/tmp/.clipboard\0";
+    let expires = b"/run/clipboard/expires_at\0";
     unsafe {
         let fd = libui::client::raw_sys::syscall3(
             libui::client::raw_sys::SYS_OPEN,
             path.as_ptr() as usize,
             0x0040 | 0x0001 | 0x0200, // VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC
-            0o600,
+            0o666,
         );
         let active_fd = if fd >= 0 { fd } else {
             libui::client::raw_sys::syscall3(
                 libui::client::raw_sys::SYS_OPEN,
                 fallback.as_ptr() as usize,
                 0x0040 | 0x0001 | 0x0200,
-                0o600,
+                0o666,
             )
         };
         if active_fd >= 0 {
@@ -236,6 +258,33 @@ fn copy_to_clipboard(text: &str) {
                 text.len(),
             );
             let _ = libui::client::raw_sys::syscall2(libui::client::raw_sys::SYS_CLOSE, active_fd as usize, 0);
+        }
+
+        // Set 30-second bounded expiration for sensitive clipboard
+        let mut ts = libui::client::raw_sys::Timespec::default();
+        if libui::client::raw_sys::syscall2(
+            libui::client::raw_sys::SYS_CLOCK_GETTIME,
+            1, // CLOCK_MONOTONIC
+            &mut ts as *mut _ as usize,
+        ) == 0 {
+            let exp_sec = (ts.tv_sec + 30) as u64;
+            let mut num_buf = [0u8; 32];
+            let exp_str = format_u64(exp_sec, &mut num_buf);
+            let exp_fd = libui::client::raw_sys::syscall3(
+                libui::client::raw_sys::SYS_OPEN,
+                expires.as_ptr() as usize,
+                0x0040 | 0x0001 | 0x0200,
+                0o666,
+            );
+            if exp_fd >= 0 {
+                let _ = libui::client::raw_sys::syscall3(
+                    libui::client::raw_sys::SYS_WRITE,
+                    exp_fd as usize,
+                    exp_str.as_bytes().as_ptr() as usize,
+                    exp_str.len(),
+                );
+                let _ = libui::client::raw_sys::syscall2(libui::client::raw_sys::SYS_CLOSE, exp_fd as usize, 0);
+            }
         }
     }
 }
@@ -474,12 +523,36 @@ fn main(_args: Args) -> i32 {
     render(&mut app, &state);
 
     loop {
-        match app.next_event() {
-            Event::Configure => {
-                render(&mut app, &state);
+        let ev_opt = app.next_event_timeout(1000);
+        match ev_opt {
+            None => {
+                let mut dirty = false;
+                if state.view != View::Locked {
+                    state.idle_seconds += 1;
+                    if state.idle_seconds >= 300 {
+                        state.lock();
+                        state.info_msg = Some("Auto-locked due to 5 minutes of inactivity");
+                        dirty = true;
+                    }
+                }
+                if state.copied_timer > 0 {
+                    state.copied_timer -= 1;
+                    if state.copied_timer == 0 {
+                        dirty = true;
+                    }
+                }
+                if dirty {
+                    render(&mut app, &state);
+                }
             }
-            Event::Close => return 0,
-            Event::Key(b) => {
+            Some(ev) => {
+                state.idle_seconds = 0;
+                match ev {
+                    Event::Configure => {
+                        render(&mut app, &state);
+                    }
+                    Event::Close => return 0,
+                    Event::Key(b) => {
                 match state.view {
                     View::Locked => {
                         if b == b'\r' || b == b'\n' {
@@ -641,7 +714,7 @@ fn main(_args: Args) -> i32 {
                             state.load_selected_secret();
                             if let Some(ref sec) = state.revealed_secret {
                                 copy_to_clipboard(sec);
-                                state.copied_timer = 5;
+                                state.copied_timer = 30;
                                 render(&mut app, &state);
                             }
                         }
@@ -725,7 +798,9 @@ fn main(_args: Args) -> i32 {
                     }
                 }
             }
-            _ => {}
+                    _ => {}
+                }
+            }
         }
     }
 }

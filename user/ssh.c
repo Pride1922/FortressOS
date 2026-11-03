@@ -297,6 +297,105 @@ static void print_usage(void) {
         "Otherwise, allocates a pseudoterminal and launches an interactive shell.\n");
 }
 
+static void ssh_str_append(char *dst, size_t *pos, size_t max, const char *src) {
+    if (!dst || !pos || !src) return;
+    while (*src && *pos + 1 < max) {
+        dst[(*pos)++] = *src++;
+    }
+    dst[*pos] = '\0';
+}
+
+static bool lookup_vault_ssh(const char *host, const char *user, char *out_pass, size_t max_len, const char *const *envp) {
+    if (!host || !out_pass || max_len == 0) return false;
+
+    static char s_user_host_key[128];
+    static char s_host_key[128];
+    const char *keys[2];
+    int nkeys = 0;
+
+    if (user && user[0]) {
+        size_t p = 0;
+        ssh_str_append(s_user_host_key, &p, sizeof(s_user_host_key), "ssh.");
+        ssh_str_append(s_user_host_key, &p, sizeof(s_user_host_key), user);
+        ssh_str_append(s_user_host_key, &p, sizeof(s_user_host_key), "@");
+        ssh_str_append(s_user_host_key, &p, sizeof(s_user_host_key), host);
+        keys[nkeys++] = s_user_host_key;
+    }
+
+    size_t p2 = 0;
+    ssh_str_append(s_host_key, &p2, sizeof(s_host_key), "ssh.");
+    ssh_str_append(s_host_key, &p2, sizeof(s_host_key), host);
+    keys[nkeys++] = s_host_key;
+
+    for (int k = 0; k < nkeys; k++) {
+        int pfd[2];
+        if (ssh_call(SYS_PIPE, (uintptr_t)pfd, 0x80000, 0, 0, 0, 0) != 0) {
+            return false;
+        }
+
+        spawn_fd_action_t acts[4];
+        for (size_t i = 0; i < sizeof(acts); i++) ((uint8_t *)acts)[i] = 0;
+
+        acts[0].type = SPAWN_FD_ACTION_DUP2;
+        acts[0].dst_fd = 1;
+        acts[0].src_fd = pfd[1];
+
+        acts[1].type = SPAWN_FD_ACTION_DUP2;
+        acts[1].dst_fd = 2;
+        acts[1].src_fd = pfd[1];
+
+        acts[2].type = SPAWN_FD_ACTION_CLOSE;
+        acts[2].dst_fd = pfd[0];
+
+        acts[3].type = SPAWN_FD_ACTION_CLOSE;
+        acts[3].dst_fd = pfd[1];
+
+        const char *const vault_argv[] = {
+            "/sbin/vault", "get", keys[k], "--raw", NULL
+        };
+
+        spawn_opts_t opts;
+        for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+        opts.size = sizeof(opts);
+        opts.version = 1;
+        opts.argv = (uint64_t)vault_argv;
+        opts.envp = (uint64_t)envp;
+        opts.fd_actions = (uint64_t)acts;
+        opts.action_count = 4;
+
+        long pid = ssh_call(SYS_SPAWN_EXT, (uintptr_t)"/sbin/vault", (uintptr_t)&opts, sizeof(opts), 0, 0, 0);
+        ssh_call(SYS_CLOSE, (uintptr_t)pfd[1], 0, 0, 0, 0, 0);
+
+        if (pid <= 0) {
+            ssh_call(SYS_CLOSE, (uintptr_t)pfd[0], 0, 0, 0, 0, 0);
+            continue;
+        }
+
+        size_t at = 0;
+        while (at + 1 < max_len) {
+            long r = ssh_call(SYS_READ, (uintptr_t)pfd[0], (uintptr_t)(out_pass + at), max_len - 1 - at, 0, 0, 0);
+            if (r <= 0) break;
+            at += (size_t)r;
+        }
+        out_pass[at] = '\0';
+        ssh_call(SYS_CLOSE, (uintptr_t)pfd[0], 0, 0, 0, 0, 0);
+
+        uint64_t status = 0;
+        long waited;
+        do {
+            waited = ssh_call(SYS_WAITPID, (uintptr_t)pid, (uintptr_t)&status, 0, 0, 0, 0);
+        } while (waited == SYSCALL_EINTR);
+
+        if (status == 0 && at > 0) {
+            ssh_write_fd(1, "ssh: retrieved credentials from Fortress Vault for ");
+            ssh_write_fd(1, host);
+            ssh_write_fd(1, "\n");
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Prompt for password with echo suppression */
 static bool get_password(char *out_pass, size_t max_len, const char *user, const char *host) {
     ssh_write_fd(2, user);
@@ -1029,6 +1128,14 @@ int ssh_main(int argc, char **argv, const char *const *envp) {
         return 1;
     }
 
+    /* Check Fortress Vault if password not supplied */
+    static char vault_pass[128];
+    if (!pass) {
+        if (lookup_vault_ssh(target_host, user, vault_pass, sizeof(vault_pass), envp)) {
+            pass = vault_pass;
+        }
+    }
+
     /* Interactive password prompt if not provided */
     static char entered_pass[128];
     if (!pass) {
@@ -1057,6 +1164,7 @@ int ssh_main(int argc, char **argv, const char *const *envp) {
     /* Wipe cryptographic context and credentials */
     crypto_wipe(&s_ctx, sizeof(s_ctx));
     crypto_wipe(entered_pass, sizeof(entered_pass));
+    crypto_wipe(vault_pass, sizeof(vault_pass));
 
     ssh_call(SYS_CLOSE, (uintptr_t)sock, 0, 0, 0, 0, 0);
     return exit_code;

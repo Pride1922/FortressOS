@@ -21,6 +21,7 @@ static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
 
 static char s_out[1024];
 static wifi_scan_result_t s_scan_res;
+static char **s_wifi_envp = NULL;
 
 static bool write_str(int fd, const char *str);
 
@@ -897,6 +898,82 @@ static int do_static(const char *ssid, const char *address, const char *gateway,
     }
 }
 
+static bool lookup_vault_wifi(const char *ssid, char *out_psk, size_t max_len) {
+    if (!ssid || !out_psk || max_len == 0) return false;
+
+    static char s_vkey[64];
+    size_t klen = 0;
+    append_str(s_vkey, &klen, "wifi.");
+    append_str(s_vkey, &klen, ssid);
+    s_vkey[klen] = '\0';
+
+    int pfd[2];
+    if (WIFI_SYSCALL(SYS_PIPE, (uintptr_t)pfd, 0x80000, 0) != 0) {
+        return false;
+    }
+
+    spawn_fd_action_t acts[4];
+    for (size_t i = 0; i < sizeof(acts); i++) ((uint8_t *)acts)[i] = 0;
+
+    acts[0].type = SPAWN_FD_ACTION_DUP2;
+    acts[0].dst_fd = 1;
+    acts[0].src_fd = pfd[1];
+
+    acts[1].type = SPAWN_FD_ACTION_DUP2;
+    acts[1].dst_fd = 2;
+    acts[1].src_fd = pfd[1];
+
+    acts[2].type = SPAWN_FD_ACTION_CLOSE;
+    acts[2].dst_fd = pfd[0];
+
+    acts[3].type = SPAWN_FD_ACTION_CLOSE;
+    acts[3].dst_fd = pfd[1];
+
+    const char *const vault_argv[] = {
+        "/sbin/vault", "get", s_vkey, "--raw", NULL
+    };
+
+    spawn_opts_t opts;
+    for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+    opts.size = sizeof(opts);
+    opts.version = 1;
+    opts.argv = (uint64_t)vault_argv;
+    opts.envp = (uint64_t)s_wifi_envp;
+    opts.fd_actions = (uint64_t)acts;
+    opts.action_count = 4;
+
+    long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/vault", (uintptr_t)&opts, sizeof(opts));
+    WIFI_SYSCALL(SYS_CLOSE, (uintptr_t)pfd[1], 0, 0);
+
+    if (pid <= 0) {
+        WIFI_SYSCALL(SYS_CLOSE, (uintptr_t)pfd[0], 0, 0);
+        return false;
+    }
+
+    size_t at = 0;
+    while (at + 1 < max_len) {
+        long r = WIFI_SYSCALL(SYS_READ, (uintptr_t)pfd[0], (uintptr_t)(out_psk + at), max_len - 1 - at);
+        if (r <= 0) break;
+        at += (size_t)r;
+    }
+    out_psk[at] = '\0';
+    WIFI_SYSCALL(SYS_CLOSE, (uintptr_t)pfd[0], 0, 0);
+
+    uint64_t status = 0;
+    long waited;
+    do {
+        waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+    } while (waited == SYSCALL_EINTR);
+
+    if (status == 0 && at > 0) {
+        write_str(1, "[wifi] Retrieved credentials from Fortress Vault for \"");
+        write_str(1, ssid);
+        write_str(1, "\"\n");
+        return true;
+    }
+    return false;
+}
+
 static int do_connect(const char *ssid, const char *passphrase,
                       const char *static_addr, const char *static_gw, const char *static_dns) {
     if (!ssid) {
@@ -921,6 +998,13 @@ static int do_connect(const char *ssid, const char *passphrase,
 
     if (!actual_psk && saved_idx >= 0) {
         actual_psk = s_saved_nets[saved_idx].psk;
+    }
+
+    static char s_vault_psk_buf[WIFI_PASSPHRASE_MAX_LEN + 1];
+    if ((!actual_psk || actual_psk[0] == '\0') && saved_idx < 0) {
+        if (lookup_vault_wifi(ssid, s_vault_psk_buf, sizeof(s_vault_psk_buf))) {
+            actual_psk = s_vault_psk_buf;
+        }
     }
 
     if (!actual_psk) {
@@ -1203,7 +1287,8 @@ static bool looks_like_ip(const char *s) {
     return has_dot && (s[0] >= '0' && s[0] <= '9');
 }
 
-int wifi_main(int argc, char **argv) {
+int wifi_main(int argc, char **argv, char **envp) {
+    s_wifi_envp = envp;
     if (argc < 2 || streq(argv[1], "--help") || streq(argv[1], "-h") || streq(argv[1], "help")) {
         write_str(1, "Usage: wifi <command> [arguments]\n");
         write_str(1, "Commands:\n");

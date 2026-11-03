@@ -12,6 +12,7 @@
  * 9. Memory sanitization verification via crypto_wipe.
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -293,7 +294,7 @@ static void test_vault_file_lifecycle(void) {
     printf("  -> Vault file persistence, retrieval, and rekeying passed.\n");
 }
 
-extern int vault_main(int argc, char **argv);
+extern int vault_main(int argc, char **argv, char **envp);
 
 static void test_vault_cli(void) {
     printf("[TEST 5] Testing vault CLI commands (init, set, get, list, rekey, delete)...\n");
@@ -302,51 +303,67 @@ static void test_vault_cli(void) {
 
     /* 1. init */
     char *argv_init[] = {"vault", "init", "-f", TEST_VAULT_PATH, "-p", "CliPass123!", NULL};
-    assert(vault_main(6, argv_init) == 0);
+    assert(vault_main(6, argv_init, NULL) == 0);
 
     /* 2. set password */
     char *argv_set1[] = {"vault", "set", "wifi.office", "-f", TEST_VAULT_PATH, "-p", "CliPass123!",
                          "-s", "OfficeWiFiSecretPSK", "--type", "password", "--meta", "5GHz Net", NULL};
-    assert(vault_main(13, argv_set1) == 0);
+    assert(vault_main(13, argv_set1, NULL) == 0);
 
     /* 3. set ssh key */
     char *argv_set2[] = {"vault", "set", "ssh.prod", "-f", TEST_VAULT_PATH, "-p", "CliPass123!",
                          "-s", "ed25519-key-blob-mock", "--type", "ssh_key", "--meta", "prod-cluster", NULL};
-    assert(vault_main(13, argv_set2) == 0);
+    assert(vault_main(13, argv_set2, NULL) == 0);
 
     /* 4. list */
     char *argv_list[] = {"vault", "list", "-f", TEST_VAULT_PATH, "-p", "CliPass123!", NULL};
-    assert(vault_main(6, argv_list) == 0);
+    assert(vault_main(6, argv_list, NULL) == 0);
 
     /* 5. get with correct pass */
     char *argv_get[] = {"vault", "get", "wifi.office", "-f", TEST_VAULT_PATH, "-p", "CliPass123!", NULL};
-    assert(vault_main(7, argv_get) == 0);
+    assert(vault_main(7, argv_get, NULL) == 0);
 
     /* 6. get with wrong pass (must fail) */
     char *argv_get_bad[] = {"vault", "get", "wifi.office", "-f", TEST_VAULT_PATH, "-p", "WrongPass!", NULL};
-    assert(vault_main(7, argv_get_bad) != 0);
+    assert(vault_main(7, argv_get_bad, NULL) != 0);
 
     /* 7. rekey */
     char *argv_rekey[] = {"vault", "rekey", "-f", TEST_VAULT_PATH, "-p", "CliPass123!", "-n", "NewCliPass456!", NULL};
-    assert(vault_main(8, argv_rekey) == 0);
+    assert(vault_main(8, argv_rekey, NULL) == 0);
 
     /* 8. verify old pass rejected, new pass accepted */
-    assert(vault_main(7, argv_get) != 0);
+    assert(vault_main(7, argv_get, NULL) != 0);
     char *argv_get_new[] = {"vault", "get", "wifi.office", "-f", TEST_VAULT_PATH, "-p", "NewCliPass456!", NULL};
-    assert(vault_main(7, argv_get_new) == 0);
+    assert(vault_main(7, argv_get_new, NULL) == 0);
 
     /* 9. delete */
     char *argv_del[] = {"vault", "delete", "wifi.office", "-f", TEST_VAULT_PATH, "-p", "NewCliPass456!", NULL};
-    assert(vault_main(7, argv_del) == 0);
+    assert(vault_main(7, argv_del, NULL) == 0);
 
     /* 10. verify deleted key is gone */
-    assert(vault_main(7, argv_get_new) != 0);
+    assert(vault_main(7, argv_get_new, NULL) != 0);
+
+extern char **environ;
+
+    /* 11. Test VAULT_PASSPHRASE environment variable */
+    setenv("VAULT_PASSPHRASE", "NewCliPass456!", 1);
+    char *argv_get_env[] = {"vault", "get", "ssh.prod", "-f", TEST_VAULT_PATH, "--raw", NULL};
+    assert(vault_main(6, argv_get_env, environ) == 0);
+
+    /* 12. Test wrong VAULT_PASSPHRASE */
+    setenv("VAULT_PASSPHRASE", "WrongEnvPass!", 1);
+    assert(vault_main(6, argv_get_env, environ) != 0);
+    unsetenv("VAULT_PASSPHRASE");
 
     unlink(TEST_VAULT_PATH);
-    printf("  -> CLI command suite passed.\n");
+    printf("  -> CLI command suite and VAULT_PASSPHRASE passed.\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        return vault_main(argc, argv, environ);
+    }
+
     printf("=========================================\n");
     printf(" FortressOS Credential Vault Unit Tests  \n");
     printf("=========================================\n");

@@ -23,6 +23,22 @@ const HISTORY_SLOTS: usize = 8;
 const CLIPBOARD_DIR: &str = "/run/clipboard";
 const CLIPBOARD_CURRENT: &str = "/run/clipboard/current";
 const CLIPBOARD_FALLBACK: &str = "/tmp/.clipboard";
+const CLIPBOARD_EXPIRES: &str = "/run/clipboard/expires_at";
+
+fn parse_i64(s: &str) -> Option<i64> {
+    let bytes = s.trim().as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut val = 0i64;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        val = val.checked_mul(10)?.checked_add((b - b'0') as i64)?;
+    }
+    Some(val)
+}
 
 struct DaemonHistory {
     slots: [[u8; CLIPBOARD_MAX]; HISTORY_SLOTS],
@@ -152,6 +168,7 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                 let _ = sys::clipboard_write(CLIPBOARD_CURRENT, b"");
                 let _ = sys::chmod(CLIPBOARD_CURRENT, 0o666);
                 let _ = sys::unlink(CLIPBOARD_FALLBACK);
+                let _ = sys::unlink(CLIPBOARD_EXPIRES);
                 return 0;
             }
             "--status" | "status" => {
@@ -176,6 +193,31 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
 
     loop {
         ensure_dir_and_file();
+
+        // Check if sensitive clipboard item has expired
+        let mut exp_raw = [0u8; 32];
+        if let Ok(n) = sys::read_file(CLIPBOARD_EXPIRES, &mut exp_raw) {
+            if n > 0 {
+                if let Ok(s) = core::str::from_utf8(&exp_raw[..n]) {
+                    if let Some(exp_sec) = parse_i64(s) {
+                        if let Some(now_sec) = sys::monotonic_seconds() {
+                            if now_sec >= exp_sec {
+                                let _ = sys::clipboard_write(CLIPBOARD_CURRENT, b"");
+                                let _ = sys::chmod(CLIPBOARD_CURRENT, 0o666);
+                                let _ = sys::clipboard_write(CLIPBOARD_FALLBACK, b"");
+                                let _ = sys::chmod(CLIPBOARD_FALLBACK, 0o666);
+                                let _ = sys::unlink(CLIPBOARD_EXPIRES);
+                                let _ = sys::write_all(
+                                    1,
+                                    b"[clipboardd] Sensitive clipboard expired and auto-cleared (30s TTL)\n",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut len = sys::read_file(CLIPBOARD_CURRENT, &mut raw).unwrap_or(0);
         if len == 0 {
             if let Ok(fb_len) = sys::read_file(CLIPBOARD_FALLBACK, &mut raw) {

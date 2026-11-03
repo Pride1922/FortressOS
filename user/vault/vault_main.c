@@ -46,6 +46,14 @@ static inline int vault_strcmp(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
+static inline int vault_strncmp(const char *a, const char *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i] || a[i] == '\0') {
+            return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
+        }
+    }
+    return 0;
+}
 static inline size_t vault_strlen(const char *s) {
     size_t n = 0;
     while (s[n]) n++;
@@ -54,6 +62,7 @@ static inline size_t vault_strlen(const char *s) {
 #define memcpy vault_memcpy
 #define memset vault_memset
 #define strcmp vault_strcmp
+#define strncmp vault_strncmp
 #define strlen vault_strlen
 #endif
 
@@ -141,7 +150,7 @@ static void usage(void) {
             "  --raw          Output raw secret without trailing newline\n");
 }
 
-int vault_main(int argc, char **argv) {
+int vault_main(int argc, char **argv, char **envp) {
     if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         usage();
         return 0;
@@ -187,6 +196,16 @@ int vault_main(int argc, char **argv) {
             raw_output = true;
         }
         idx++;
+    }
+
+    /* Check VAULT_PASSPHRASE environment variable if -p was not given */
+    if (!pass && envp) {
+        for (int e = 0; envp[e]; e++) {
+            if (strncmp(envp[e], "VAULT_PASSPHRASE=", 17) == 0) {
+                pass = envp[e] + 17;
+                break;
+            }
+        }
     }
 
     char pass_buf[128];

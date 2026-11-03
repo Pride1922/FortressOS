@@ -55,6 +55,10 @@ test-vault-host:
 	@gcc -std=c11 -Wall -Wextra -Werror -Isrc/include -Iuser/vault -Itests -Isrc/lib/crypto/upstream/src -O2 -g -no-pie -DTOOL_HOST_TEST tests/vault_host.c user/vault/vault_crypto.c user/vault/vault_db.c user/vault/vault_main.c src/lib/crypto/hash.c src/lib/crypto/aead.c src/lib/root_digest.c build/vault-host/mono.o build/vault-host/ed.o -o build/vault-host/vault_host
 	@build/vault-host/vault_host
 
+.PHONY: test-vault-fixes
+test-vault-fixes: test-vault-host
+	@python3 scripts/test_vault_fixes.py
+
 .PHONY: test-resched-return-host
 
 
@@ -876,8 +880,11 @@ $(BUILD_DIR)/ssh.o: user/ssh.c user/poll.h user/udp_common.h user/dns.h user/net
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Iuser/sshd -Iuser/tools -Isrc/fs -Os -fno-pie -fno-asynchronous-unwind-tables -Wframe-larger-than=1024 -fstack-usage -c $< -o $@
 
-$(USER_SSH_ELF): $(BUILD_DIR)/ssh.o $(BUILD_DIR)/sshd/sshbuf.o $(BUILD_DIR)/sshd/cipher.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) user/tools/start.asm user/shell.ld
-	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=ssh_main user/tools/start.asm -o $(BUILD_DIR)/ssh_start.o
+$(BUILD_DIR)/ssh_start.o: user/tools/ssh_start.S
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -c -x assembler $< -o $@
+
+$(USER_SSH_ELF): $(BUILD_DIR)/ssh.o $(BUILD_DIR)/sshd/sshbuf.o $(BUILD_DIR)/sshd/cipher.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) $(BUILD_DIR)/ssh_start.o user/shell.ld
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 --gc-sections -T user/shell.ld $(BUILD_DIR)/ssh_start.o $(BUILD_DIR)/ssh.o $(BUILD_DIR)/sshd/sshbuf.o $(BUILD_DIR)/sshd/cipher.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) -o $@
 	@strip --strip-debug $@
 
