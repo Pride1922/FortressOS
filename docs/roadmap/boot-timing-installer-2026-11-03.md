@@ -91,3 +91,9 @@ are retained; the successful rebuilt source includes their corrections. The
 first timing build's hosted/freestanding detection was corrected before creating
 the accepted candidate. Actual installed-guest timing output verifies that this
 release enables the instrumentation in the freestanding kernel.
+
+
+Dell physical timing capture is now available: [actual phase breakdown and
+priorities](dell-boot-timing-2026-11-03.md). Root startup is 16060 ms, including
+7727 ms base boot-set validation and 4281 ms ext4 preparation. Kernel-ready is
+27780 ms; this is not firmware-to-login timing.
