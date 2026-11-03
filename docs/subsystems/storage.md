@@ -1,5 +1,10 @@
 # Storage & Memory Subsystem Annex
 
+2026-11-03 performance investigation: reproduced capacity-dependent metadata
+admission, sector-split installer/recovery-preview reads, expensive bitwise CRC32C
+and high installer NVMe IDENTIFY counts. Production storage behavior is unchanged.
+[Measurements, methods, limitations and recommended order](../roadmap/ext4-metadata-performance-investigation.md).
+
 This annex documents the current status, hardware facts, verification evidence, and scope boundaries of the FortressOS storage, filesystem, and physical/virtual memory subsystems. Binding contracts, locking rules (L1–L4, especially `ext2_lock`), memory ownership (M1–M4), and block/VFS interfaces live in [`AGENTS.md`](../../AGENTS.md) (§4 and §9).
 
 ---
