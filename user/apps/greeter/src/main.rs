@@ -25,6 +25,96 @@ const UNLOCK_BIN: &[u8] = b"/bin/desktop-unlock\0";
 const DESKTOP_BIN: &[u8] = b"/usr/bin/desktop\0";
 const COMPOSITOR_BIN: &[u8] = b"/bin/compositor\0";
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+struct SpawnFdAction {
+    action_type: u32,
+    dst_fd: i32,
+    src_fd: i32,
+    flags: u32,
+    mode: u32,
+    reserved: u32,
+    path: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+struct SpawnOpts {
+    size: u32,
+    version: u32,
+    flags: u32,
+    reserved0: u32,
+    argv: u64,
+    envp: u64,
+    cwd: u64,
+    fd_actions: u64,
+    action_count: u32,
+    reserved1: u32,
+    reserved2: u64,
+}
+
+fn log_greeter_msg(msg: &str) {
+    // 1. Write to stderr (fd 2), visible on COM1 UART console
+    raw_sys::write(2, msg.as_bytes());
+
+    // 2. Append to log file: prefer /var/log/greeter.log, fallback to /run/greeter.log
+    let mut fd = unsafe {
+        raw_sys::syscall2(
+            raw_sys::SYS_OPEN,
+            b"/var/log/greeter.log\0".as_ptr() as usize,
+            0x441, // VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND
+        )
+    };
+    if fd < 0 {
+        fd = unsafe {
+            raw_sys::syscall2(
+                raw_sys::SYS_OPEN,
+                b"/run/greeter.log\0".as_ptr() as usize,
+                0x441,
+            )
+        };
+    }
+    if fd >= 0 {
+        raw_sys::write(fd as i32, msg.as_bytes());
+        raw_sys::close(fd as i32);
+    }
+}
+
+fn log_greeter_auth(user: &str, success: bool, reason: &str) {
+    let mut buf = [0u8; 256];
+    let mut len = 0;
+
+    let prefix = b"[greeter] auth ";
+    buf[len..len + prefix.len()].copy_from_slice(prefix);
+    len += prefix.len();
+
+    let res_str = if success { b"PASS user='" } else { b"FAIL user='" };
+    buf[len..len + res_str.len()].copy_from_slice(res_str);
+    len += res_str.len();
+
+    let ubytes = user.as_bytes();
+    let ulen = ubytes.len().min(32);
+    buf[len..len + ulen].copy_from_slice(&ubytes[..ulen]);
+    len += ulen;
+
+    let mid = b"' reason='";
+    buf[len..len + mid.len()].copy_from_slice(mid);
+    len += mid.len();
+
+    let rbytes = reason.as_bytes();
+    let rlen = rbytes.len().min(64);
+    buf[len..len + rlen].copy_from_slice(&rbytes[..rlen]);
+    len += rlen;
+
+    let suffix = b"'\n";
+    buf[len..len + suffix.len()].copy_from_slice(suffix);
+    len += suffix.len();
+
+    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
+        log_greeter_msg(s);
+    }
+}
+
 struct GreeterState {
     username: TextField<32>,
     password: TextField<64>,
@@ -175,17 +265,42 @@ fn open_keyboard() -> i32 {
 }
 
 fn authenticate(user: &str, pass: &str) -> bool {
-    let mut fds = [0i32; 2];
+    let mut fds = [-1i32; 2];
     let pipe_res = unsafe {
         raw_sys::syscall2(
             raw_sys::SYS_PIPE,
             fds.as_mut_ptr() as usize,
-            0,
+            0x80000, // VFS_O_CLOEXEC
         )
     };
     if pipe_res < 0 {
+        log_greeter_auth(user, false, "pipe allocation failed");
         return false;
     }
+
+    let mut actions = [SpawnFdAction::default(); 3];
+    let mut act_count = 0;
+    if fds[0] != 0 {
+        actions[act_count] = SpawnFdAction {
+            action_type: 2, // SPAWN_FD_ACTION_DUP2
+            dst_fd: 0,
+            src_fd: fds[0],
+            ..Default::default()
+        };
+        act_count += 1;
+        actions[act_count] = SpawnFdAction {
+            action_type: 3, // SPAWN_FD_ACTION_CLOSE
+            dst_fd: fds[0],
+            ..Default::default()
+        };
+        act_count += 1;
+    }
+    actions[act_count] = SpawnFdAction {
+        action_type: 3, // SPAWN_FD_ACTION_CLOSE
+        dst_fd: fds[1],
+        ..Default::default()
+    };
+    act_count += 1;
 
     let mut user_cstr = [0u8; 36];
     let ulen = user.len().min(32);
@@ -198,22 +313,34 @@ fn authenticate(user: &str, pass: &str) -> bool {
         core::ptr::null(),
     ];
 
+    let opts = SpawnOpts {
+        size: core::mem::size_of::<SpawnOpts>() as u32,
+        version: 2,
+        argv: args.as_ptr() as u64,
+        fd_actions: actions.as_ptr() as u64,
+        action_count: act_count as u32,
+        ..Default::default()
+    };
+
     let pid = unsafe {
-        raw_sys::syscall2(
-            raw_sys::SYS_SPAWN,
+        raw_sys::syscall3(
+            raw_sys::SYS_SPAWN_EXT,
             UNLOCK_BIN.as_ptr() as usize,
-            args.as_ptr() as usize,
+            &opts as *const _ as usize,
+            opts.size as usize,
         )
     };
 
+    // Close read end in parent immediately
+    raw_sys::close(fds[0]);
+
     if pid <= 0 {
-        raw_sys::close(fds[0]);
         raw_sys::close(fds[1]);
+        log_greeter_auth(user, false, "failed to spawn unlock helper");
         return false;
     }
 
     // Write password to helper pipe
-    raw_sys::close(fds[0]);
     if !pass.is_empty() {
         raw_sys::write(fds[1], pass.as_bytes());
     }
@@ -231,7 +358,14 @@ fn authenticate(user: &str, pass: &str) -> bool {
         )
     };
 
-    waited == pid && status == 0
+    let success = waited == pid && status == 0;
+    if success {
+        log_greeter_auth(user, true, "login successful");
+    } else {
+        log_greeter_auth(user, false, "authentication failed (helper status non-zero)");
+    }
+
+    success
 }
 
 fn render_greeter(
@@ -291,6 +425,7 @@ fn render_greeter(
 }
 
 fn launch_user_session(_username: &str) {
+    log_greeter_msg("[greeter] releasing framebuffer lease and launching session\n");
     // Release framebuffer so the compositor user session can acquire it
     raw_sys::fb_release();
 
@@ -323,6 +458,7 @@ fn launch_user_session(_username: &str) {
     }
 
     if pid > 0 {
+        log_greeter_msg("[greeter] user session running\n");
         let mut status = 0u64;
         unsafe {
             raw_sys::syscall3(
@@ -332,6 +468,9 @@ fn launch_user_session(_username: &str) {
                 0,
             );
         }
+        log_greeter_msg("[greeter] user session terminated, returning to greeter\n");
+    } else {
+        log_greeter_msg("[greeter] failed to spawn desktop session\n");
     }
 
     // Re-acquire framebuffer for greeter when session ends
@@ -339,14 +478,18 @@ fn launch_user_session(_username: &str) {
 }
 
 fn main(_args: Args) -> i32 {
+    log_greeter_msg("[greeter] starting graphical login manager\n");
+
     // 1. Acquire exclusive framebuffer lease
     let acq = raw_sys::fb_acquire();
     if acq != 0 {
+        log_greeter_msg("[greeter] failed to acquire framebuffer lease; falling back to console login\n");
         return 1; // Fall back to console /bin/login
     }
 
     let mut fb = FbInfoV1::default();
     if raw_sys::fb_info(&mut fb, 0) != 0 || fb.bpp != 32 {
+        log_greeter_msg("[greeter] invalid framebuffer info\n");
         raw_sys::fb_release();
         return 1;
     }
@@ -357,6 +500,7 @@ fn main(_args: Args) -> i32 {
     let vram = fb.fb_user_vaddr as *mut u32;
 
     if screen_w == 0 || screen_h == 0 || vram.is_null() {
+        log_greeter_msg("[greeter] null framebuffer address\n");
         raw_sys::fb_release();
         return 1;
     }

@@ -41,7 +41,7 @@ void _start(void) {
 int unlock_main(int argc, char **argv) {
     uint32_t uid, euid, suid;
     if (tool_syscall(SYS_GETRESUID, (uintptr_t)&uid, (uintptr_t)&euid, (uintptr_t)&suid) < 0 || euid != 0) {
-        return 1;
+        return tool_error("desktop-unlock", "permission denied (not suid root)", 0);
     }
 
     bool loaded = false;
@@ -51,14 +51,14 @@ int unlock_main(int argc, char **argv) {
         timespec_t req = { .tv_sec = 0, .tv_nsec = 25000000L };
         (void)tool_syscall(SYS_NANOSLEEP, (uintptr_t)&req, 0, 0);
     }
-    if (!loaded) return 1;
+    if (!loaded) return tool_error("desktop-unlock", "cannot read account database", 0);
 
     const db_user_t *u = NULL;
     if (argc >= 2 && argv[1] && argv[1][0]) {
         // Only real root (uid == 0) can specify an arbitrary user name
         if (uid != 0) {
             secure_delay();
-            return 1;
+            return tool_error("desktop-unlock", "unauthorized user selection", argv[1]);
         }
         u = db_user_name(&database, argv[1]);
     } else {
@@ -68,13 +68,13 @@ int unlock_main(int argc, char **argv) {
 
     if (!u) {
         secure_delay();
-        return 1;
+        return tool_error("desktop-unlock", "user does not exist", argc >= 2 ? argv[1] : 0);
     }
 
     const db_shadow_t *shadow = db_shadow_name(&database, u->name);
     if (!shadow || shadow->restricted) {
         secure_delay();
-        return 1;
+        return tool_error("desktop-unlock", "account is locked or restricted", u->name);
     }
 
     char password[DB_PASSWORD_MAX + 1] = {0};
@@ -92,7 +92,7 @@ int unlock_main(int argc, char **argv) {
 
     if (!ok) {
         secure_delay();
-        return 1;
+        return tool_error("desktop-unlock", "authentication failed for user", u->name);
     }
 
     return 0;
