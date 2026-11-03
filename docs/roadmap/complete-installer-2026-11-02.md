@@ -3,8 +3,9 @@
 ## Current diagnostic media: live USB
 
 Use `bin/fortress-live.img` (130 MiB), SHA-256
-`c3b90563ad2d7f86ce2aa935814f2998c8ab1423eb2496701fe75a6da0d9787f`.
-This boots the ordinary live login with desktop changes, Wi-Fi diagnostics,
+`ef68e355d424201d4ffdd67f250f7220fb65f8d3135807989df3569c8c55157e`.
+This boots the ordinary live login with [DHCP contention handling](dhcp-acquisition-contention.md),
+desktop changes, Wi-Fi diagnostics,
 [GTK delivery and scoped profile-save corrections](wifi-gtk-delivery.md).
 Battery hardware telemetry is explicitly unavailable after withdrawing fabricated
 readings; [physical failure and correction](battery-telemetry-unavailable.md). BIOS/UEFI live USB tests

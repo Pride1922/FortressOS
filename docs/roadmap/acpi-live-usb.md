@@ -1,6 +1,14 @@
 # Live USB with latest ACPI work — 2026-11-02
 
-Latest published live USB: `bin/fortress-live.img`, 130 MiB, source `d6c9984`,
+Current published live USB: `bin/fortress-live.img`, 130 MiB, source `3c22ae7`,
+SHA-256 `ef68e355d424201d4ffdd67f250f7220fb65f8d3135807989df3569c8c55157e`. Adds bounded foreground/daemon DHCP contention handling;
+software/guest gates PASS, physical initial DHCP acceptance pending. Prior GTK,
+profile-save and committed desktop work remain included; battery telemetry is
+still explicitly unsupported. [DHCP correction and tests](dhcp-acquisition-contention.md).
+
+## Earlier GTK/profile-save candidate
+
+Earlier live USB: `bin/fortress-live.img`, 130 MiB, source `d6c9984`,
 SHA-256 `c3b90563ad2d7f86ce2aa935814f2998c8ab1423eb2496701fe75a6da0d9787f`. Includes the GTK delivery and scoped profile-save corrections,
 with BIOS/UEFI live checks PASS. [Wi-Fi candidate and physical test](wifi-gtk-delivery.md).
 Actual battery telemetry remains unsupported; the correction below is retained.

@@ -4,6 +4,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-11-03 DHCP acquisition contention: a foreground `dhcpc` losing port 68 to
+the running daemon now observes that owner's matching, unexpired configured
+lease instead of falsely reporting an OFFER timeout. Host error gates and real
+service/port contention BIOS/UEFI x SMP=1/4 PASS; production lifecycle/offline and
+live USB checks also PASS. The physical first-failure bind result was not captured,
+so laptop initial-connection acceptance remains pending. [Scope, evidence and candidate](../roadmap/dhcp-acquisition-contention.md).
+
 2026-11-02 central management follow-up: the current installer is checkpointed
 while physical testing proceeds. Consolidating connection policy, shared profiles
 and credential protection is planned, not implemented. See the

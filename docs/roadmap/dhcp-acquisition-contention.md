@@ -64,3 +64,44 @@ physical storage. QEMU results and published image identity follow after gates.
 Evidence: `build/dhcp-contention-evidence/`. Parallel UI/font work is excluded
 from the release source checkpoint and left untouched. A physical reboot and
 Wi-Fi connection without a manual DHCP retry is still the final acceptance gate.
+
+## Completed gates and published candidate
+
+Published live USB: `bin/fortress-live.img`, 130 MiB, SHA-256
+`ef68e355d424201d4ffdd67f250f7220fb65f8d3135807989df3569c8c55157e`. Clean source `3c22ae7` is retained in
+`.codex-remote-attachments/dhcp-acquisition-release`. It includes the previously
+accepted GTK and scoped-profile-save corrections and the prior committed
+desktop, with honest unsupported battery handling. Concurrent unfinished UI/font
+refactoring is outside this artifact.
+
+Results retained under `build/dhcp-contention-evidence/`:
+
+- Actual foreground entry ASan/UBSan PASS all ten contention/error scenarios;
+  existing DHCP v1/v2 codec suites PASS. The delayed-owner case waits two
+  simulated seconds and succeeds without another exchange or configuration
+  write. The predecessor instead fails immediately with a false timeout.
+- Real kernel/socket/service contention PASS 4/4, BIOS/UEFI x SMP=1/4. The
+  private daemon holds port 68, the ordinary foreground entry waits for its
+  configured lease, its PID remains unchanged, and gateway ping passes.
+  Standalone acquisition and daemon spawning also pass after owner stop.
+- Existing production DHCP v2 lifecycle and offline-boot regressions PASS under
+  both BIOS and UEFI, including renewal, status, release and offline login.
+- Final raw live USB BIOS/UEFI SMP=4 boots PASS 2/2, with login, battery error
+  handling, receive diagnostics, desktop version, direct/sudo profile saves,
+  failed-temp-collision diagnostics and configuration preservation. One USB
+  snapshot only per boot; no installation target or physical disks.
+- Native -O2 stack check: new helper 168 bytes, whole source maximum 672 bytes,
+  no 1024-byte frame warnings. No kernel/ABI change.
+- GPT/FAT/ext4 audit PASS; FAT-loaded kernel/initramfs exactly match final build
+  outputs. The release DHCP binary contains no private hold-marker string.
+  Source image hashes remain unchanged during boot tests. A later ISO build
+  regenerated gzip/archive metadata after the first raw packaging; decompressed
+  firmware was verified identical, and raw media was repackaged and its final
+  content audit/boot checks rerun. That audit note and initial results remain.
+
+The superseded published image, private duplicate and completed test ISOs were
+removed after publication; one published disk image remains. Original receipts
+and test results are retained. This is verified software contention handling,
+not a claim that the laptop's original failure was definitely a bind collision.
+Physical acceptance requires a reboot, one Wi-Fi connection, and a valid DHCP
+address without a separate manual `dhcpc` invocation.
