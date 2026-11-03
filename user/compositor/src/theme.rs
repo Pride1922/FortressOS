@@ -8,8 +8,10 @@ pub use libui::theme::{
     ACCENT, ACCENT_BLUE, AMBER, BORDER, MUTED, PANEL, RED, SUBTEXT, SURFACE, TEXT, YELLOW,
 };
 
+#[allow(dead_code)]
 static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+#[allow(dead_code)]
 pub fn set_scale(mode: u8) {
     SCALE_OVERRIDE.store(
         if mode <= 2 { mode } else { 0 },
@@ -18,6 +20,7 @@ pub fn set_scale(mode: u8) {
 }
 
 // 1080p uses native raster sizes. Only UHD needs the larger chrome preset.
+#[allow(dead_code)]
 pub fn scale(height: usize) -> usize {
     match SCALE_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
         1 => return 1,
@@ -28,6 +31,7 @@ pub fn scale(height: usize) -> usize {
 }
 
 /// Row form of `desktop_pixel()`: the vertical term is computed once.
+#[allow(dead_code)]
 pub fn desktop_row(x0: usize, y: usize, width: usize, height: usize, out: &mut [u32]) {
     let ny = (y * 1024 / height.max(1)) as i32;
     let dy = ny - 380;

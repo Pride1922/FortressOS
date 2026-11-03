@@ -102,6 +102,7 @@ impl Surface {
     }
     /// Pixels the next present() will copy (overlapping rects count twice,
     /// exactly as present() copies them).
+    #[allow(dead_code)]
     pub fn damage_pixels(&self) -> u64 {
         self.damage[..self.count]
             .iter()

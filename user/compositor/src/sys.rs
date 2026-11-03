@@ -24,6 +24,7 @@ pub const SYS_NETCTL: usize = 42;
 pub const SYS_WIFI: usize = 87;
 pub const SYS_BATTERY_GET: usize = 103;
 pub const SYS_PIPE: usize = 24;
+pub const SYS_WAITPID: usize = 33;
 pub const SYS_GETRESUID: usize = 62;
 pub const SYS_GETRESGID: usize = 63;
 pub const SYS_SETRESUID: usize = 66;

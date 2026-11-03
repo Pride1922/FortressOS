@@ -15,15 +15,52 @@ pub const PIXELS_VA: usize = 0x70_0000_0000;
 pub mod raw_sys {
     pub const SYS_EXIT: usize = 0;
     pub const SYS_WRITE: usize = 1;
+    pub const SYS_OPEN: usize = 2;
     pub const SYS_CLOSE: usize = 3;
     pub const SYS_READ: usize = 4;
+    pub const SYS_STAT: usize = 5;
+    pub const SYS_REBOOT: usize = 7;
+    pub const SYS_SPAWN: usize = 9;
+    pub const SYS_SPAWN_EXT: usize = 20;
+    pub const SYS_PIPE: usize = 24;
+    pub const SYS_WAITPID: usize = 33;
+    pub const SYS_SETRESUID: usize = 66;
+    pub const SYS_SETRESGID: usize = 67;
+    pub const SYS_SETGROUPS: usize = 68;
+    pub const SYS_CAPSET: usize = 69;
+    pub const SYS_CAPGET: usize = 70;
+    pub const SYS_CLOCK_GETTIME: usize = 74;
+    pub const SYS_NANOSLEEP: usize = 75;
     pub const SYS_FSTAT: usize = 78;
     pub const SYS_POLL: usize = 88;
+    pub const SYS_FBINFO: usize = 96;
+    pub const SYS_FB_ACQUIRE: usize = 97;
+    pub const SYS_FB_RELEASE: usize = 98;
     pub const SYS_MMAP: usize = 99;
     pub const SYS_SHM_MAP: usize = 101;
 
     pub const EINTR: isize = -22;
     pub const POLLIN: i16 = 0x0001;
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, Default)]
+    pub struct FbInfoV1 {
+        pub version: u32,
+        pub width: u32,
+        pub height: u32,
+        pub pitch: u32,
+        pub bpp: u32,
+        pub reserved: u32,
+        pub fb_user_vaddr: u64,
+        pub fb_size: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, Default)]
+    pub struct Timespec {
+        pub tv_sec: i64,
+        pub tv_nsec: i64,
+    }
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, Default)]
@@ -129,6 +166,69 @@ pub mod raw_sys {
             );
         }
         ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall4(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> isize {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") nr,
+                in("rdi") arg1,
+                in("rsi") arg2,
+                in("rdx") arg3,
+                in("r10") arg4,
+                out("rcx") _,
+                out("r11") _,
+                lateout("rax") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall5(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> isize {
+        let ret: isize;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") nr,
+                in("rdi") arg1,
+                in("rsi") arg2,
+                in("rdx") arg3,
+                in("r10") arg4,
+                in("r8") arg5,
+                out("rcx") _,
+                out("r11") _,
+                lateout("rax") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }
+
+    pub fn fb_acquire() -> isize {
+        unsafe { syscall0(SYS_FB_ACQUIRE) }
+    }
+
+    pub fn fb_release() -> isize {
+        unsafe { syscall0(SYS_FB_RELEASE) }
+    }
+
+    pub fn fb_info(out: &mut FbInfoV1, req_vaddr: u64) -> isize {
+        unsafe { syscall2(SYS_FBINFO, out as *mut _ as usize, req_vaddr as usize) }
+    }
+
+    pub fn sleep_ms(ms: u64) {
+        let req = Timespec {
+            tv_sec: (ms / 1000) as i64,
+            tv_nsec: ((ms % 1000) * 1_000_000) as i64,
+        };
+        unsafe {
+            syscall2(SYS_NANOSLEEP, &req as *const _ as usize, 0);
+        }
     }
 
     pub fn exit(code: i32) -> ! {

@@ -5,11 +5,14 @@
 use crate::{canvas::Canvas, clipboard, sys};
 use alloc::{string::String, vec::Vec};
 
+#[allow(dead_code)]
 pub const FILES_BG: u32 = 0xff252525;
 pub const FILES_FG: u32 = 0xffe0e0e0;
+#[allow(dead_code)]
 pub const FILES_HEADER: u32 = 0xff1e1e1e;
 pub const FILES_DIR: u32 = 0xff007aff;
 pub const FILES_EXE: u32 = 0xff34c759;
+#[allow(dead_code)]
 pub const FILES_SEL: u32 = 0xff007aff;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

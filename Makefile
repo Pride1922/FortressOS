@@ -715,6 +715,7 @@ USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_COMPOSITOR_ELF := $(BUILD_DIR)/compositor.elf
 USER_CALC_ELF := $(BUILD_DIR)/calc.elf
+USER_GREETER_ELF := $(BUILD_DIR)/desktop-greeter.elf
 USER_LIBUI_SRCS := $(USER_DIR)/libui/Cargo.toml $(USER_DIR)/libui/assets/*.bin $(wildcard $(USER_DIR)/libui/src/*.rs $(USER_DIR)/libui/src/*/*.rs)
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
 USER_DUAL_STREAM_ELF := $(BUILD_DIR)/dual_stream.elf
@@ -960,6 +961,7 @@ SBIN_LOGIN_TOOLS := useradd addgroup delgroup adduser deluser usermod
 USER_LOGIN_TOOLS := login whoami sudo recovery passwd su groups nologin id
 LOGIN_TOOLS := $(USER_LOGIN_TOOLS) $(SBIN_LOGIN_TOOLS)
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
+USER_UNLOCK_ELF := $(BUILD_DIR)/tool-unlock.elf
 
 $(BUILD_DIR)/tool-hostname.o $(BUILD_DIR)/netconf.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/ifconfig.o: user/machine_config.h src/include/account_abi.h
 
@@ -993,6 +995,11 @@ $(BUILD_DIR)/tool-userdb.o: user/tools/userdb.c user/tools/userdb.h user/tools/d
 $(BUILD_DIR)/tool-userdb_io.o: user/tools/userdb_io.c user/tools/live_password.h user/tools/userdb.h user/tools/common.h user/permissions_cli.h src/include/account_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $@
+
+$(BUILD_DIR)/tool-unlock.elf: user/tools/unlock.c user/tools/userdb.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -Isrc/include -Isrc/fs -Iuser/tools -c $< -o $(BUILD_DIR)/tool-unlock.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-unlock.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
+	@strip --strip-debug $@
 
 $(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h user/tools/live_password.h user/tools/account_tool.h src/include/account_abi.h user/entry_security.h user/permissions_cli.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
@@ -1555,10 +1562,15 @@ $(USER_CALC_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/calc/src/*.rs $(USER_DIR)/
 	@cd $(USER_DIR)/apps/calc && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/apps/calc/target/x86_64-unknown-none/release/calc $@
 
+$(USER_GREETER_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/greeter/src/*.rs $(USER_DIR)/apps/greeter/Cargo.toml $(USER_DIR)/apps/greeter/.cargo/config.toml $(USER_DIR)/libui/app.ld
+	@echo "  [CARGO] user/apps/greeter"
+	@cd $(USER_DIR)/apps/greeter && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
+	@cp -f $(USER_DIR)/apps/greeter/target/x86_64-unknown-none/release/greeter $@
+
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): assets/pkg/trust.conf scripts/release_trust.py
 $(INITRAMFS_TAR): $(USER_BATTERY_ELF)
-$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_CALC_ELF) $(USER_DIR)/libui/assets/DejaVu-LICENSE.txt assets/desktop.conf
+$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_CALC_ELF) $(USER_GREETER_ELF) $(USER_UNLOCK_ELF) $(USER_DIR)/libui/assets/DejaVu-LICENSE.txt assets/desktop.conf
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_SHM_TEST_ELF) $(USER_HELLO_WINDOW_ELF) $(USER_HOSTILE_WINDOW_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
@@ -1568,6 +1580,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/files.elf $(BUILD_DIR)/initramfs/bin/files
 	@cp -f $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/initramfs/bin/terminal
 	@cp -f $(USER_CALC_ELF) $(BUILD_DIR)/initramfs/bin/calc
+	@cp -f $(USER_GREETER_ELF) $(BUILD_DIR)/initramfs/bin/desktop-greeter
 	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/sbin/clipboardd
 	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/bin/clipboard
 	@cp -f assets/desktop.conf $(BUILD_DIR)/initramfs/etc/desktop.conf
@@ -1576,6 +1589,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/sh
 	@$(foreach tool,$(USER_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@cp -f $(BUILD_DIR)/tool-unlock.elf $(BUILD_DIR)/initramfs/bin/desktop-unlock
 	@$(foreach tool,$(SBIN_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello

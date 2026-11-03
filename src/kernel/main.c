@@ -6711,6 +6711,9 @@ pf_boot_guard_done:
     /* Only explicit test kernels accept the legacy direct-shell escape. */
     if (!g_installed_boot && strstr(boot_info.cmdline,"login=0")) initial_program="/bin/shell";
 #endif
+    if (!g_installer_boot && !strstr(boot_info.cmdline,"console=text") && vfs_lookup_kernel("/bin/desktop-greeter")) {
+        initial_program="/bin/desktop-greeter";
+    }
     boot_status(installed_ready ? "Interactive shell ready." : "Recovery environment selected.");
     if (console_is_quiet()) {
         console_set_quiet(false);
@@ -6754,6 +6757,10 @@ pf_boot_guard_done:
         if (!process) {
             if (g_installed_boot && installed_ready) {
                 installed_ready=false;installed_root_login_failed();installed_root_recovery_notice();continue;
+            }
+            if (!strcmp(initial_program, "/bin/desktop-greeter")) {
+                initial_program = "/bin/login";
+                continue;
             }
             serial_puts("[FAIL] Cannot start bootstrap program.\n");hcf();
         }

@@ -8,6 +8,7 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use core::fmt::{self, Write};
+use libui::state::TextField;
 
 pub const DESKTOP: u32 = 0xff141923;
 pub const ACTIVE: u32 = 0xff2a3a5e;
@@ -1313,6 +1314,9 @@ pub struct WindowManager {
     pub battery_status: Option<crate::sys::BatteryStatus>,
     pub show_power_menu: bool,
     pub power_profile: u8,
+    pub locked: bool,
+    pub lock_password: TextField<64>,
+    pub lock_error: bool,
 }
 
 impl WindowManager {
@@ -1371,6 +1375,9 @@ impl WindowManager {
             battery_status: None,
             show_power_menu: false,
             power_profile: 0,
+            locked: false,
+            lock_password: TextField::new(),
+            lock_error: false,
         })
     }
 
@@ -1393,6 +1400,9 @@ impl WindowManager {
             battery_status: None,
             show_power_menu: false,
             power_profile: 0,
+            locked: false,
+            lock_password: TextField::new(),
+            lock_error: false,
         }
     }
 
@@ -1753,6 +1763,108 @@ impl WindowManager {
         Self::dock_damage(s);
     }
 
+    pub fn lock(&mut self, s: &mut Surface) {
+        self.emergency_unfocus(s);
+        self.locked = true;
+        self.lock_password.clear();
+        self.lock_error = false;
+        s.damage(Rect {
+            x: 0,
+            y: 0,
+            w: s.width,
+            h: s.height,
+        });
+    }
+
+    pub fn unlock(&mut self, s: &mut Surface) {
+        self.locked = false;
+        self.lock_password.clear();
+        self.lock_error = false;
+        s.damage(Rect {
+            x: 0,
+            y: 0,
+            w: s.width,
+            h: s.height,
+        });
+    }
+
+#[cfg(test)]
+pub fn verify_unlock_password(pass: &str) -> bool {
+    pass == "secret" || pass == ""
+}
+
+#[cfg(not(test))]
+pub fn verify_unlock_password(pass: &str) -> bool {
+    let mut pipe_fds = [0i32; 2];
+    if unsafe { crate::sys::syscall2(crate::sys::SYS_PIPE, pipe_fds.as_mut_ptr() as usize, 0) } < 0 {
+        return false;
+    }
+
+    let dup = |src, dst| crate::sys::SpawnFdAction {
+        action_type: 2,
+        dst_fd: dst,
+        src_fd: src,
+        ..Default::default()
+    };
+    let open_null = |fd| crate::sys::SpawnFdAction {
+        action_type: 1,
+        dst_fd: fd,
+        flags: crate::sys::VFS_O_RDWR,
+        path: c"/dev/null".as_ptr() as u64,
+        ..Default::default()
+    };
+    let close = |fd| crate::sys::SpawnFdAction {
+        action_type: 3,
+        dst_fd: fd,
+        ..Default::default()
+    };
+
+    let actions = [
+        dup(pipe_fds[0], 0),
+        open_null(1),
+        open_null(2),
+        close(pipe_fds[0]),
+        close(pipe_fds[1]),
+    ];
+
+    let path = c"/bin/desktop-unlock";
+    let argv = [path.as_ptr(), core::ptr::null()];
+    let opts = crate::sys::SpawnOpts {
+        size: core::mem::size_of::<crate::sys::SpawnOpts>() as u32,
+        version: 2,
+        argv: argv.as_ptr() as u64,
+        fd_actions: actions.as_ptr() as u64,
+        action_count: actions.len() as u32,
+        ..Default::default()
+    };
+
+    let pid = crate::sys::spawn_ext("/bin/desktop-unlock", &opts);
+    crate::sys::close(pipe_fds[0]);
+
+    if pid <= 0 {
+        crate::sys::close(pipe_fds[1]);
+        return false;
+    }
+
+    if !pass.is_empty() {
+        crate::sys::write(pipe_fds[1], pass.as_bytes());
+    }
+    crate::sys::write(pipe_fds[1], b"\n");
+    crate::sys::close(pipe_fds[1]);
+
+    let mut status = 0u64;
+    let waited = unsafe {
+        crate::sys::syscall3(
+            crate::sys::SYS_WAITPID,
+            pid as usize,
+            &mut status as *mut _ as usize,
+            0,
+        )
+    };
+
+    waited == pid && status == 0
+}
+
     pub fn toggle_start_menu(&mut self, s: &mut Surface) {
         self.start_open = !self.start_open;
         self.menu_hover = None;
@@ -1764,6 +1876,47 @@ impl WindowManager {
     /// sees them: SAK (`Ctrl + Alt + Esc`), `Alt + Tab` window switching, and
     /// the `Super` key Start Menu toggle. Returns true if consumed.
     pub fn intercept_key(&mut self, ev: crate::proto::KeyEvent, s: &mut Surface) -> bool {
+        // When screen is locked, intercept ALL keys
+        if self.locked {
+            if ev.state == crate::proto::KEY_STATE_RELEASE {
+                return true;
+            }
+            if ev.ascii == 8 || ev.ascii == 127 {
+                self.lock_password.backspace();
+                self.lock_error = false;
+                s.damage(Rect { x: 0, y: 0, w: s.width, h: s.height });
+                return true;
+            }
+            if ev.keycode == crate::proto::KEY_ENTER || ev.keycode == 96 || ev.ascii == b'\r' || ev.ascii == b'\n' {
+                if Self::verify_unlock_password(self.lock_password.as_str()) {
+                    self.unlock(s);
+                } else {
+                    self.lock_error = true;
+                    self.lock_password.clear();
+                    s.damage(Rect { x: 0, y: 0, w: s.width, h: s.height });
+                }
+                return true;
+            }
+            if ev.ascii >= 32 && ev.ascii <= 126 {
+                if self.lock_password.len() < 60 {
+                    self.lock_password.push(ev.ascii as char);
+                    self.lock_error = false;
+                    s.damage(Rect { x: 0, y: 0, w: s.width, h: s.height });
+                }
+                return true;
+            }
+            return true;
+        }
+
+        // Global shortcut: Super+L locks the screen
+        if (ev.modifiers & crate::proto::MOD_SUPER != 0)
+            && (ev.keycode == 38 || ev.ascii == b'l' || ev.ascii == b'L')
+            && ev.state == crate::proto::KEY_STATE_PRESS
+        {
+            self.lock(s);
+            return true;
+        }
+
         if (ev.modifiers & (crate::proto::MOD_CTRL | crate::proto::MOD_ALT))
             == (crate::proto::MOD_CTRL | crate::proto::MOD_ALT)
             && ev.keycode == crate::proto::KEY_ESC
@@ -1882,6 +2035,36 @@ impl WindowManager {
     }
 
     pub fn mouse(&mut self, x: usize, y: usize, buttons: u8, s: &mut Surface) -> Action {
+        if self.locked {
+            if buttons & 1 != 0 {
+                let cw = 360.min(s.width - 40);
+                let ch = 220.min(s.height - 40);
+                let cx = (s.width - cw) / 2;
+                let cy = (s.height - ch) / 2;
+                let btn_r = Rect {
+                    x: cx + 32,
+                    y: cy + 140,
+                    w: cw - 64,
+                    h: 36,
+                };
+                if (btn_r.x..btn_r.x + btn_r.w).contains(&x) && (btn_r.y..btn_r.y + btn_r.h).contains(&y) {
+                    if Self::verify_unlock_password(self.lock_password.as_str()) {
+                        self.unlock(s);
+                    } else {
+                        self.lock_error = true;
+                        self.lock_password.clear();
+                        s.damage(Rect {
+                            x: 0,
+                            y: 0,
+                            w: s.width,
+                            h: s.height,
+                        });
+                    }
+                }
+            }
+            return Action::None;
+        }
+
         let mut ret_action = Action::None;
         // Capture survives leaving the titlebar/window. Apply final release motion.
         if self.buttons & 1 != 0 {
@@ -3535,6 +3718,111 @@ impl WindowManager {
                             } else {
                                 0xff1c2128
                             };
+                        }
+                    }
+                }
+            }
+
+            if self.locked {
+                // 75% dark frosted glass scrim over this damage rectangle
+                for y in r.y..r.y + r.h {
+                    for x in r.x..r.x + r.w {
+                        let under = s.pixels[y * s.width + x];
+                        let dimmed = blend_darken(under, 192); // 75% dark
+                        let dither = if ((x ^ y) & 1) == 0 { 0xff101520 } else { 0xff0d1118 };
+                        s.pixels[y * s.width + x] = blend_color(dither, dimmed, 50);
+                    }
+                }
+
+                // Centered Unlock Card (360 x 220)
+                let cw = 360.min(s.width - 40);
+                let ch = 220.min(s.height - 40);
+                let cx = (s.width - cw) / 2;
+                let cy = (s.height - ch) / 2;
+                let card_r = Rect { x: cx, y: cy, w: cw, h: ch };
+
+                if let Some(clip) = card_r.intersection(r) {
+                    let card_bg = 0xff161b22;
+                    let card_border = 0xff30363d;
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let lx = x - cx;
+                            let ly = y - cy;
+                            let cov = theme::rounded_coverage(lx, ly, cw, ch, 12);
+                            if cov == 0 {
+                                continue;
+                            }
+                            let under = s.pixels[y * s.width + x];
+                            let is_border = lx == 0 || lx + 1 == cw || ly == 0 || ly + 1 == ch;
+                            let bg = if is_border { card_border } else { card_bg };
+                            s.pixels[y * s.width + x] = theme::blend_coverage(bg, under, cov);
+                        }
+                    }
+
+                    // Render card content
+                    let mut clock_buf = [0u8; 32];
+                    let clock_str = format_clock(self.clock_sec, self.clock_24h, &mut clock_buf);
+
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let lx = x - cx;
+                            let ly = y - cy;
+
+                            // Title: "FortressOS Locked" (cx + 32, cy + 20)
+                            if (20..38).contains(&ly) && lx >= 32 && lx < cw - 32 {
+                                let p = theme::text_pixel_bold("FortressOS Locked", lx - 32, ly - 20, 0xffffffff, card_bg);
+                                if p != card_bg { s.pixels[y * s.width + x] = p; }
+                            }
+                            // Clock subtitle (cx + 32, cy + 44)
+                            else if (44..62).contains(&ly) && lx >= 32 && lx < cw - 32 {
+                                let p = theme::text_pixel(clock_str, lx - 32, ly - 44, theme::MUTED, card_bg);
+                                if p != card_bg { s.pixels[y * s.width + x] = p; }
+                            }
+                            // Error banner if any (cx + 32, cy + 66)
+                            else if self.lock_error && (66..84).contains(&ly) && lx >= 32 && lx < cw - 32 {
+                                let p = theme::text_pixel("Incorrect password", lx - 32, ly - 66, theme::RED, card_bg);
+                                if p != card_bg { s.pixels[y * s.width + x] = p; }
+                            }
+                            // Password text field well (cx + 32, cy + 90, w: cw - 64, h: 34)
+                            else if (90..124).contains(&ly) && (32..cw - 32).contains(&lx) {
+                                let fx = lx - 32;
+                                let fy = ly - 90;
+                                let fw = cw - 64;
+                                let fh = 34;
+                                let fcov = theme::rounded_coverage(fx, fy, fw, fh, 6);
+                                let is_fborder = fx == 0 || fx + 1 == fw || fy == 0 || fy + 1 == fh;
+                                let fbg = if is_fborder { 0xff2563eb } else { 0xff0d1117 };
+
+                                let masked_buf = [b'*'; 64];
+                                let plen = self.lock_password.len().min(64);
+                                let masked_str = core::str::from_utf8(&masked_buf[..plen]).unwrap_or("");
+                                let text_y = (fh.saturating_sub(18)) / 2;
+
+                                let pixel = if fy >= text_y && fy < text_y + 18 && fx >= 10 && fx < fw - 10 {
+                                    theme::text_pixel(masked_str, fx - 10, fy - text_y, 0xffffffff, fbg)
+                                } else {
+                                    fbg
+                                };
+                                s.pixels[y * s.width + x] = theme::blend_coverage(pixel, card_bg, fcov);
+                            }
+                            // Unlock Button (cx + 32, cy + 140, w: cw - 64, h: 36)
+                            else if (140..176).contains(&ly) && (32..cw - 32).contains(&lx) {
+                                let bx = lx - 32;
+                                let by = ly - 140;
+                                let bw = cw - 64;
+                                let bh = 36;
+                                let bcov = theme::rounded_coverage(bx, by, bw, bh, 6);
+                                let btn_bg = 0xff2563eb;
+                                let text_y = (bh.saturating_sub(18)) / 2;
+                                let text_x = (bw.saturating_sub(theme::text_width("Unlock"))) / 2;
+
+                                let pixel = if by >= text_y && by < text_y + 18 && bx >= text_x && bx < text_x + theme::text_width("Unlock") {
+                                    theme::text_pixel("Unlock", bx - text_x, by - text_y, 0xffffffff, btn_bg)
+                                } else {
+                                    btn_bg
+                                };
+                                s.pixels[y * s.width + x] = theme::blend_coverage(pixel, card_bg, bcov);
+                            }
                         }
                     }
                 }

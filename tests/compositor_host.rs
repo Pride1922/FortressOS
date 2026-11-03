@@ -3267,3 +3267,112 @@ fn built_in_app_repaints_after_resize_round_trip_between_frames() {
     host.paint_invalid(&mut windows, &mut scene);
     assert!(scene.damage_rect(0).is_none(), "idle apps must stop repainting");
 }
+
+#[test]
+fn screen_lock_and_unlock_lifecycle() {
+    let mut scene = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+    assert!(!wm.locked);
+
+    // Lock the screen
+    wm.lock(&mut scene);
+    assert!(wm.locked);
+    assert_eq!(wm.lock_password.as_str(), "");
+    assert!(!wm.lock_error);
+
+    // Typing password "secret"
+    for b in b"secret" {
+        let ev = proto::KeyEvent {
+            keycode: 0,
+            modifiers: 0,
+            state: proto::KEY_STATE_PRESS,
+            ascii: *b,
+            reserved: 0,
+        };
+        assert!(wm.intercept_key(ev, &mut scene));
+    }
+    assert_eq!(wm.lock_password.as_str(), "secret");
+
+    // Enter to unlock
+    let enter_ev = proto::KeyEvent {
+        keycode: proto::KEY_ENTER,
+        modifiers: 0,
+        state: proto::KEY_STATE_PRESS,
+        ascii: b'\n',
+        reserved: 0,
+    };
+    assert!(wm.intercept_key(enter_ev, &mut scene));
+    assert!(!wm.locked, "screen must unlock with valid password");
+    assert_eq!(wm.lock_password.as_str(), "");
+    assert!(!wm.lock_error);
+}
+
+#[test]
+fn screen_lock_blocks_shortcuts_and_rejects_bad_password() {
+    let mut scene = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+    wm.lock(&mut scene);
+    assert!(wm.locked);
+
+    // Global shortcut Alt+Tab must be consumed and blocked while locked
+    let alt_tab = proto::KeyEvent {
+        keycode: proto::KEY_TAB,
+        modifiers: proto::MOD_ALT,
+        state: proto::KEY_STATE_PRESS,
+        ascii: 0,
+        reserved: 0,
+    };
+    assert!(wm.intercept_key(alt_tab, &mut scene));
+    assert!(!wm.switcher_open, "Alt+Tab switcher must not open while locked");
+
+    // Super key must not toggle start menu
+    let super_ev = proto::KeyEvent {
+        keycode: proto::KEY_LEFTMETA,
+        modifiers: 0,
+        state: proto::KEY_STATE_PRESS,
+        ascii: 0,
+        reserved: 0,
+    };
+    assert!(wm.intercept_key(super_ev, &mut scene));
+    assert!(!wm.start_open, "Start menu must not open while locked");
+
+    // Bad password attempt
+    for b in b"wrongpassword" {
+        let ev = proto::KeyEvent {
+            keycode: 0,
+            modifiers: 0,
+            state: proto::KEY_STATE_PRESS,
+            ascii: *b,
+            reserved: 0,
+        };
+        assert!(wm.intercept_key(ev, &mut scene));
+    }
+    let enter_ev = proto::KeyEvent {
+        keycode: proto::KEY_ENTER,
+        modifiers: 0,
+        state: proto::KEY_STATE_PRESS,
+        ascii: b'\n',
+        reserved: 0,
+    };
+    assert!(wm.intercept_key(enter_ev, &mut scene));
+    assert!(wm.locked, "screen must remain locked after wrong password");
+    assert!(wm.lock_error, "lock_error flag must be set");
+    assert_eq!(wm.lock_password.as_str(), "", "password must be cleared on failure");
+}
+
+#[test]
+fn screen_lock_super_l_shortcut() {
+    let mut scene = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+    assert!(!wm.locked);
+
+    let lock_ev = proto::KeyEvent {
+        keycode: 38, // KEY_L
+        modifiers: proto::MOD_SUPER,
+        state: proto::KEY_STATE_PRESS,
+        ascii: b'l',
+        reserved: 0,
+    };
+    assert!(wm.intercept_key(lock_ev, &mut scene));
+    assert!(wm.locked, "Super+L must lock the screen");
+}

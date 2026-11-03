@@ -10,9 +10,12 @@ use crate::{
 use alloc::{string::String, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[allow(dead_code)]
 pub const NOTEPAD_BG: u32 = 0xff252525;
 pub const NOTEPAD_FG: u32 = 0xffe0e0e0;
+#[allow(dead_code)]
 pub const NOTEPAD_HEADER: u32 = 0xff1e1e1e;
+#[allow(dead_code)]
 pub const NOTEPAD_LINENUM: u32 = 0xff666666;
 pub const NOTEPAD_CURSOR: u32 = 0xff007aff;
 

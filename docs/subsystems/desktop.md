@@ -200,3 +200,14 @@ statically using `user/libui/app.ld`. See [Building Desktop Applications with li
 for a comprehensive tutorial, API reference, and packaging walkthrough. `libui`
 is a source-level SDK; binary compatibility with the compositor remains strictly
 governed by `desktop_proto.h` and base syscall contracts.
+
+## Display Manager & Lock Screen (`/bin/desktop-greeter` & `/bin/desktop-unlock`)
+
+FortressOS boots directly into the graphical display manager when a framebuffer is present:
+- **Default Graphical Boot:** In `src/kernel/main.c`, the kernel launches `/bin/desktop-greeter` when framebuffer graphics are available and `console=text` is absent. If the greeter fails or the machine is headless, boot automatically falls back to text-mode `/bin/login`.
+- **Display Manager (`/bin/desktop-greeter`):** Built with `libui` (`user/apps/greeter`), runs with root display authorization (`euid == 0`), acquires exclusive VRAM lease (`SYS_FB_ACQUIRE`), renders a centered glass login card with `TextField<32>` and masked `TextField<64>`, and authenticates credentials via `/bin/desktop-unlock`. On success, it releases the display lease (`SYS_FB_RELEASE`), drops privileges to the user's UID/GID, and launches `/usr/bin/desktop`.
+- **Integrated Lock Screen:** Pressing `Super+L` or selecting "Lock Screen" in the compositor enters an exclusive modal locked state:
+  - All open windows and docks are obscured behind a 75% dark frosted glass scrim.
+  - All shortcut delivery (`Alt+Tab`, `Super`, SAK) to client applications is strictly revoked.
+  - A centered unlock card presents masked password input.
+  - Credential verification uses the setuid-root helper `/bin/desktop-unlock` (mode `04755`), verifying the password against `/etc/shadow` via `userdb` without exposing shadow contents to the unprivileged desktop session. Passwords in memory are zeroed immediately with volatile writes.
