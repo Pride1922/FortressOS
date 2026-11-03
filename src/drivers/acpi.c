@@ -210,6 +210,36 @@ acpi_sdt_header_t *acpi_find_table(const char *signature) {
     return NULL;
 }
 
+const acpi_sdt_header_t *acpi_get_dsdt(void) {
+    static const acpi_sdt_header_t *cached_dsdt = NULL;
+    if (cached_dsdt) return cached_dsdt;
+
+    acpi_sdt_header_t *facp_hdr = acpi_find_table("FACP");
+    if (!facp_hdr || facp_hdr->length < sizeof(acpi_sdt_header_t)) {
+        return NULL;
+    }
+
+    const acpi_fadt_t *fadt = (const acpi_fadt_t *)facp_hdr;
+    uintptr_t hhdm = acpi_get_hhdm_offset();
+    uintptr_t dsdt_phys = 0;
+    if (fadt->header.length >= 148 && fadt->x_dsdt != 0) {
+        dsdt_phys = (uintptr_t)fadt->x_dsdt;
+    } else if (fadt->header.length >= 44 && fadt->dsdt != 0) {
+        dsdt_phys = (uintptr_t)fadt->dsdt;
+    }
+
+    if (dsdt_phys == 0) return NULL;
+    if (!acpi_ensure_mapped(dsdt_phys, sizeof(acpi_sdt_header_t))) return NULL;
+
+    const acpi_sdt_header_t *dsdt_hdr = (const acpi_sdt_header_t *)(dsdt_phys + hhdm);
+    if (dsdt_hdr->length < sizeof(acpi_sdt_header_t) || dsdt_hdr->length > MAX_ACPI_TABLE_SIZE) return NULL;
+    if (!acpi_ensure_mapped(dsdt_phys, dsdt_hdr->length)) return NULL;
+    if (memcmp(dsdt_hdr->signature, "DSDT", 4) != 0 || !acpi_validate_checksum(dsdt_hdr)) return NULL;
+
+    cached_dsdt = dsdt_hdr;
+    return cached_dsdt;
+}
+
 size_t acpi_get_table_count(void) {
     if (!g_root_sdt || g_root_sdt->length < sizeof(acpi_sdt_header_t)) {
         return 0;

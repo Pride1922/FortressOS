@@ -301,6 +301,54 @@ static void test_ac_and_thermal(void) {
     puts("       [PASS] AC adapter and thermal zone evaluation verified");
 }
 
+static void test_ec_field_parsing_and_status(void) {
+    puts("[TEST 7] AML EC Field Decoding & Dynamic EC Status...");
+    uint8_t ec_field_aml[] = {
+        0x5B, 0x81, 0x25, /* FieldOp, PkgLength = 37 */
+        'E', 'C', 'O', 'R', /* RegionName */
+        0x01, /* FieldFlags */
+        0x00, 0x40, 0x08, /* ReservedField (Offset 0x10 = 128 bits) */
+        'B', '1', 'S', 'T', 0x08, /* B1ST, 8 bits */
+        'B', '1', 'P', 'R', 0x10, /* B1PR, 16 bits */
+        'B', '1', 'R', 'C', 0x10, /* B1RC, 16 bits */
+        'B', '1', 'P', 'V', 0x10, /* B1PV, 16 bits */
+        0x00, 0x48, 0x0C, /* ReservedField (skip 200 bits to 0x30) */
+        'B', '1', 'F', 'C', 0x10  /* B1FC, 16 bits */
+    };
+
+    acpi_ec_battery_map_t map;
+    memset(&map, 0, sizeof(map));
+    assert(acpi_parse_ec_fields(ec_field_aml, sizeof(ec_field_aml), &map));
+    assert(map.found_rem && map.found_full && map.found_state && map.found_rate && map.found_volt);
+    assert(map.state_offset == 0x10 && map.state_bits == 8);
+    assert(map.rate_offset == 0x11 && map.rate_bits == 16);
+    assert(map.rem_cap_offset == 0x13 && map.rem_cap_bits == 16);
+    assert(map.volt_offset == 0x15 && map.volt_bits == 16);
+    assert(map.full_cap_offset == 0x30 && map.full_cap_bits == 16);
+
+    /* Test reading via dynamic EC map */
+    memset(s_mock_ec_regs, 0, sizeof(s_mock_ec_regs));
+    s_mock_ec_regs[0x10] = 0x02; /* Charging */
+    s_mock_ec_regs[0x11] = 0xDC; /* Rate = 1500 */
+    s_mock_ec_regs[0x12] = 0x05;
+    s_mock_ec_regs[0x13] = 0x9A; /* Rem = 4250 */
+    s_mock_ec_regs[0x14] = 0x10;
+    s_mock_ec_regs[0x15] = 0x88; /* Volt = 11400 */
+    s_mock_ec_regs[0x16] = 0x2C;
+    s_mock_ec_regs[0x30] = 0x88; /* Full = 5000 */
+    s_mock_ec_regs[0x31] = 0x13;
+
+    acpi_battery_set_ec_reader(mock_ec_reader);
+    battery_status_t st;
+    memset(&st, 0, sizeof(st));
+    assert(acpi_read_ec_battery(&map, &st));
+    assert(st.capacity_percent == 85);
+    assert(st.state == BATTERY_STATE_CHARGING);
+    assert(st.voltage_mv == 11400);
+
+    puts("       [PASS] Dynamic AML EC Field parsing and EC status verified");
+}
+
 int main(void) {
     puts("=== Running FortressOS ACPI Battery Verification Suite ===");
     test_percentage_calculation();
@@ -310,6 +358,7 @@ int main(void) {
     test_mock_ec_and_caching();
     test_unavailable_refresh();
     test_ac_and_thermal();
+    test_ec_field_parsing_and_status();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;
 }

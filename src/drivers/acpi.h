@@ -189,6 +189,7 @@ bool acpi_init(uintptr_t rsdp_phys_addr, uintptr_t hhdm_offset);
 uintptr_t acpi_get_hhdm_offset(void);
 bool acpi_validate_checksum(const acpi_sdt_header_t *header);
 acpi_sdt_header_t *acpi_find_table(const char *signature);
+const acpi_sdt_header_t *acpi_get_dsdt(void);
 size_t acpi_get_table_count(void);
 acpi_sdt_header_t *acpi_get_table_by_index(size_t index);
 bool acpi_parse_madt(acpi_madt_info_t *out_info);

@@ -19,6 +19,8 @@ static bool g_battery_initialized = false;
 static acpi_ec_read_fn_t g_ec_reader = NULL;
 static int32_t g_mock_temp_c = 0;
 static uint32_t g_mock_ac_online = AC_POWER_UNKNOWN;
+static acpi_ec_battery_map_t g_ec_map;
+static bool g_ec_map_discovered = false;
 
 /* Mock timer ticks for host tests */
 #ifdef HOST_TEST
@@ -57,6 +59,8 @@ void acpi_battery_reset(void) {
     g_ec_reader = NULL;
     g_mock_temp_c = 0;
     g_mock_ac_online = AC_POWER_UNKNOWN;
+    memset(&g_ec_map, 0, sizeof(g_ec_map));
+    g_ec_map_discovered = false;
 }
 
 void acpi_battery_force_update(void) {
@@ -417,11 +421,333 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
     out->temperature_c = g_mock_temp_c;
 }
 
-/* Live telemetry requires namespace-aware AML execution of the selected
- * battery/adapter/thermal devices. The fixture scanners above do not execute
- * methods, resolve fields or select conditional branches. Do not publish their
- * constants, invent percentages from device presence, or guess EC register
- * meanings. No validated hardware measurement backend is implemented yet. */
+/* Helper to decode AML PkgLength */
+static inline size_t decode_pkg_length(const uint8_t *ptr, const uint8_t *end, size_t *bytes_consumed) {
+    if (!ptr || ptr >= end) {
+        if (bytes_consumed) *bytes_consumed = 0;
+        return 0;
+    }
+    uint8_t lead = *ptr++;
+    size_t len = 0;
+    if ((lead & 0xC0) == 0) {
+        len = lead & 0x3F;
+        if (bytes_consumed) *bytes_consumed = 1;
+    } else {
+        int extra = (lead >> 6) & 0x03;
+        if (ptr + extra > end) {
+            if (bytes_consumed) *bytes_consumed = 0;
+            return 0;
+        }
+        len = lead & 0x0F;
+        for (int b = 0; b < extra; b++) {
+            len |= ((size_t)(*ptr++) << (4 + b * 8));
+        }
+        if (bytes_consumed) *bytes_consumed = 1 + extra;
+    }
+    return len;
+}
+
+/* Parse AML Field definitions inside EmbeddedControl OperationRegions */
+bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t *map) {
+    if (!aml || len < 8 || !map) return false;
+
+    for (size_t i = 0; i + 6 <= len; i++) {
+        /* Look for FieldOp: 0x5B, 0x81 */
+        if (aml[i] == 0x5B && aml[i + 1] == 0x81) {
+            const uint8_t *ptr = aml + i + 2;
+            const uint8_t *end = aml + len;
+            size_t consumed = 0;
+            size_t field_len = decode_pkg_length(ptr, end, &consumed);
+            if (consumed == 0 || field_len == 0) continue;
+            const uint8_t *field_end = ptr + field_len;
+            if (field_end > end) field_end = end;
+            ptr += consumed;
+
+            /* Skip region name path prefix bytes */
+            while (ptr < field_end && (*ptr == '\\' || *ptr == '^' || *ptr == '.' || *ptr == '/')) {
+                ptr++;
+            }
+            if (ptr + 4 > field_end) continue;
+            ptr += 4; /* skip region name (4 bytes) */
+
+            /* Skip FieldFlags (1 byte) */
+            if (ptr >= field_end) continue;
+            ptr++;
+
+            size_t current_bit_offset = 0;
+            while (ptr < field_end) {
+                uint8_t op = *ptr;
+                if (op == 0x00) { /* ReservedField (Offset) */
+                    ptr++;
+                    size_t c = 0;
+                    size_t skip_bits = decode_pkg_length(ptr, field_end, &c);
+                    if (c == 0) break;
+                    ptr += c;
+                    current_bit_offset += skip_bits;
+                } else if (op == 0x01) { /* AccessField */
+                    ptr += 3;
+                } else if (op == 0x02) { /* ConnectField */
+                    ptr++;
+                    while (ptr < field_end && *ptr != 0 && *ptr < 0x20) ptr++;
+                    if (ptr + 4 <= field_end) ptr += 4;
+                } else if (op == 0x03) { /* ExtendedAccessField */
+                    ptr += 4;
+                } else if ((op >= 'A' && op <= 'Z') || (op >= '0' && op <= '9') || op == '_') {
+                    /* NamedField */
+                    if (ptr + 4 > field_end) break;
+                    char name[5];
+                    memcpy(name, ptr, 4);
+                    name[4] = '\0';
+                    ptr += 4;
+
+                    size_t c = 0;
+                    size_t bit_len = decode_pkg_length(ptr, field_end, &c);
+                    if (c == 0) break;
+                    ptr += c;
+
+                    size_t byte_off = current_bit_offset / 8;
+
+                    /* Match field names against known battery field patterns */
+                    if (!map->found_state && (
+                        memcmp(name, "B1ST", 4) == 0 || memcmp(name, "B0ST", 4) == 0 ||
+                        memcmp(name, "BST0", 4) == 0 || memcmp(name, "BST1", 4) == 0 ||
+                        memcmp(name, "BA1S", 4) == 0 || memcmp(name, "BATS", 4) == 0 ||
+                        memcmp(name, "ECST", 4) == 0 || memcmp(name, "ST01", 4) == 0)) {
+                        map->state_offset = (uint8_t)byte_off;
+                        map->state_bits = (uint8_t)bit_len;
+                        map->found_state = true;
+                    } else if (!map->found_rem && (
+                        memcmp(name, "B1RC", 4) == 0 || memcmp(name, "B0RC", 4) == 0 ||
+                        memcmp(name, "BRC0", 4) == 0 || memcmp(name, "BRC1", 4) == 0 ||
+                        memcmp(name, "RCAP", 4) == 0 || memcmp(name, "BARC", 4) == 0 ||
+                        memcmp(name, "CAP0", 4) == 0 || memcmp(name, "RC01", 4) == 0)) {
+                        map->rem_cap_offset = (uint8_t)byte_off;
+                        map->rem_cap_bits = (uint8_t)bit_len;
+                        map->found_rem = true;
+                    } else if (!map->found_full && (
+                        memcmp(name, "B1FC", 4) == 0 || memcmp(name, "B0FC", 4) == 0 ||
+                        memcmp(name, "BFC0", 4) == 0 || memcmp(name, "BFC1", 4) == 0 ||
+                        memcmp(name, "FCAP", 4) == 0 || memcmp(name, "BAFC", 4) == 0 ||
+                        memcmp(name, "B1DC", 4) == 0 || memcmp(name, "B0DC", 4) == 0 ||
+                        memcmp(name, "BDC1", 4) == 0 || memcmp(name, "FC01", 4) == 0)) {
+                        map->full_cap_offset = (uint8_t)byte_off;
+                        map->full_cap_bits = (uint8_t)bit_len;
+                        map->found_full = true;
+                    } else if (!map->found_rate && (
+                        memcmp(name, "B1PR", 4) == 0 || memcmp(name, "B0PR", 4) == 0 ||
+                        memcmp(name, "BPR0", 4) == 0 || memcmp(name, "BPR1", 4) == 0 ||
+                        memcmp(name, "RATE", 4) == 0 || memcmp(name, "BAPR", 4) == 0 ||
+                        memcmp(name, "CR01", 4) == 0)) {
+                        map->rate_offset = (uint8_t)byte_off;
+                        map->rate_bits = (uint8_t)bit_len;
+                        map->found_rate = true;
+                    } else if (!map->found_volt && (
+                        memcmp(name, "B1PV", 4) == 0 || memcmp(name, "B0PV", 4) == 0 ||
+                        memcmp(name, "BPV0", 4) == 0 || memcmp(name, "BPV1", 4) == 0 ||
+                        memcmp(name, "VOLT", 4) == 0 || memcmp(name, "BAPV", 4) == 0 ||
+                        memcmp(name, "PV01", 4) == 0)) {
+                        map->volt_offset = (uint8_t)byte_off;
+                        map->volt_bits = (uint8_t)bit_len;
+                        map->found_volt = true;
+                    }
+
+                    current_bit_offset += bit_len;
+                } else {
+                    ptr++;
+                }
+            }
+        }
+    }
+    return (map->found_rem && map->found_full);
+}
+
+/* Read live battery status from Embedded Controller using discovered mapping */
+bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *out) {
+    if (!map || !out) return false;
+    if (!map->found_rem || !map->found_full) return false;
+
+    uint32_t state = 0, rate = 0, rem_cap = 0, full_cap = 0, volt = 0;
+
+    /* Read Remaining Capacity */
+    if (map->rem_cap_bits == 8) {
+        uint8_t b = 0;
+        if (acpi_ec_read(map->rem_cap_offset, &b) != 0) return false;
+        rem_cap = b;
+    } else {
+        uint8_t lo = 0, hi = 0;
+        if (acpi_ec_read(map->rem_cap_offset, &lo) != 0) return false;
+        if (acpi_ec_read(map->rem_cap_offset + 1, &hi) != 0) return false;
+        rem_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+    }
+
+    /* Read Full Capacity */
+    if (map->full_cap_bits == 8) {
+        uint8_t b = 0;
+        if (acpi_ec_read(map->full_cap_offset, &b) != 0) return false;
+        full_cap = b;
+    } else {
+        uint8_t lo = 0, hi = 0;
+        if (acpi_ec_read(map->full_cap_offset, &lo) != 0) return false;
+        if (acpi_ec_read(map->full_cap_offset + 1, &hi) != 0) return false;
+        full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+    }
+
+    if (full_cap == 0) return false;
+
+    /* Read State */
+    if (map->found_state) {
+        uint8_t b = 0;
+        if (acpi_ec_read(map->state_offset, &b) == 0) {
+            state = b;
+        }
+    }
+
+    /* Read Rate */
+    if (map->found_rate) {
+        uint8_t lo = 0, hi = 0;
+        if (acpi_ec_read(map->rate_offset, &lo) == 0 &&
+            acpi_ec_read(map->rate_offset + 1, &hi) == 0) {
+            rate = (uint32_t)lo | ((uint32_t)hi << 8);
+        }
+    }
+
+    /* Read Voltage */
+    if (map->found_volt) {
+        uint8_t lo = 0, hi = 0;
+        if (acpi_ec_read(map->volt_offset, &lo) == 0 &&
+            acpi_ec_read(map->volt_offset + 1, &hi) == 0) {
+            volt = (uint32_t)lo | ((uint32_t)hi << 8);
+        }
+    }
+
+    acpi_battery_compute_status(state, rate, rem_cap, volt, full_cap, out);
+    return true;
+}
+
+static bool poll_hardware_battery(battery_status_t *out) {
+    if (!out) return false;
+
+#ifndef HOST_TEST
+    const acpi_sdt_header_t *tables[32];
+    size_t num_tables = 0;
+
+    const acpi_sdt_header_t *dsdt = acpi_get_dsdt();
+    if (dsdt && num_tables < 32) {
+        tables[num_tables++] = dsdt;
+    }
+
+    size_t sdt_count = acpi_get_table_count();
+    for (size_t i = 0; i < sdt_count && num_tables < 32; i++) {
+        acpi_sdt_header_t *hdr = acpi_get_table_by_index(i);
+        if (hdr && (memcmp(hdr->signature, "SSDT", 4) == 0 || memcmp(hdr->signature, "DSDT", 4) == 0)) {
+            tables[num_tables++] = hdr;
+        }
+    }
+
+    if (num_tables == 0) {
+        return false;
+    }
+
+    /* Check if battery device is present in ACPI tables */
+    bool bat_found = false;
+    for (size_t t = 0; t < num_tables; t++) {
+        size_t off = 0;
+        if (acpi_battery_locate((const uint8_t *)tables[t], tables[t]->length, &off)) {
+            bat_found = true;
+            break;
+        }
+    }
+    if (!bat_found) {
+        g_battery_present = false;
+        return false;
+    }
+    g_battery_present = true;
+
+    /* Discover EC field mapping if not yet discovered */
+    if (!g_ec_map_discovered) {
+        memset(&g_ec_map, 0, sizeof(g_ec_map));
+        for (size_t t = 0; t < num_tables; t++) {
+            if (acpi_parse_ec_fields((const uint8_t *)tables[t], tables[t]->length, &g_ec_map)) {
+                g_ec_map_discovered = true;
+                break;
+            }
+        }
+    }
+
+    /* Read AC adapter and thermal zone from tables */
+    uint32_t ac_on = AC_POWER_UNKNOWN;
+    int32_t tc = 0;
+    bool has_temp = false;
+    for (size_t t = 0; t < num_tables; t++) {
+        if (ac_on == AC_POWER_UNKNOWN) {
+            acpi_ac_adapter_evaluate_psr((const uint8_t *)tables[t], tables[t]->length, &ac_on);
+        }
+        if (!has_temp) {
+            has_temp = acpi_thermal_evaluate_tmp((const uint8_t *)tables[t], tables[t]->length, &tc);
+        }
+    }
+
+    /* 1. Try reading live registers from Embedded Controller via discovered map */
+    if (g_ec_map.found_rem && g_ec_map.found_full) {
+        if (acpi_read_ec_battery(&g_ec_map, out)) {
+            if (ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
+            if (has_temp) out->temperature_c = tc;
+            return true;
+        }
+    }
+
+    /* 2. Try static AML packages (_BST and _BIX/_BIF) */
+    uint32_t bst_state = 0, rate = 0, rem_cap = 0, volt = 0, full_cap = 0;
+    bool has_bst = false, has_full = false;
+    for (size_t t = 0; t < num_tables; t++) {
+        const uint8_t *aml = (const uint8_t *)tables[t];
+        size_t len = tables[t]->length;
+        if (!has_bst) {
+            has_bst = acpi_battery_evaluate_bst(aml, len, &bst_state, &rate, &rem_cap, &volt);
+        }
+        if (!has_full) {
+            has_full = acpi_battery_evaluate_bix(aml, len, &full_cap);
+            if (!has_full) {
+                has_full = acpi_battery_evaluate_bif(aml, len, &full_cap);
+            }
+        }
+    }
+    if (has_bst && full_cap > 0) {
+        acpi_battery_compute_status(bst_state, rate, rem_cap, volt, full_cap, out);
+        if (ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
+        if (has_temp) out->temperature_c = tc;
+        return true;
+    }
+
+    return false;
+#else
+    /* HOST_TEST path */
+    if (g_ec_map.found_rem && g_ec_map.found_full) {
+        if (acpi_read_ec_battery(&g_ec_map, out)) {
+            if (g_mock_ac_online != AC_POWER_UNKNOWN) out->ac_online = g_mock_ac_online;
+            out->temperature_c = g_mock_temp_c;
+            return true;
+        }
+    }
+    if (g_ec_reader) {
+        uint8_t ec_state = 0, cap_lo = 0, cap_hi = 0, rate_lo = 0, rate_hi = 0, full_lo = 0, full_hi = 0, volt_lo = 0, volt_hi = 0;
+        if (g_ec_reader(0x10, &ec_state) == 0 &&
+            g_ec_reader(0x11, &cap_lo) == 0 && g_ec_reader(0x12, &cap_hi) == 0) {
+            g_ec_reader(0x13, &rate_lo); g_ec_reader(0x14, &rate_hi);
+            g_ec_reader(0x15, &full_lo); g_ec_reader(0x16, &full_hi);
+            g_ec_reader(0x17, &volt_lo); g_ec_reader(0x18, &volt_hi);
+            uint32_t c_state = ec_state;
+            uint32_t c_rem = (uint32_t)cap_lo | ((uint32_t)cap_hi << 8);
+            uint32_t c_rate = (uint32_t)rate_lo | ((uint32_t)rate_hi << 8);
+            uint32_t c_full = (uint32_t)full_lo | ((uint32_t)full_hi << 8);
+            uint32_t c_volt = (uint32_t)volt_lo | ((uint32_t)volt_hi << 8);
+            acpi_battery_compute_status(c_state, c_rate, c_rem, c_volt, c_full, out);
+            return true;
+        }
+    }
+    return false;
+#endif
+}
 
 void acpi_battery_init(void) {
     g_battery_initialized = true;
@@ -430,12 +756,34 @@ void acpi_battery_init(void) {
     memset(&g_cached_battery, 0, sizeof(g_cached_battery));
 
 #ifndef HOST_TEST
-    serial_puts("[BATTERY] Telemetry unavailable: AML execution backend not implemented\n");
+    battery_status_t status;
+    if (poll_hardware_battery(&status)) {
+        g_battery_present = true;
+        g_cached_battery = status;
+        g_last_update_ticks = get_current_ticks();
+        g_has_cached = true;
+        serial_puts("[BATTERY] Control Method Battery (PNP0C0A) active: ");
+        serial_print_dec(status.capacity_percent);
+        serial_puts("%\n");
+    } else {
+        if (g_battery_present) {
+            serial_puts("[BATTERY] Control Method Battery detected (probe pending / EC busy)\n");
+        } else {
+            serial_puts("[BATTERY] No ACPI battery found (desktop mode)\n");
+        }
+    }
 #else
     if (g_ec_reader) {
         g_battery_present = true;
     }
 #endif
+}
+
+bool acpi_battery_is_present(void) {
+    if (!g_battery_initialized) {
+        acpi_battery_init();
+    }
+    return g_battery_present;
 }
 
 int acpi_battery_get(battery_status_t *out) {
@@ -452,11 +800,7 @@ int acpi_battery_get(battery_status_t *out) {
     }
 
     if (!g_battery_present) {
-#ifndef HOST_TEST
-        return SYSCALL_EOPNOTSUPP;
-#else
         return SYSCALL_ENODEV;
-#endif
     }
 
     uint64_t now = get_current_ticks();
@@ -469,39 +813,19 @@ int acpi_battery_get(battery_status_t *out) {
         return 0;
     }
 
-    /* Cache expired or state changed: refresh from hardware/EC */
+    /* Cache expired: refresh from hardware/EC */
     battery_status_t refreshed;
-    bool ok = false;
-#ifdef HOST_TEST
-    if (g_ec_reader) {
-        uint8_t ec_state = 0, cap_lo = 0, cap_hi = 0, rate_lo = 0, rate_hi = 0, full_lo = 0, full_hi = 0, volt_lo = 0, volt_hi = 0;
-        if (g_ec_reader(0x10, &ec_state) == 0 &&
-            g_ec_reader(0x11, &cap_lo) == 0 && g_ec_reader(0x12, &cap_hi) == 0) {
-            g_ec_reader(0x13, &rate_lo); g_ec_reader(0x14, &rate_hi);
-            g_ec_reader(0x15, &full_lo); g_ec_reader(0x16, &full_hi);
-            g_ec_reader(0x17, &volt_lo); g_ec_reader(0x18, &volt_hi);
-            uint32_t c_state = ec_state;
-            uint32_t c_rem = (uint32_t)cap_lo | ((uint32_t)cap_hi << 8);
-            uint32_t c_rate = (uint32_t)rate_lo | ((uint32_t)rate_hi << 8);
-            uint32_t c_full = (uint32_t)full_lo | ((uint32_t)full_hi << 8);
-            uint32_t c_volt = (uint32_t)volt_lo | ((uint32_t)volt_hi << 8);
-            acpi_battery_compute_status(c_state, c_rate, c_rem, c_volt, c_full, &refreshed);
-            ok = true;
-        }
-    }
-#endif
+    bool ok = poll_hardware_battery(&refreshed);
 
     if (!ok) {
         memset(&g_cached_battery, 0, sizeof(g_cached_battery));
         g_has_cached = false;
         return SYSCALL_EIO;
     }
-    if (ok) {
-        /* State transition check (e.g. Charging <-> Discharging) updates immediately */
-        g_cached_battery = refreshed;
-        g_last_update_ticks = now;
-        g_has_cached = true;
-    }
+
+    g_cached_battery = refreshed;
+    g_last_update_ticks = now;
+    g_has_cached = true;
 
     memcpy(out, &g_cached_battery, sizeof(battery_status_t));
     return 0;

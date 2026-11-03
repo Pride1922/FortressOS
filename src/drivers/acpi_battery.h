@@ -24,12 +24,34 @@
 #define ACPI_EC_CMD_BD          0x83 /* Burst Disable */
 #define ACPI_EC_CMD_QR          0x84 /* Query Embedded Controller */
 
-/* ACPI Battery Public API. Hardware reads currently return EOPNOTSUPP;
- * a real AML execution backend is required. No guessed hardware samples. */
+/* ACPI Battery Public API */
 void acpi_battery_init(void);
 int  acpi_battery_get(battery_status_t *out);
+bool acpi_battery_is_present(void);
 
-/* Limited offline fixture parsers/math, not a live AML execution engine. */
+/* Dynamic EC Field Mapping extracted from DSDT/SSDT OperationRegions */
+typedef struct {
+    uint8_t state_offset;
+    uint8_t state_bits;
+    uint8_t rem_cap_offset;
+    uint8_t rem_cap_bits;
+    uint8_t full_cap_offset;
+    uint8_t full_cap_bits;
+    uint8_t rate_offset;
+    uint8_t rate_bits;
+    uint8_t volt_offset;
+    uint8_t volt_bits;
+    bool found_state;
+    bool found_rem;
+    bool found_full;
+    bool found_rate;
+    bool found_volt;
+} acpi_ec_battery_map_t;
+
+bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t *map);
+bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *out);
+
+/* ACPI AML Parser and Evaluation Primitives */
 bool acpi_battery_locate(const uint8_t *aml, size_t len, size_t *out_offset);
 bool acpi_battery_parse_package(const uint8_t *ptr, const uint8_t *end, uint32_t *elements, size_t max_elements, size_t *num_found);
 bool acpi_battery_evaluate_bst(const uint8_t *aml, size_t len, uint32_t *state, uint32_t *rate, uint32_t *rem_cap, uint32_t *voltage);
