@@ -2264,7 +2264,7 @@ test-ext4-usb: all
 .PHONY: test-jbd2-replay-host
 test-jbd2-replay-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_replay_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_replay_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -DFORTRESS_DAC_ENFORCED -DFORTRESS_PKG_ENGINE=0 -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_replay_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/jbd2_replay_host
 	@python3 scripts/test_jbd2_replay_host.py
 
 .PHONY: test-ext4-namespace-host
@@ -2386,7 +2386,7 @@ test-ext4-transaction-host:
 .PHONY: test-jbd2-write-host
 test-jbd2-write-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_write_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_write_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -DFORTRESS_DAC_ENFORCED -DFORTRESS_PKG_ENGINE=0 -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_write_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/jbd2_write_host
 	@python3 scripts/test_jbd2_write_host.py
 
 .PHONY: test-perm-fs-host
@@ -2979,3 +2979,13 @@ test-boot-selftests-host:
 
 test-boot-selftests: $(BOOTABLE_ISO) test-boot-selftests-host
 	@python3 scripts/test_boot_selftests.py
+
+.PHONY: test-ext4-performance-host
+test-ext4-performance-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include tests/crc32c_host.c -o $(BUILD_DIR)/crc32c_host
+	@$(BUILD_DIR)/crc32c_host
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_preview_bulk_host.c -o $(BUILD_DIR)/jbd2_preview_bulk_host
+	@$(BUILD_DIR)/jbd2_preview_bulk_host
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -I. -Isrc/include -Isrc/kernel -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 tests/install_partition_bulk_host.c -o $(BUILD_DIR)/install_partition_bulk_host
+	@$(BUILD_DIR)/install_partition_bulk_host

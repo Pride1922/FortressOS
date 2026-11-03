@@ -1,5 +1,6 @@
 /* E4-A: bounded extent-backed reads and synchronous non-journaled writes. */
 #include "ext4.h"
+#include "crc32c.h"
 #include "pkg_engine_config.h"
 #include "vfs.h"
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
@@ -156,12 +157,7 @@ static uint64_t e4_tsc(void);
 static uint64_t e4_crc_calls,e4_crc_bytes,e4_crc_cycles,e4_crc_anomalies;
 /* Reflected Castagnoli, no final complement: ext4 chains raw CRC states. */
 static uint32_t e4_crc_impl(uint32_t crc, const void *data, size_t len) {
-    const uint8_t *p=data;
-    while (len--) {
-        crc ^= *p++;
-        for (unsigned b=0;b<8;b++) crc=(crc >> 1) ^ (0x82f63b78u & (0u-(crc & 1u)));
-    }
-    return crc;
+    return crc32c_raw(crc,data,len);
 }
 static uint32_t e4_crc(uint32_t crc,const void *data,size_t len) {
     uint64_t start=e4_tsc();uint32_t result=e4_crc_impl(crc,data,len);uint64_t end=e4_tsc();

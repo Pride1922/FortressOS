@@ -1,4 +1,5 @@
 #include "install_payload.h"
+#include "crc32c.h"
 #include "string.h"
 
 /* A new installation only: preserve the verified seed's existing inodes/data,
@@ -9,7 +10,7 @@ static uint16_t u16(const uint8_t *p) {return p[0]|(uint16_t)p[1]<<8;}
 static void p32(uint8_t *p,uint32_t n) {for (unsigned i=0;i<4;i++) p[i]=(uint8_t)(n>>(8*i));}
 static void p16(uint8_t *p,uint16_t n) {p[0]=(uint8_t)n;p[1]=(uint8_t)(n>>8);}
 static uint32_t crc(uint32_t c,const void *bytes,size_t n) {
-    const uint8_t *p=bytes;while (n--) {c^=*p++;for (unsigned i=0;i<8;i++) c=(c>>1)^(0x82f63b78u&(0u-(c&1)));}return c;
+    return crc32c_raw(c,bytes,n);
 }
 static bool power(uint32_t g,unsigned base) {while (g>1 && !(g%base)) g/=base;return g==1;}
 static bool backup(uint32_t g) {return !g || g==1 || power(g,3) || power(g,5) || power(g,7);}

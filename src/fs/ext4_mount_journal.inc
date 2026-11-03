@@ -4,6 +4,9 @@
 static bool e4_preview_sector(block_dev_t *dev,uint64_t lba,void *bytes) {
     return jbd2_preview_read_sector(dev->priv,lba,bytes);
 }
+static bool e4_preview_sectors(block_dev_t *dev,uint64_t lba,uint32_t count,void *bytes) {
+    return jbd2_preview_read_sectors(dev->priv,lba,count,bytes);
+}
 static bool e4_preview_write(block_dev_t *dev,uint64_t lba,const void *bytes) {
     (void)dev;(void)lba;(void)bytes;return false;
 }
@@ -61,7 +64,8 @@ static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
     if (!r) { e4_mount_stage(stage,"journal-analyze");r=jbd2_analyze(dev,&source,&plan,NULL); }
     kfree(map);map=NULL;e4_discard(bootstrap);bootstrap=NULL;if (r) goto fail;
     block_dev_t preview={.sector_size=dev->sector_size,.sector_count=dev->sector_count,
-        .read_sector=e4_preview_sector,.write_sector=e4_preview_write,.flush=e4_preview_flush,.priv=plan};
+        .read_sector=e4_preview_sector,.write_sector=e4_preview_write,.flush=e4_preview_flush,.priv=plan,
+        .read_sectors=e4_preview_sectors,.max_run_bytes=4096};
     e4_mount_stage(stage,"recovery-preview");
     r=e4_open_journal_orphans_owned(&preview,true,&engine,true,true);if (r) goto fail;
     /* Constructor checks complete allocation/reference ownership and orphans.

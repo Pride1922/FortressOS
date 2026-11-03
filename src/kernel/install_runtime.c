@@ -77,12 +77,19 @@ static int raw_flush(void *ctx) {
 }
 /* Partition adapter is private and never registered in block/devfs/GPT. The
  * outer control gate stays busy for the entire detached filesystem lifetime. */
-static bool part_read(block_dev_t *d,uint64_t l,void *p) {
-    return l<d->sector_count && !raw_read(d->priv,INSTALL_ROOT_LBA+l,1,p);
+static bool part_run_valid(const block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
+    return d && d->priv && p && d->sector_size==512 && n &&
+        n<=INSTALL_CHUNK_BYTES/512 && l<d->sector_count && n<=d->sector_count-l &&
+        l<=UINT64_MAX-INSTALL_ROOT_LBA && n-1<=UINT64_MAX-(INSTALL_ROOT_LBA+l);
 }
-static bool part_write(block_dev_t *d,uint64_t l,const void *p) {
-    return l<d->sector_count && !raw_write(d->priv,INSTALL_ROOT_LBA+l,1,p);
+static bool part_read_run(block_dev_t *d,uint64_t l,uint32_t n,void *p) {
+    return part_run_valid(d,l,n,p) && !raw_read(d->priv,INSTALL_ROOT_LBA+l,n,p);
 }
+static bool part_write_run(block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
+    return part_run_valid(d,l,n,p) && !raw_write(d->priv,INSTALL_ROOT_LBA+l,n,p);
+}
+static bool part_read(block_dev_t *d,uint64_t l,void *p) {return part_read_run(d,l,1,p);}
+static bool part_write(block_dev_t *d,uint64_t l,const void *p) {return part_write_run(d,l,1,p);}
 static bool part_flush(block_dev_t *d) {return !raw_flush(d->priv);}
 
 static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,const char *bytes,size_t size,bool existing,uint32_t mode) {
@@ -129,7 +136,8 @@ static int provision(void *ctx) {
         int expanded=install_root_expand(&target,w->plan.root_sectors,&w->expand);if (expanded) return expanded;
     }
     w->partition=(block_dev_t){.sector_size=512,.sector_count=w->plan.root_sectors ? w->plan.root_sectors : INSTALL_ROOT_BYTES/512,
-        .read_sector=part_read,.write_sector=part_write,.flush=part_flush,.priv=w};
+        .read_sector=part_read,.write_sector=part_write,.flush=part_flush,.priv=w,
+        .read_sectors=part_read_run,.write_sectors=part_write_run,.max_run_bytes=INSTALL_CHUNK_BYTES};
     int r=ext4_prepare_installer_root(&w->partition,true,&fs,NULL);
     if (r) return r;
     if (strcmp(w->username,"operator")) {

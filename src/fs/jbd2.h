@@ -47,6 +47,10 @@ int jbd2_replay(jbd2_plan_t *plan,bool writable_admitted);
  * superblock. Caller serializes reads with replay/release. No disk writes or
  * clean-state policy; enables filesystem validation BEFORE admitted replay. */
 bool jbd2_preview_read_sector(jbd2_plan_t *plan,uint64_t lba,void *bytes);
+/* Same serialized read-only view; complete run validated before I/O. At most
+ * 4096 bytes and the device run limit, no fallback retry after a run failure.
+ * Committed images, revokes and the synthetic journal superblock all apply. */
+bool jbd2_preview_read_sectors(jbd2_plan_t *plan,uint64_t lba,uint32_t count,void *bytes);
 void jbd2_release(jbd2_plan_t *plan);
 
 #define JBD2_WRITE_IMAGES_MAX 64u

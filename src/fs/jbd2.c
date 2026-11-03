@@ -1,4 +1,5 @@
 #include "jbd2.h"
+#include "crc32c.h"
 #include "vfs.h"
 #include "heap.h"
 #include "string.h"
@@ -25,8 +26,7 @@ static void j_put(uint8_t *p,uint32_t n) {
     p[0]=(uint8_t)(n>>24);p[1]=(uint8_t)(n>>16);p[2]=(uint8_t)(n>>8);p[3]=(uint8_t)n;
 }
 static uint32_t j_crc(uint32_t crc,const uint8_t *p,size_t n) {
-    while (n--) { crc^=*p++;for (unsigned b=0;b<8;b++) crc=(crc>>1)^(0x82f63b78u&(0u-(crc&1))); }
-    return crc;
+    return crc32c_raw(crc,p,n);
 }
 static bool j_sum(uint8_t *p,size_t n,size_t offset,uint32_t seed) {
     uint32_t stored=j_be(p+offset);j_put(p+offset,0);
@@ -169,11 +169,20 @@ static bool j_revoked(const jbd2_plan_t *p,unsigned i) {
         if (p->revoke[k].block==p->image[i].block && p->revoke[k].ordinal>=p->image[i].ordinal) return true;
     return false;
 }
-bool jbd2_preview_read_sector(jbd2_plan_t *p,uint64_t lba,void *bytes) {
+bool jbd2_preview_read_sectors(jbd2_plan_t *p,uint64_t lba,uint32_t count,void *bytes) {
     spin_debug_assert_unheld();
-    if (!p || p->poisoned || !bytes || lba>=p->dev->sector_count) return false;
-    if (!block_read_sector(p->dev,lba,bytes)) return false;
-    uint64_t lo=lba*p->dev->sector_size,hi=lo+p->dev->sector_size;
+    if (!p || p->poisoned || !p->dev || !bytes || !count) return false;
+    unsigned ss=p->dev->sector_size;
+    if (!ss || count>4096u/ss || count>block_get_max_run_bytes(p->dev)/ss ||
+        lba>=p->dev->sector_count || count>p->dev->sector_count-lba ||
+        lba>UINT64_MAX/ss) return false;
+    uint64_t lo=lba*ss,length=(uint64_t)count*ss;
+    if (length>UINT64_MAX-lo) return false;
+    /* One bounded underlying read; never retry a failed run as sectors. All
+     * committed, unrevoked overlays are applied afterward in original order. */
+    if (!(count==1 ? block_read_sector(p->dev,lba,bytes) :
+                    block_read_sectors(p->dev,lba,count,bytes))) return false;
+    uint64_t hi=lo+length;
     for (unsigned i=0;i<=p->images;i++) {
         uint32_t block;const uint8_t *source;
         if (i<p->images) {
@@ -194,6 +203,9 @@ bool jbd2_preview_read_sector(jbd2_plan_t *p,uint64_t lba,void *bytes) {
         }
     }
     return true;
+}
+bool jbd2_preview_read_sector(jbd2_plan_t *p,uint64_t lba,void *bytes) {
+    return jbd2_preview_read_sectors(p,lba,1,bytes);
 }
 #ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
 static block_dev_t *j_pause_partition;

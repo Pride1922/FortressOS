@@ -51,6 +51,17 @@ int main(int argc,char **argv) {
     assert(!r && p && !d.events && !memcmp(initial,d.volatile_bytes,n));
     printf("JBD2 analyzed: tx=%u images=%u revokes=%u skipped=%u tail=%u next=%u\n",report.transactions,report.images,report.revokes,report.revoked,report.incomplete_tail,report.next_sequence);
     size_t analyze_reads=reads,allocations=alloc_calls;
+    /* Compare the pre-replay bulk view with the independent Linux oracle.
+     * The ext4 superblock lifecycle bits are managed outside JBD2 replay. */
+    for (unsigned i=0;i<p->images;i++) {
+        uint64_t at=(uint64_t)p->image[i].block*p->bs;
+        if (p->image[i].block==1024/p->bs) continue;
+        uint8_t view[4096];uint64_t lba=at/ss;
+        uint32_t count=(uint32_t)((at%ss+p->bs+ss-1)/ss);
+        assert(jbd2_preview_read_sectors(p,lba,count,view));
+        assert(!memcmp(view+at%ss,oracle+at,p->bs));
+    }
+    assert(!d.events && !memcmp(initial,d.volatile_bytes,n));
     assert(jbd2_replay(p,false)==-VFS_EROFS && !d.events);
     d.trace=true;assert(!jbd2_replay(p,true));d.trace=false;size_t events=d.events;check(p,d.stable,oracle);
     size_t before=d.events;assert(!jbd2_replay(p,true) && before==d.events);
