@@ -710,10 +710,16 @@ fn dispatch_key_event(
     handle_key(b, scene, windows, clients, is_test)
 }
 
-/// Starts a terminal (/usr/bin/terminal when packaged, else /bin/terminal).
+/// Starts a terminal (/usr/bin/gterm or /bin/gterm when present, else fallback to legacy /bin/terminal).
 fn open_terminal(clients: &mut clients::Clients, scene: &Surface) {
-    let app = clients::installed(c"/usr/bin/terminal", c"/bin/terminal");
-    match clients.launch(app, &[], scene) {
+    let mut st = sys::StatExtV1::default();
+    let gterm = clients::installed(c"/usr/bin/gterm", c"/bin/gterm");
+    let target = if gterm.to_str().is_ok_and(|p| sys::stat_ext(p, &mut st) == 0 && st.file_type == 1) {
+        gterm
+    } else {
+        clients::installed(c"/usr/bin/terminal", c"/bin/terminal")
+    };
+    match clients.launch(target, &[], scene) {
         Ok(pid) => privilege::report(1, "[OK]", "Terminal started", Some(pid)),
         Err(e) => privilege::report(2, "[WARN]", "Terminal launch failed", Some(e)),
     }

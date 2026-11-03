@@ -536,6 +536,8 @@ mod surface;
 mod sys;
 #[path = "../user/compositor/src/terminal.rs"]
 mod terminal;
+#[path = "../user/compositor/src/term_engine.rs"]
+pub mod term_engine;
 #[path = "../user/compositor/src/wallpaper.rs"]
 #[allow(dead_code)]
 mod wallpaper;
@@ -3375,4 +3377,119 @@ fn screen_lock_super_l_shortcut() {
     };
     assert!(wm.intercept_key(lock_ev, &mut scene));
     assert!(wm.locked, "Super+L must lock the screen");
+}
+
+#[test]
+fn gterm_ansi_16_and_256_colors() {
+    let mut term = term_engine::TermEngine::new();
+    term.set_dimensions(80, 24);
+
+    // Red foreground: ESC [ 31 m
+    term.write_bytes(b"\x1b[31mRED");
+    assert_eq!(term.grid[0][0].ch, b'R');
+    assert_eq!(term.grid[0][0].fg, 1);
+
+    // Bold Green: ESC [ 1 ; 32 m
+    term.write_bytes(b"\x1b[1;32mGREEN");
+    assert_eq!(term.grid[0][3].ch, b'G');
+    assert_eq!(term.grid[0][3].fg, 2);
+    assert_ne!(term.grid[0][3].attrs & term_engine::ATTR_BOLD, 0);
+
+    // 256-color palette: ESC [ 38 ; 5 ; 196 m
+    term.write_bytes(b"\x1b[38;5;196m256CLR");
+    assert_eq!(term.grid[0][8].fg, 196);
+
+    // Reset: ESC [ 0 m
+    term.write_bytes(b"\x1b[0mRESET");
+    assert_eq!(term.grid[0][14].fg, term_engine::COLOR_CODE_DEFAULT_FG);
+    assert_eq!(term.grid[0][14].attrs, 0);
+}
+
+#[test]
+fn gterm_scrollback_ring_buffer() {
+    let mut term = term_engine::TermEngine::new();
+    term.set_dimensions(40, 5); // 5 rows
+
+    // Write 20 lines
+    for i in 0..20 {
+        term.write_bytes(b"Line ");
+        term.write_byte(b'0' + (i as u8 / 10));
+        term.write_byte(b'0' + (i as u8 % 10));
+        term.write_bytes(b"\r\n");
+    }
+
+    assert_eq!(term.scrollback.len(), 16);
+    assert_eq!(term.total_lines(), 16 + 5);
+
+    term.scroll_up(10);
+    assert_eq!(term.scroll_offset, 10);
+
+    term.scroll_down(5);
+    assert_eq!(term.scroll_offset, 5);
+
+    term.scroll_to_bottom();
+    assert_eq!(term.scroll_offset, 0);
+}
+
+#[test]
+fn gterm_smart_token_selection_path_aware() {
+    let mut term = term_engine::TermEngine::new();
+    term.set_dimensions(80, 10);
+
+    term.write_bytes(b"cat /etc/network/wlan.conf and exit\r\n");
+
+    // Double-click on 'w' in "wlan.conf" (column 17)
+    // "cat /etc/network/wlan.conf and exit"
+    //  01234567890123456789012345678901234
+    //  / is index 4. .conf ends at 25.
+    term.select_word_at(0, 17);
+
+    let sel = term.selected_text_plain();
+    assert_eq!(sel, Some(alloc::string::String::from("/etc/network/wlan.conf")));
+
+    // Double-click on "exit" (column 31)
+    term.select_word_at(0, 31);
+    assert_eq!(term.selected_text_plain(), Some(alloc::string::String::from("exit")));
+}
+
+#[test]
+fn gterm_global_buffer_find_ctrl_shift_f() {
+    let mut term = term_engine::TermEngine::new();
+    term.set_dimensions(80, 5);
+
+    term.write_bytes(b"error: unresolved symbol foo\r\n");
+    term.write_bytes(b"warning: unused variable bar\r\n");
+    term.write_bytes(b"error: build failed\r\n");
+
+    term.perform_search("error");
+    assert_eq!(term.search_matches.len(), 2);
+    assert_eq!(term.active_match_idx, 0);
+
+    assert_eq!(term.search_matches[0].col, 0);
+    assert_eq!(term.search_matches[0].len, 5);
+
+    term.next_match();
+    assert_eq!(term.active_match_idx, 1);
+    assert_eq!(term.search_matches[1].col, 0);
+
+    term.prev_match();
+    assert_eq!(term.active_match_idx, 0);
+}
+
+#[test]
+fn gterm_formatted_clipboard_export() {
+    let mut term = term_engine::TermEngine::new();
+    term.set_dimensions(80, 5);
+
+    term.write_bytes(b"\x1b[31mError\x1b[0m Normal");
+    term.select_word_at(0, 1);
+
+    let plain = term.selected_text_plain();
+    assert_eq!(plain, Some(alloc::string::String::from("Error")));
+
+    let formatted = term.selected_text_formatted();
+    assert!(formatted.is_some());
+    let fmt = formatted.unwrap();
+    assert!(fmt.contains("\x1b[31m"));
+    assert!(fmt.contains("Error"));
 }

@@ -47,6 +47,14 @@ test-accounts-persistent-host:
 test-accounts-persistent:
 	@python3 scripts/test_root_phase3.py
 
+.PHONY: test-vault-host
+test-vault-host:
+	@mkdir -p build/vault-host
+	@gcc -std=c11 -Wall -Wextra -Werror -Isrc/include -Itests -Isrc/lib/crypto/upstream/src -O2 -g -no-pie -include src/lib/crypto/namespace.h -c src/lib/crypto/upstream/src/monocypher.c -o build/vault-host/mono.o
+	@gcc -std=c11 -Wall -Wextra -Werror -Isrc/include -Itests -Isrc/lib/crypto/upstream/src -O2 -g -no-pie -include src/lib/crypto/namespace.h -c src/lib/crypto/upstream/src/optional/monocypher-ed25519.c -o build/vault-host/ed.o
+	@gcc -std=c11 -Wall -Wextra -Werror -Isrc/include -Iuser/vault -Itests -Isrc/lib/crypto/upstream/src -O2 -g -no-pie -DTOOL_HOST_TEST tests/vault_host.c user/vault/vault_crypto.c user/vault/vault_db.c user/vault/vault_main.c src/lib/crypto/hash.c src/lib/crypto/aead.c src/lib/root_digest.c build/vault-host/mono.o build/vault-host/ed.o -o build/vault-host/vault_host
+	@build/vault-host/vault_host
+
 .PHONY: test-resched-return-host
 
 
@@ -753,6 +761,7 @@ USER_SSH_ELF := $(BUILD_DIR)/ssh.elf
 USER_SERVICE_ELF := $(BUILD_DIR)/service.elf
 USER_CROND_ELF := $(BUILD_DIR)/crond.elf
 USER_LOGROTATE_ELF := $(BUILD_DIR)/logrotate.elf
+USER_VAULT_ELF := $(BUILD_DIR)/vault.elf
 DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -930,6 +939,22 @@ $(BUILD_DIR)/logrotate.o: user/logrotate/logrotate.c user/logrotate/logrotate.h 
 $(USER_LOGROTATE_ELF): $(BUILD_DIR)/logrotate.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=logrotate_main user/tools/start.asm -o $(BUILD_DIR)/logrotate_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/logrotate_start.o $< -o $@
+
+$(BUILD_DIR)/vault_crypto.o: user/vault/vault_crypto.c user/vault/vault.h src/include/crypto.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Iuser/vault -Isrc/fs -Iuser/tools -c $< -o $@
+$(BUILD_DIR)/vault_db.o: user/vault/vault_db.c user/vault/vault.h src/include/crypto.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Iuser/vault -Isrc/fs -Iuser/tools -c $< -o $@
+$(BUILD_DIR)/vault_main.o: user/vault/vault_main.c user/vault/vault.h src/include/crypto.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Iuser/vault -Isrc/fs -Iuser/tools -c $< -o $@
+$(BUILD_DIR)/vault_start.o: user/tools/vault_start.S
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -c -x assembler $< -o $@
+
+$(USER_VAULT_ELF): $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) $(BUILD_DIR)/vault_start.o user/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(BUILD_DIR)/vault_start.o $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -1555,6 +1580,7 @@ $(USER_COMPOSITOR_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/compositor/src/*.rs $(USE
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/notepad $(BUILD_DIR)/notepad.elf
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/files $(BUILD_DIR)/files.elf
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/terminal $(BUILD_DIR)/terminal.elf
+	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/gterm $(BUILD_DIR)/gterm.elf
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/clipboardd $(BUILD_DIR)/clipboardd.elf
 
 $(USER_CALC_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/calc/src/*.rs $(USER_DIR)/apps/calc/Cargo.toml $(USER_DIR)/apps/calc/.cargo/config.toml $(USER_DIR)/libui/app.ld
@@ -1571,7 +1597,7 @@ $(USER_GREETER_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/greeter/src/*.rs $(USER
 $(INITRAMFS_TAR): assets/pkg/trust.conf scripts/release_trust.py
 $(INITRAMFS_TAR): $(USER_BATTERY_ELF)
 $(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_CALC_ELF) $(USER_GREETER_ELF) $(USER_UNLOCK_ELF) $(USER_DIR)/libui/assets/DejaVu-LICENSE.txt assets/desktop.conf
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_SHM_TEST_ELF) $(USER_HELLO_WINDOW_ELF) $(USER_HOSTILE_WINDOW_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_SHM_TEST_ELF) $(USER_HELLO_WINDOW_ELF) $(USER_HOSTILE_WINDOW_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(USER_VAULT_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
@@ -1579,6 +1605,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/initramfs/bin/notepad
 	@cp -f $(BUILD_DIR)/files.elf $(BUILD_DIR)/initramfs/bin/files
 	@cp -f $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/initramfs/bin/terminal
+	@cp -f $(BUILD_DIR)/gterm.elf $(BUILD_DIR)/initramfs/bin/gterm
 	@cp -f $(USER_CALC_ELF) $(BUILD_DIR)/initramfs/bin/calc
 	@cp -f $(USER_GREETER_ELF) $(BUILD_DIR)/initramfs/bin/desktop-greeter
 	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/sbin/clipboardd
@@ -1612,6 +1639,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_SERVICE_ELF) $(BUILD_DIR)/initramfs/bin/watchtower
 	@cp -f $(USER_CROND_ELF) $(BUILD_DIR)/initramfs/sbin/crond
 	@cp -f $(USER_LOGROTATE_ELF) $(BUILD_DIR)/initramfs/sbin/logrotate
+	@cp -f $(USER_VAULT_ELF) $(BUILD_DIR)/initramfs/sbin/vault
+	@cp -f $(USER_VAULT_ELF) $(BUILD_DIR)/initramfs/bin/vault
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest

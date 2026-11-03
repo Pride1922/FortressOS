@@ -911,6 +911,7 @@ pub const SPAWN_SETSID: u32 = 4;
 pub const POLLIN: i16 = 0x0001;
 pub const POLLOUT: i16 = 0x0004;
 pub const POLLERR: i16 = 0x0008;
+pub const POLLHUP: i16 = 0x0010;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
