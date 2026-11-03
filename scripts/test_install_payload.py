@@ -3,6 +3,7 @@
 Synthetic bytes are deliberately not FAT/EXT4/boot artifacts. No installer acceptance
 or physical claim. All paths are fresh regular-file fixtures on native WSL storage.
 """
+from concurrent.futures import ThreadPoolExecutor
 import binascii
 import hashlib
 import json
@@ -84,11 +85,17 @@ def main():
                 command = [str(binary), str(disk)]
                 manifest['commands'].append(command)
                 try:
-                    for run in (0, 8192, 16384):
-                        if disk.exists(): disk.unlink()
-                        invocation = command + [str(run)]
-                        manifest['commands'].append(invocation)
-                        subprocess.run(invocation, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=1200)
+                    invocations = [[str(binary), str(temp / f'target-{run}.img'), str(run)]
+                                   for run in (0, 8192, 16384)]
+                    manifest['commands'].extend(invocations)
+                    def profile(invocation):
+                        with (out / f'profile-{invocation[-1]}.log').open('w') as profile_log:
+                            subprocess.run(invocation, cwd=ROOT, stdout=profile_log,
+                                           stderr=subprocess.STDOUT, check=True, timeout=1200)
+                    # Independent processes and exclusive regular-file targets.
+                    with ThreadPoolExecutor(max_workers=3) as pool:
+                        list(pool.map(profile, invocations))
+                    shutil.copyfile(temp / 'target-16384.img', disk)
                 finally:
                     if disk.is_file() and not disk.is_symlink():
                         shutil.copyfile(disk, out / 'target.img')
