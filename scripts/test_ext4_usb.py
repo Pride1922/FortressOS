@@ -122,7 +122,7 @@ def smoke(mode,out):
         reply=send_command(qmp,child,path,'sync\n','fortress:/ $ ')
         assert 'Filesystem synced.' in reply
         assert '[USB PERF]' not in reply,'profiling must not flood console on sync'
-        reply=send_command(qmp,child,path,'dmesg\n','fortress:/ $ ')
+        reply=send_command(qmp,child,path,'dmesg -v\n','fortress:/ $ ')
         import re
         for field in ('clock-hz','rx-frames','budget-starts','rx-after-active-turn',
                       'expired','backward-clock','iteration-backstop','wait-returns',

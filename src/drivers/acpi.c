@@ -240,22 +240,42 @@ acpi_sdt_header_t *acpi_get_table_by_index(size_t index) {
 bool acpi_parse_madt(acpi_madt_info_t *out_info) {
     acpi_madt_t *madt = (acpi_madt_t *)acpi_find_table("APIC");
     if (!madt) return false;
-    return acpi_parse_madt_buffer(madt, madt->header.length, out_info);
+    if (!acpi_parse_madt_buffer(madt, madt->header.length, out_info)) {
+        serial_puts("[FAIL] Firmware MADT validation failed\n");
+        return false;
+    }
+    serial_puts("[ OK ] MADT parsed: LAPIC Base: ");
+    serial_print_hex(out_info->lapic_phys_addr);
+    serial_puts(", Enabled CPUs: ");
+    serial_print_dec(out_info->enabled_cpu_count);
+    serial_puts(", Online-capable CPUs: ");
+    serial_print_dec(out_info->online_capable_cpu_count);
+    serial_puts(", I/O APICs: ");
+    serial_print_dec(out_info->ioapic_count);
+    serial_puts(", ISOs: ");
+    serial_print_dec(out_info->iso_count);
+    if (out_info->has_irq0_override) {
+        serial_puts(" (IRQ0 -> GSI ");
+        serial_print_dec(out_info->irq0_gsi);
+        serial_puts(")");
+    }
+    serial_puts("\n");
+
+    return true;
 }
 
-/* Buffer must be accessible for available bytes; used for firmware and fixtures. */
+/* Buffer must be accessible for available bytes; used for firmware and fixtures.
+ * Keep fixture rejection silent; the firmware wrapper reports real failures. */
 bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info_t *out_info) {
     if (!buffer || !out_info || available < sizeof(acpi_madt_t)) return false;
     const acpi_madt_t *madt = buffer;
     if (madt->header.length > available || memcmp(madt->header.signature, "APIC", 4)) return false;
     memset(out_info, 0, sizeof(*out_info));
     if (!acpi_validate_checksum(&madt->header)) {
-        serial_puts("[FAIL] MADT table checksum validation failed\n");
         return false;
     }
 
     if (madt->header.length < sizeof(acpi_madt_t)) {
-        serial_puts("[FAIL] MADT table too small\n");
         return false;
     }
 
@@ -269,7 +289,6 @@ bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info
         if ((size_t)(end - ptr) < sizeof(acpi_madt_entry_t)) return false;
         acpi_madt_entry_t *entry = (acpi_madt_entry_t *)ptr;
         if (entry->length < sizeof(acpi_madt_entry_t) || entry->length > (size_t)(end - ptr)) {
-            serial_puts("[WARN] Malformed MADT entry encountered, terminating parse\n");
             return false;
         }
         static const uint8_t minimum[] = {8, 12, 10, 8, 6, 12};
@@ -351,23 +370,6 @@ bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info
 
         ptr += entry->length;
     }
-
-    serial_puts("[ OK ] MADT parsed: LAPIC Base: ");
-    serial_print_hex(out_info->lapic_phys_addr);
-    serial_puts(", Enabled CPUs: ");
-    serial_print_dec(out_info->enabled_cpu_count);
-    serial_puts(", Online-capable CPUs: ");
-    serial_print_dec(out_info->online_capable_cpu_count);
-    serial_puts(", I/O APICs: ");
-    serial_print_dec(out_info->ioapic_count);
-    serial_puts(", ISOs: ");
-    serial_print_dec(out_info->iso_count);
-    if (out_info->has_irq0_override) {
-        serial_puts(" (IRQ0 -> GSI ");
-        serial_print_dec(out_info->irq0_gsi);
-        serial_puts(")");
-    }
-    serial_puts("\n");
 
     return true;
 }

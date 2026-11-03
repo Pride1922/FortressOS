@@ -14,6 +14,7 @@ import time
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from test_nmi_transitions import connect
+from test_net_eth import build_iso
 
 PROMPT_PATTERN = r"(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]*\$|\[[a-zA-Z0-9_\-\./]+\]#|[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\r\n]*[#$])\s*"
 CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
@@ -33,13 +34,16 @@ def run_dmesg_filter_qemu(firmware="bios", smp=1):
         log_path = tmp_dir / "serial.log"
         nvme_path = tmp_dir / "nvme.img"
         shutil.copyfile(NVME_SRC, nvme_path)
+        # Headless logging tests explicitly select the text login path.
+        test_iso = build_iso(Path(tmp), 'net=dhcp console=text')
 
         qemu_cmd = [
             "qemu-system-x86_64", "-M", "q35", "-m", "2G", "-smp", str(smp), "-display", "none",
-            "-no-reboot", "-boot", "d", "-cdrom", str(ISO),
+            "-no-reboot", "-boot", "d", "-cdrom", str(test_iso),
             "-drive", f"file={nvme_path},if=none,id=nvm0,format=raw,snapshot=off",
             "-device", "nvme,serial=fortress0,drive=nvm0",
             "-fw_cfg", "name=opt/fortress/write_test,string=1",
+            "-fw_cfg", "name=opt/fortress/dmesg_test,string=1",
             "-chardev", f"socket,id=uart,path={uart_path},server=on,wait=off,logfile={log_path}",
             "-serial", "chardev:uart"
         ]
@@ -254,9 +258,8 @@ def run_dmesg_filter_qemu(firmware="bios", smp=1):
 
             # Test 13: dmesg -l invalid — exit code 2
             print("  [15] Testing: dmesg -l invalid")
-            exec_cmd("dmesg -l invalid")
-            status_lines = get_command_output("echo $?")
-            assert any(l == "2" for l in status_lines), f"Expected exit status 2 for invalid level, got: {status_lines}"
+            status_lines = get_command_output("dmesg -l invalid; echo DMESG_STATUS:$?")
+            assert "DMESG_STATUS:2" in status_lines, f"Expected exit status 2 for invalid level, got: {status_lines}"
             print("  [PASS] dmesg -l invalid rejected with exit status 2.")
 
             # Power off

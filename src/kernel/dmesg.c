@@ -30,7 +30,7 @@ static uint8_t classify_log_level(const char *s, size_t rem) {
 
     if (len >= 6 && memcmp(p, "[WARN]", 6) == 0) return KLOG_WARNING;
 
-    if (len >= 6 && memcmp(p, "[TEST]", 6) == 0) return KLOG_DEBUG;
+    if (len >= 5 && memcmp(p, "[TEST", 5) == 0) return KLOG_DEBUG;
     if (len >= 6 && memcmp(p, "[TEST ", 6) == 0) return KLOG_DEBUG;
     if (len >= 6 && memcmp(p, "[PASS]", 6) == 0) return KLOG_DEBUG;
     if (len >= 10 && memcmp(p, "[Worker A]", 10) == 0) return KLOG_DEBUG;

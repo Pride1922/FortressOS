@@ -1227,8 +1227,24 @@ static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
     diag+=wlan_rx_profile_format(profile+diag,sizeof(profile)-diag);
     diag+=net_arp_profile_format(profile+diag,sizeof(profile)-diag);
     if (cap<=diag) return (int64_t)dmesg_read((char *)user_buf,(size_t)cap);
-    size_t n=dmesg_read((char *)user_buf,(size_t)cap-diag-1);
+    /* Keep performance snapshots out of the persistent ring: background
+     * syncs otherwise evict real events with repeated cumulative counters.
+     * Use a bounded temporary buffer: the formatter holds the filesystem
+     * lock and must not write through a user pointer while holding it.
+     * Small queries or allocation failure retain log/RX snapshot behavior. */
+    size_t perf_cap = cap > diag + 2049 ? 2048 : 0;
+    char *perf = perf_cap ? kmalloc(perf_cap) : NULL;
+    if (!perf) perf_cap = 0;
+    size_t n=dmesg_read((char *)user_buf,(size_t)cap-diag-perf_cap-1);
     if (n && ((char *)user_buf)[n-1]!='\n') ((char *)user_buf)[n++]='\n';
+    if (perf) {
+        size_t perf_len=ext4_io_profile_format(perf,perf_cap);
+        /* A saturated snapshot must not swallow the following RX line. */
+        if (perf_len && perf[perf_len-1]!='\n') perf[perf_len-1]='\n';
+        memcpy((char *)user_buf+n,perf,perf_len);
+        n+=perf_len;
+        kfree(perf);
+    }
     memcpy((char *)user_buf+n,profile,diag);
     return (int64_t)(n+diag);
 }
@@ -1505,9 +1521,6 @@ static int64_t sys_sync(void) {
      * Mid-session only: does not freeze writers or mark ext4 clean. */
     int sync_result = storage_sync_all();
     usb_report_io_profile();
-    char ext4_profile[2048];
-    size_t profile_len=ext4_io_profile_format(ext4_profile,sizeof(ext4_profile));
-    dmesg_append_str(ext4_profile,profile_len);
     if (sync_result) {
         usb_report_flush_failure();
         return syscall_from_vfs_error(sync_result);

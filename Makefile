@@ -1362,7 +1362,7 @@ test-tail-f: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-tail-f-host
 	@python3 scripts/test_tail_f.py
 
 .PHONY: test-dmesg-filter-host test-dmesg-filter test-dmesg
-test-dmesg-filter-host:
+test-dmesg-filter-host: test-dmesg-snapshot-host
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -fno-builtin-puts -Isrc/include -Isrc/fs -Iuser -Iuser/shell tests/dmesg_filter_host.c user/shell/builtin_exec.c user/shell/builtins.c -o $(BUILD_DIR)/dmesg_filter_host && $(BUILD_DIR)/dmesg_filter_host
 
@@ -2964,3 +2964,9 @@ test-desktop-factory-host: bin/fortress.elf bin/initramfs.tar
 test-pkg-previous-cache-host: $(CRYPTO_LIB)
 	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -DTOOL_HOST_TEST -ffunction-sections -fdata-sections -Wl,--gc-sections -I. -Isrc/include -Isrc/fs -Isrc/kernel -Iuser/tools -Isrc/lib/crypto/upstream/src tests/pkg_previous_cache_host.c user/pkg/fetch.c user/pkg/repository.c user/pkg/format.c user/tools/common.c $(CRYPTO_LIB) -o build/pkg-previous-cache-host
 	@build/pkg-previous-cache-host
+
+.PHONY: test-dmesg-snapshot-host
+test-dmesg-snapshot-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/dmesg_snapshot_host.c src/kernel/creds.c src/fs/permission_values.c -o $(BUILD_DIR)/dmesg_snapshot_host
+	@$(BUILD_DIR)/dmesg_snapshot_host

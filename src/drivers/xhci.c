@@ -664,8 +664,8 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                 }
 
                 if (!found_storage) {
-                    serial_puts("[USB 9G.1e] FAIL: No supported BOT Mass Storage device found; DMA quarantined\n");
-                    serial_puts("[USB 9G.1e] DIAG: step=");
+                    serial_puts("[USB] No supported mass-storage device found; DMA remains quarantined\n");
+                    serial_puts("<7>[USB 9G.1e] DIAG: step=");
                     serial_print_hex(bot_dev.step);
                     serial_puts(" cfg_len=");
                     serial_print_hex(bot_dev.total_cfg_len);
@@ -675,7 +675,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                     serial_print_hex(bot_dev.if_subclass);
                     serial_puts(" proto=");
                     serial_print_hex(bot_dev.if_proto);
-                    serial_puts("\n[USB 9G.1e] DIAG: slot_state=");
+                    serial_puts("\n<7>[USB 9G.1e] DIAG: slot_state=");
                     serial_print_hex(bot_dev.slot_state);
                     serial_puts(" ep0_state=");
                     serial_print_hex(bot_dev.ep0_state);
@@ -685,12 +685,12 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                     serial_print_hex(bot_dev.last_residual);
                     serial_puts(" trb=");
                     serial_print_hex(bot_dev.last_trb_param);
-                    serial_puts("\n[USB 9G.1e] DIAG: dev_hdr=");
+                    serial_puts("\n<7>[USB 9G.1e] DIAG: dev_hdr=");
                     for (int i = 0; i < 8; ++i) {
                         serial_print_hex(bot_dev.raw_desc_hdr[i]);
                         serial_puts(" ");
                     }
-                    serial_puts("\n[USB 9G.1e] DIAG: cfg_hdr=");
+                    serial_puts("\n<7>[USB 9G.1e] DIAG: cfg_hdr=");
                     for (int i = 0; i < 9; ++i) {
                         serial_print_hex(bot_dev.raw_cfg_hdr[i]);
                         serial_puts(" ");

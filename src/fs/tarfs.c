@@ -211,9 +211,6 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
             vfs_node_t *node=vfs_create_node_kernel(full_path,VFS_DIRECTORY,0,NULL);
             if (!node) return -5;
             node->mode=VFS_S_IFDIR|mode;node->uid=uid;node->gid=gid;
-            serial_puts("       [DIR ] ");
-            serial_puts(full_path);
-            serial_puts("\n");
         } else if (hdr->typeflag == '0' || hdr->typeflag == '\0') {
             /* Regular File */
             vfs_node_t *node = vfs_create_node_kernel(full_path, VFS_FILE, file_size, file_data);
@@ -225,11 +222,6 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
             }
             files_loaded++;
             node->mode=VFS_S_IFREG|mode;node->uid=uid;node->gid=gid;
-            serial_puts("       [FILE] ");
-            serial_puts(full_path);
-            serial_puts(" (");
-            serial_print_dec(file_size);
-            serial_puts(" bytes)\n");
         } else {
             serial_puts("[FAIL] TarFS: Unsupported tar entry typeflag ('");
             serial_putc(hdr->typeflag);

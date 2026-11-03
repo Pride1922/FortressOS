@@ -568,42 +568,6 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         off += len;
     }
 
-    /* Provenance dump: re-walk the config and show what each endpoint did. */
-    serial_puts("[USB 9G.1e] Descriptor provenance:\n");
-    off = 0;
-    while (off + 2 <= total_len) {
-        uint8_t len  = full_cfg[off];
-        uint8_t type = full_cfg[off + 1];
-        if (!len || off + len > total_len) break;
-
-        if (type == USB_DESC_INTERFACE && len >= 9) {
-            serial_puts("  iface num=");
-            serial_print_hex(full_cfg[off + 2]);
-            serial_puts(" alt=");
-            serial_print_hex(full_cfg[off + 3]);
-            serial_puts(" cls=");
-            serial_print_hex(full_cfg[off + 5]);
-            serial_puts(" sub=");
-            serial_print_hex(full_cfg[off + 6]);
-            serial_puts(" proto=");
-            serial_print_hex(full_cfg[off + 7]);
-            serial_puts("\n");
-        } else if (type == USB_DESC_ENDPOINT && len >= 7) {
-            serial_puts("    ep addr=");
-            serial_print_hex(full_cfg[off + 2]);
-            serial_puts(" attr=");
-            serial_print_hex(full_cfg[off + 3] & 0x03);
-            serial_puts(" maxpacket=");
-            serial_print_hex(full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8));
-            serial_puts(" => ");
-            serial_puts(full_cfg[off + 2] == device->bulk_in_ep  ? "OVERWROTE IN"  :
-                        full_cfg[off + 2] == device->bulk_out_ep ? "OVERWROTE OUT" :
-                        "not selected");
-            serial_puts("\n");
-        }
-        off += len;
-    }
-
     if (!device->is_hub && !device->is_hid_keyboard && !device->is_hid_mouse && !device->is_rtl8153 && (!device->bulk_in_ep || !device->bulk_out_ep)) {
         device->error_msg = "Device is not a supported BOT Mass Storage device";
         xhci_trb_t dis_cmd = {0};

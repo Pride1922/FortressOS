@@ -969,7 +969,7 @@ size_t ext4_io_profile_format(char *out,size_t capacity) {
 #define E4_PN(value) n=e4_profile_number(out,capacity,n,value)
     for (unsigned i=0;i<E4_PR_COUNT;i++) {
         e4_read_sample_t *p=&e4_read_profile[i];
-        E4_PT("[EXT4 PERF] read ");E4_PT(names[i]);
+        E4_PT("<7>[EXT4 PERF] read ");E4_PT(names[i]);
         E4_PT(" calls=");E4_PN(__atomic_load_n(&p->calls,__ATOMIC_RELAXED));
         E4_PT(" requests=");E4_PN(__atomic_load_n(&p->requests,__ATOMIC_RELAXED));
         E4_PT(" bytes=");E4_PN(__atomic_load_n(&p->bytes,__ATOMIC_RELAXED));
@@ -977,21 +977,21 @@ size_t ext4_io_profile_format(char *out,size_t capacity) {
         E4_PT(" failures=");E4_PN(__atomic_load_n(&p->failures,__ATOMIC_RELAXED));
         E4_PT(" anomalies=");E4_PN(__atomic_load_n(&p->anomalies,__ATOMIC_RELAXED));E4_PT("\n");
     }
-    E4_PT("[EXT4 PERF] write calls=");E4_PN(e4_write_calls);
+    E4_PT("<7>[EXT4 PERF] write calls=");E4_PN(e4_write_calls);
     E4_PT(" bytes=");E4_PN(e4_write_bytes_total);
     E4_PT(" total-cycles=");E4_PN(e4_write_cycles);
     E4_PT(" failures=");E4_PN(e4_write_failures);
     E4_PT(" anomalies=");E4_PN(e4_clock_anomalies);E4_PT("\n");
-    E4_PT("[EXT4 PERF] phases plan-cycles=");E4_PN(e4_plan_cycles);
+    E4_PT("<7>[EXT4 PERF] phases plan-cycles=");E4_PN(e4_plan_cycles);
     E4_PT(" commit-cycles=");E4_PN(e4_commit_cycles);
     E4_PT(" refresh-cycles=");E4_PN(e4_refresh_cycles);
-    E4_PT("\n[EXT4 PERF] lock max-cycles=");E4_PN(e4_write_max_cycles);
+    E4_PT("\n<7>[EXT4 PERF] lock max-cycles=");E4_PN(e4_write_max_cycles);
     E4_PT(" wait-cycles=");E4_PN(e4_write_lock_wait_cycles);E4_PT("\n");
-    E4_PT("[EXT4 PERF] checksum calls=");E4_PN(__atomic_load_n(&e4_crc_calls,__ATOMIC_RELAXED));
+    E4_PT("<7>[EXT4 PERF] checksum calls=");E4_PN(__atomic_load_n(&e4_crc_calls,__ATOMIC_RELAXED));
     E4_PT(" bytes=");E4_PN(__atomic_load_n(&e4_crc_bytes,__ATOMIC_RELAXED));
     E4_PT(" cycles=");E4_PN(__atomic_load_n(&e4_crc_cycles,__ATOMIC_RELAXED));
     E4_PT(" anomalies=");E4_PN(__atomic_load_n(&e4_crc_anomalies,__ATOMIC_RELAXED));E4_PT("\n");
-    E4_PT("[EXT4 PERF] cache hits=");E4_PN(e4_cache_hits);
+    E4_PT("<7>[EXT4 PERF] cache hits=");E4_PN(e4_cache_hits);
     E4_PT(" misses=");E4_PN(e4_cache_misses);E4_PT("\n");
 #undef E4_PT
 #undef E4_PN
