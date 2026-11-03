@@ -1287,6 +1287,8 @@ pub enum Action {
     SpawnFileManager,
     #[allow(dead_code)]
     SpawnCalc,
+    #[allow(dead_code)]
+    SpawnVault,
     OpenDesktopApp(u32),
     WindowResized(u32),
     ClientClick(u32, usize, usize),

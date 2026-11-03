@@ -765,6 +765,15 @@ fn open_calc(clients: &mut clients::Clients, scene: &Surface) {
     }
 }
 
+/// Starts the credential vault (/usr/bin/desktop-vault when packaged, else /bin/desktop-vault).
+fn open_vault(clients: &mut clients::Clients, scene: &Surface) {
+    let app = clients::installed(c"/usr/bin/desktop-vault", c"/bin/desktop-vault");
+    match clients.launch(app, &[], scene) {
+        Ok(pid) => privilege::report(1, "[OK]", "Vault started", Some(pid)),
+        Err(e) => privilege::report(2, "[WARN]", "Vault launch failed", Some(e)),
+    }
+}
+
 #[inline(never)]
 fn handle_key(
     b: u8,
@@ -798,6 +807,8 @@ fn handle_key(
             open_files(clients, scene);
         } else if b == b'm' || b == b'M' {
             windows.ensure_window_1(scene);
+        } else if b == b'v' || b == b'V' {
+            open_vault(clients, scene);
         } else if is_test && (b == b'p' || b == b'P') {
             windows.unminimize_and_raise(2, scene);
         }
@@ -839,6 +850,9 @@ fn handle_action(
         }
         window::Action::SpawnCalc => {
             open_calc(clients, scene);
+        }
+        window::Action::SpawnVault => {
+            open_vault(clients, scene);
         }
         window::Action::WindowResized(id) => {
             if id == 6 {

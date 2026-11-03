@@ -552,7 +552,7 @@ pub struct ExternalApp {
 }
 
 #[allow(dead_code)]
-pub const EXTERNAL_APPS: [ExternalApp; 4] = [
+pub const EXTERNAL_APPS: [ExternalApp; 5] = [
     ExternalApp {
         name: "Terminal",
         packaged: c"/usr/bin/terminal",
@@ -572,6 +572,11 @@ pub const EXTERNAL_APPS: [ExternalApp; 4] = [
         name: "Calculator",
         packaged: c"/usr/bin/calc",
         image: c"/bin/calc",
+    },
+    ExternalApp {
+        name: "Vault",
+        packaged: c"/usr/bin/desktop-vault",
+        image: c"/bin/desktop-vault",
     },
 ];
 

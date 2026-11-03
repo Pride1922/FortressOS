@@ -220,6 +220,19 @@ int vault_set_secret(const char *vault_path, const char *passphrase,
 7. **Session Auto-Save & Restore:** Persisting workspace session count on close to `/tmp/.gterm_session` and automatically restoring open tabs on launch.
 8. **Compositor Integration:** Registered modern Fortress Terminal `/bin/gterm` as primary desktop terminal launcher, with seamless fallback to `/bin/terminal`.
 
+### Phase 4: Vault Desktop Application (`/bin/desktop-vault`)
+1. **Administrator-Only Access Control:** Explicit `userdb` authorization check requiring invoking real UID to be root (`uid == 0`) or in the `wheel` admin group.
+2. **Setuid Protection:** Installed with mode `04755` (setuid root) so that authorized administrators can read and write `/etc/vault.db` (mode `0600 root:root`) atomically without plaintext leaks.
+3. **`libui` Graphical Architecture:**
+   - Multi-pane interface with responsive category sidebar (`All`, `Wi-Fi`, `SSH`, `Tokens`, `Passwords`).
+   - Dynamic search query filter over keys and metadata notes.
+   - Masked password view (`••••••••••••`) with one-click `Reveal / Hide` toggle and `Copy to Clipboard` button.
+   - Interactive modal dialogs for `Add Secret` (type selector, key, value, notes) and `Rekey Master Passphrase`.
+   - Instant `Lock Vault` button and `crypto_wipe` memory hygiene on lock/exit.
+4. **Compositor & Build Integration:**
+   - Registered `desktop-vault` in `Makefile` and `bin/initramfs.tar`.
+   - Registered `Vault` in `EXTERNAL_APPS` and keyboard shortcut `v`/`V`.
+
 ---
 
 ## Verification & Acceptance Criteria
@@ -227,6 +240,7 @@ int vault_set_secret(const char *vault_path, const char *passphrase,
   - 100% PASS on `tests/vault_host.c` (`make test-vault-host` 5/5 tests: PBKDF2 vector, AEAD roundtrip & tamper detection, serialization, file persistence/rekey, CLI suite).
   - Production ELF compiled: `build/vault.elf` (322 KiB standalone static binary).
   - Initramfs inclusion: `/sbin/vault` and `/bin/vault` packaged into bootable initramfs.
+  - Admin gating: System vault access (`/etc/vault.db`) verified to require root or `wheel` administrative membership.
 - **Terminal Acceptance (COMPLETE):**
   - 100% PASS on `make test-compositor-host` (80/80 tests passing, including all 5 new gterm tests).
   - Production ELF compiled: `build/gterm.elf` (108 KiB standalone static binary).
@@ -234,3 +248,8 @@ int vault_set_secret(const char *vault_path, const char *passphrase,
   - Search test: Finding keywords across 2,000 lines of scrollback buffer with `Ctrl+Shift+F`.
   - Smart selection test: Double-clicking paths selects the complete token including directory separators.
   - Session restore test: Auto-saves and restores open tabs on launch.
+- **Vault Desktop Application Acceptance (COMPLETE):**
+  - Production ELF compiled: `build/desktop-vault.elf` (115 KiB standalone static binary).
+  - Initramfs inclusion: `/bin/desktop-vault` packaged into bootable initramfs with setuid mode `04755`.
+  - Gating: Rejects unauthorized access when invoked by non-admin users.
+  - CRUD operations: Unlocks via master passphrase, lists records, creates secrets, reveals/masks passwords, copies to clipboard, and rotates keys atomically.

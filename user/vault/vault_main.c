@@ -30,6 +30,7 @@ static inline int tool_error(const char *tool, const char *msg, const char *op) 
 }
 #else
 #include "../../user/tools/common.h"
+#include "../../user/tools/userdb.h"
 static inline void *vault_memcpy(void *dst, const void *src, size_t n) {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
@@ -59,6 +60,9 @@ static inline size_t vault_strlen(const char *s) {
 #define DEFAULT_SYSTEM_VAULT "/etc/vault.db"
 
 static vault_db_t s_cli_db;
+#ifndef TOOL_HOST_TEST
+static userdb_t s_admin_userdb;
+#endif
 
 static void out_str(const char *s) {
     tool_write("vault", s, strlen(s));
@@ -186,6 +190,40 @@ int vault_main(int argc, char **argv) {
     }
 
     char pass_buf[128];
+#ifndef TOOL_HOST_TEST
+    /* Enforce administrative authorization for system vault access */
+    if (vault_path[0] == '/' && vault_path[1] == 'e' && vault_path[2] == 't' && vault_path[3] == 'c') {
+        uint32_t ruid = 0, euid = 0, suid = 0;
+        if (tool_syscall(SYS_GETRESUID, (uintptr_t)&ruid, (uintptr_t)&euid, (uintptr_t)&suid) == 0) {
+            if (ruid != 0) {
+                bool is_admin = false;
+                if (db_load(&s_admin_userdb, false)) {
+                    const db_user_t *u = db_user_id(&s_admin_userdb, ruid);
+                    if (u) {
+                        uint32_t gids[16]; unsigned gcount = 0;
+                        const db_group_t *w = NULL;
+                        for (unsigned i = 0; i < s_admin_userdb.ngroups; i++) {
+                            if (tool_equal(s_admin_userdb.groups[i].name, "wheel")) {
+                                w = &s_admin_userdb.groups[i];
+                                break;
+                            }
+                        }
+                        if (w && db_groups(&s_admin_userdb, u, gids, &gcount)) {
+                            for (unsigned i = 0; i < gcount; i++) {
+                                if (gids[i] == w->gid) { is_admin = true; break; }
+                            }
+                        }
+                    }
+                }
+                if (!is_admin) {
+                    out_err("permission denied: only administrators can access system vault", NULL);
+                    return 1;
+                }
+            }
+        }
+    }
+#endif
+
     if (!pass) {
         if (prompt_passphrase(pass_buf, sizeof(pass_buf)) != 0) {
             return 1;

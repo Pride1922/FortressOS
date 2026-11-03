@@ -723,6 +723,7 @@ USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_COMPOSITOR_ELF := $(BUILD_DIR)/compositor.elf
 USER_CALC_ELF := $(BUILD_DIR)/calc.elf
+USER_VAULT_APP_ELF := $(BUILD_DIR)/desktop-vault.elf
 USER_GREETER_ELF := $(BUILD_DIR)/desktop-greeter.elf
 USER_LIBUI_SRCS := $(USER_DIR)/libui/Cargo.toml $(USER_DIR)/libui/assets/*.bin $(wildcard $(USER_DIR)/libui/src/*.rs $(USER_DIR)/libui/src/*/*.rs)
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
@@ -953,8 +954,8 @@ $(BUILD_DIR)/vault_start.o: user/tools/vault_start.S
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -c -x assembler $< -o $@
 
-$(USER_VAULT_ELF): $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) $(BUILD_DIR)/vault_start.o user/shell.ld
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(BUILD_DIR)/vault_start.o $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(CRYPTO_LIB) -o $@
+$(USER_VAULT_ELF): $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(CRYPTO_LIB) $(BUILD_DIR)/vault_start.o user/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(BUILD_DIR)/vault_start.o $(BUILD_DIR)/vault_crypto.o $(BUILD_DIR)/vault_db.o $(BUILD_DIR)/vault_main.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(CRYPTO_LIB) -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -1593,10 +1594,15 @@ $(USER_GREETER_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/greeter/src/*.rs $(USER
 	@cd $(USER_DIR)/apps/greeter && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/apps/greeter/target/x86_64-unknown-none/release/greeter $@
 
+$(USER_VAULT_APP_ELF): $(USER_LIBUI_SRCS) $(USER_DIR)/apps/vault/src/*.rs $(USER_DIR)/apps/vault/Cargo.toml $(USER_DIR)/apps/vault/.cargo/config.toml $(USER_DIR)/libui/app.ld
+	@echo "  [CARGO] user/apps/vault"
+	@cd $(USER_DIR)/apps/vault && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
+	@cp -f $(USER_DIR)/apps/vault/target/x86_64-unknown-none/release/desktop-vault $@
+
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): assets/pkg/trust.conf scripts/release_trust.py
 $(INITRAMFS_TAR): $(USER_BATTERY_ELF)
-$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_CALC_ELF) $(USER_GREETER_ELF) $(USER_UNLOCK_ELF) $(USER_DIR)/libui/assets/DejaVu-LICENSE.txt assets/desktop.conf
+$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_CALC_ELF) $(USER_VAULT_APP_ELF) $(USER_GREETER_ELF) $(USER_UNLOCK_ELF) $(USER_DIR)/libui/assets/DejaVu-LICENSE.txt assets/desktop.conf
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_SHM_TEST_ELF) $(USER_HELLO_WINDOW_ELF) $(USER_HOSTILE_WINDOW_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(USER_VAULT_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
@@ -1607,6 +1613,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/terminal.elf $(BUILD_DIR)/initramfs/bin/terminal
 	@cp -f $(BUILD_DIR)/gterm.elf $(BUILD_DIR)/initramfs/bin/gterm
 	@cp -f $(USER_CALC_ELF) $(BUILD_DIR)/initramfs/bin/calc
+	@cp -f $(USER_VAULT_APP_ELF) $(BUILD_DIR)/initramfs/bin/desktop-vault
 	@cp -f $(USER_GREETER_ELF) $(BUILD_DIR)/initramfs/bin/desktop-greeter
 	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/sbin/clipboardd
 	@cp -f $(BUILD_DIR)/clipboardd.elf $(BUILD_DIR)/initramfs/bin/clipboard
@@ -2373,7 +2380,7 @@ test-ext4-integration-host:
 
 test-ext4-mount-smoke-host:
 	@mkdir -p $(EXT4_MOUNT_EVIDENCE)/bin
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_mount_host.c tests/ext4_fault_disk.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host_smoke
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DFORTRESS_THREAD_H -DFORTRESS_PKG_ENGINE=0 -DFORTRESS_DAC_ENFORCED -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/ext4_mount_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host_smoke
 	@FORTRESS_EXT4_EVIDENCE=$(EXT4_MOUNT_EVIDENCE) python3 scripts/test_ext4_mount_host.py --smoke $(EXT4_MOUNT_FIXTURES)
 
 test-ext4-journal-mount: all
@@ -2381,7 +2388,7 @@ test-ext4-journal-mount: all
 
 test-ext4-mount-host:
 	@mkdir -p $(EXT4_MOUNT_EVIDENCE)/bin
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_mount_host.c tests/ext4_fault_disk.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DFORTRESS_THREAD_H -DFORTRESS_PKG_ENGINE=0 -DFORTRESS_DAC_ENFORCED -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/ext4_mount_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host
 	@FORTRESS_EXT4_EVIDENCE=$(EXT4_MOUNT_EVIDENCE) python3 scripts/test_ext4_mount_host.py
 
 .PHONY: test-ext4-orphan-deep-host
@@ -3018,3 +3025,11 @@ test-ext4-performance-host:
 	@$(BUILD_DIR)/jbd2_preview_bulk_host
 	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -I. -Isrc/include -Isrc/kernel -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 tests/install_partition_bulk_host.c -o $(BUILD_DIR)/install_partition_bulk_host
 	@$(BUILD_DIR)/install_partition_bulk_host
+
+.PHONY: test-ext4-bitmap-host
+test-ext4-bitmap-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/fs tests/ext4_bitmap_host.c -o $(BUILD_DIR)/ext4_bitmap_host
+	@$(BUILD_DIR)/ext4_bitmap_host
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -DFORTRESS_PKG_ENGINE=0 -DFORTRESS_DAC_ENFORCED -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/ext4_scan_ranges_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/ext4_scan_ranges_host
+	@$(BUILD_DIR)/ext4_scan_ranges_host
