@@ -53,9 +53,121 @@ struct SpawnOpts {
     reserved2: u64,
 }
 
+fn is_leap_year(year: u32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn epoch_to_datetime(epoch: u64) -> Option<(u32, u8, u8, u8, u8, u8)> {
+    let mut days = epoch / 86400;
+    let sec_in_day = (epoch % 86400) as u32;
+
+    let hour = (sec_in_day / 3600) as u8;
+    let min = ((sec_in_day % 3600) / 60) as u8;
+    let sec = (sec_in_day % 60) as u8;
+
+    let mut year = 1970u32;
+    loop {
+        let diy = if is_leap_year(year) { 366 } else { 365 };
+        if days < diy {
+            break;
+        }
+        days -= diy;
+        year += 1;
+        if year > 2200 {
+            return None;
+        }
+    }
+
+    let days_in_months = [31u64, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u8;
+    for (m, &dim_val) in days_in_months.iter().enumerate() {
+        let mut dim = dim_val;
+        if m == 1 && is_leap_year(year) {
+            dim = 29;
+        }
+        if days < dim {
+            month = (m + 1) as u8;
+            break;
+        }
+        days -= dim;
+    }
+    let day = (days + 1) as u8;
+    Some((year, month, day, hour, min, sec))
+}
+
+fn append_u32_digits(buf: &mut [u8], pos: &mut usize, val: u32, digits: usize) {
+    let mut divisor = 1u32;
+    for _ in 1..digits {
+        divisor *= 10;
+    }
+    for _ in 0..digits {
+        buf[*pos] = b'0' + ((val / divisor) % 10) as u8;
+        *pos += 1;
+        divisor /= 10;
+    }
+}
+
 fn log_greeter_msg(msg: &str) {
+    let mut buf = [0u8; 384];
+    let mut pos = 0;
+
+    let mut ts = raw_sys::Timespec::default();
+    let r = unsafe {
+        raw_sys::syscall2(
+            raw_sys::SYS_CLOCK_GETTIME,
+            0, // CLOCK_REALTIME
+            &mut ts as *mut _ as usize,
+        )
+    };
+
+    if r == 0 && ts.tv_sec > 1000000 {
+        if let Some((y, m, d, hh, mm, ss)) = epoch_to_datetime(ts.tv_sec as u64) {
+            buf[pos] = b'['; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, y, 4);
+            buf[pos] = b'-'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, m as u32, 2);
+            buf[pos] = b'-'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, d as u32, 2);
+            buf[pos] = b'T'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, hh as u32, 2);
+            buf[pos] = b':'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, mm as u32, 2);
+            buf[pos] = b':'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, ss as u32, 2);
+            buf[pos] = b'Z'; pos += 1;
+            buf[pos] = b']'; pos += 1;
+            buf[pos] = b' '; pos += 1;
+        }
+    } else {
+        // Monotonic fallback: [0012.345s]
+        let mut mono = raw_sys::Timespec::default();
+        let mr = unsafe {
+            raw_sys::syscall2(
+                raw_sys::SYS_CLOCK_GETTIME,
+                1, // CLOCK_MONOTONIC
+                &mut mono as *mut _ as usize,
+            )
+        };
+        if mr == 0 {
+            buf[pos] = b'['; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, (mono.tv_sec as u32) % 10000, 4);
+            buf[pos] = b'.'; pos += 1;
+            append_u32_digits(&mut buf, &mut pos, ((mono.tv_nsec / 1_000_000) as u32) % 1000, 3);
+            buf[pos] = b's'; pos += 1;
+            buf[pos] = b']'; pos += 1;
+            buf[pos] = b' '; pos += 1;
+        }
+    }
+
+    let mbytes = msg.as_bytes();
+    let copy_len = mbytes.len().min(buf.len() - pos);
+    buf[pos..pos + copy_len].copy_from_slice(&mbytes[..copy_len]);
+    pos += copy_len;
+
+    let payload = &buf[..pos];
+
     // 1. Write to stderr (fd 2), visible on COM1 UART console
-    raw_sys::write(2, msg.as_bytes());
+    raw_sys::write(2, payload);
 
     // 2. Append to log file: prefer /var/log/greeter.log, fallback to /run/greeter.log
     let mut fd = unsafe {
@@ -75,7 +187,7 @@ fn log_greeter_msg(msg: &str) {
         };
     }
     if fd >= 0 {
-        raw_sys::write(fd as i32, msg.as_bytes());
+        raw_sys::write(fd as i32, payload);
         raw_sys::close(fd as i32);
     }
 }

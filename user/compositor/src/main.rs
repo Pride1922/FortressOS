@@ -673,6 +673,14 @@ fn dispatch_key_event(
     if windows.intercept_key(ev, scene) {
         return false;
     }
+    // Global shortcut: Ctrl + Alt + T launches Terminal from anywhere
+    if (ev.modifiers & (proto::MOD_CTRL | proto::MOD_ALT)) == (proto::MOD_CTRL | proto::MOD_ALT)
+        && (ev.keycode == proto::KEY_T || ev.ascii == b't' || ev.ascii == b'T')
+        && ev.is_press_or_repeat()
+    {
+        open_terminal(clients, scene);
+        return false;
+    }
     if let Some(id) = windows.focused_window_id() {
         if clients.key(id, ev, windows, scene) {
             return false;
