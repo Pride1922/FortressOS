@@ -982,35 +982,55 @@ fn start_menu_toggle_and_actions() {
     assert!(!wm.start_open); // Menu automatically closes on selection
     wm.mouse(50, 58, 0, &mut s);
 
-    // Reopen menu and click item 1 (Notepad) (y = 24 + 24 + 1*22 + 10 = 80)
+    // Reopen menu and click item 1 (Files) (y = 28 + 24 + 1*22 + 10 = 84)
     let _ = wm.mouse(20, 12, 1, &mut s);
     wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 80, 1, &mut s);
-    assert_eq!(action, window::Action::SpawnNotepad);
-    assert!(!wm.start_open);
-    wm.mouse(50, 80, 0, &mut s);
-
-    // Reopen menu and click item 2 (Files) (y = 24 + 24 + 2*22 + 10 = 102)
-    let _ = wm.mouse(20, 12, 1, &mut s);
-    wm.mouse(20, 12, 0, &mut s);
-    assert!(wm.start_open);
-
-    let action = wm.mouse(50, 102, 1, &mut s);
+    let action = wm.mouse(50, 84, 1, &mut s);
     assert_eq!(action, window::Action::SpawnFileManager);
     assert!(!wm.start_open);
-    wm.mouse(50, 102, 0, &mut s);
+    wm.mouse(50, 84, 0, &mut s);
 
-    // Reopen menu and click item 5 (Exit); Palette is not a desktop app.
+    // Reopen menu and click item 2 (Notepad) (y = 28 + 24 + 2*22 + 10 = 106)
     let _ = wm.mouse(20, 12, 1, &mut s);
     wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 168, 1, &mut s);
+    let action = wm.mouse(50, 106, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnNotepad);
+    assert!(!wm.start_open);
+    wm.mouse(50, 106, 0, &mut s);
+
+    // Reopen menu and click item 3 (Calculator) (y = 28 + 24 + 3*22 + 10 = 128)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 128, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnCalc);
+    assert!(!wm.start_open);
+    wm.mouse(50, 128, 0, &mut s);
+
+    // Reopen menu and click item 4 (Vault) (y = 28 + 24 + 4*22 + 10 = 150)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 150, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnVault);
+    assert!(!wm.start_open);
+    wm.mouse(50, 150, 0, &mut s);
+
+    // Reopen menu and click item 7 (Exit to Console) (y = 28 + 24 + 7*22 + 10 = 216)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 216, 1, &mut s);
     assert_eq!(action, window::Action::Exit);
     assert!(!wm.start_open);
-    wm.mouse(50, 168, 0, &mut s);
+    wm.mouse(50, 216, 0, &mut s);
 }
 
 #[test]
@@ -2856,7 +2876,7 @@ fn desktop_restart_action_and_launcher_marker() {
     wm.toggle_start_menu(&mut scene);
     let menu=window::WindowManager::start_menu_rect(scene.height);
     let scale=if scene.height>=1800 {2} else {1};
-    let action=wm.mouse(menu.x+30*scale,menu.y+(24+6*22+10)*scale,1,&mut scene);
+    let action=wm.mouse(menu.x+30*scale,menu.y+(24+8*22+10)*scale,1,&mut scene);
     assert_eq!(action,window::Action::Restart);
 }
 

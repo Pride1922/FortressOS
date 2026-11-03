@@ -1477,7 +1477,7 @@ impl WindowManager {
             x: 8,
             y: 28 * scale,
             w: 220 * scale,
-            h: 179 * scale,
+            h: 224 * scale,
         }
     }
 
@@ -2335,12 +2335,14 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                         let item_idx = (py - 24) / 22;
                         match item_idx {
                             0 => ret_action = Action::SpawnTerminal,
-                            1 => ret_action = Action::SpawnNotepad,
-                            2 => ret_action = Action::SpawnFileManager,
-                            3 => self.ensure_window_1(s),
-                            4 => ret_action = Action::OpenDesktopApp(7),
-                            5 => ret_action = Action::Exit,
-                            6 => ret_action = Action::Restart,
+                            1 => ret_action = Action::SpawnFileManager,
+                            2 => ret_action = Action::SpawnNotepad,
+                            3 => ret_action = Action::SpawnCalc,
+                            4 => ret_action = Action::SpawnVault,
+                            5 => ret_action = Action::OpenDesktopApp(7),
+                            6 => self.ensure_window_1(s),
+                            7 => ret_action = Action::Exit,
+                            8 => ret_action = Action::Restart,
                             _ => {}
                         }
                     }
@@ -2415,7 +2417,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
             let new_menu_hover =
                 if start_menu.contains(x, y) && y >= start_menu.y + 24 * theme::scale(s.height) {
                     let idx = ((y - start_menu.y) / theme::scale(s.height) - 24) / 22;
-                    if idx < 7 { Some(idx) } else { None }
+                    if idx < 9 { Some(idx) } else { None }
                 } else {
                     None
                 };
@@ -3177,6 +3179,16 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                             }
                                         }
                                         1 => {
+                                            // Files: golden folder
+                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
+                                                Some(0xffd29922)
+                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
+                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        2 => {
                                             // Notepad: document sheet with lines
                                             if (3..=10).contains(&ix) && (2..=11).contains(&iy) {
                                                 if (iy == 4 || iy == 6 || iy == 8) && (5..=8).contains(&ix) {
@@ -3190,31 +3202,43 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 None
                                             }
                                         }
-                                        2 => {
-                                            // Files: golden folder
-                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
-                                                Some(0xffd29922)
-                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
-                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
-                                            } else {
-                                                None
-                                            }
-                                        }
                                         3 => {
-                                            // System Information: CPU / chip
-                                            if (5..=8).contains(&ix) && (5..=8).contains(&iy) {
-                                                Some(0xffd2a8ff)
-                                            } else if (3..=10).contains(&ix) && (3..=10).contains(&iy) {
-                                                Some(0xff8957e5)
-                                            } else if ((iy == 1 || iy == 12) && (ix == 4 || ix == 6 || ix == 9))
-                                                || ((ix == 1 || ix == 12) && (iy == 4 || iy == 6 || iy == 9))
-                                            {
-                                                Some(0xffa371f7)
+                                            // Calculator: blue tile with math symbols
+                                            if (2..=11).contains(&ix) && (2..=11).contains(&iy) {
+                                                if (iy == 4 && (4..=6).contains(&ix)) || (ix == 5 && (3..=5).contains(&iy)) {
+                                                    Some(0xffffffff)
+                                                } else if iy == 9 && (4..=6).contains(&ix) {
+                                                    Some(0xffffffff)
+                                                } else if (iy == 4 && (8..=10).contains(&ix)) || (iy == 9 && (8..=10).contains(&ix)) {
+                                                    Some(0xff56d364)
+                                                } else if ix == 2 || ix == 11 || iy == 2 || iy == 11 {
+                                                    Some(0xff30363d)
+                                                } else {
+                                                    Some(0xff1f6feb)
+                                                }
                                             } else {
                                                 None
                                             }
                                         }
                                         4 => {
+                                            // Vault: Golden Padlock
+                                            if (4..=9).contains(&ix) && (2..=5).contains(&iy) && !(6..=7).contains(&ix) && iy < 5 {
+                                                Some(0xffc9d1d9)
+                                            } else if (4..=9).contains(&ix) && iy == 2 {
+                                                Some(0xffc9d1d9)
+                                            } else if (3..=10).contains(&ix) && (5..=12).contains(&iy) {
+                                                if ix == 6 && (7..=9).contains(&iy) {
+                                                    Some(0xff161b22)
+                                                } else if ix == 3 || ix == 10 || iy == 5 || iy == 12 {
+                                                    Some(0xffb08800)
+                                                } else {
+                                                    Some(0xffe3b341)
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        5 => {
                                             // Settings: Gear icon
                                             let dx = (ix as i32 - 7).abs();
                                             let dy = (iy as i32 - 7).abs();
@@ -3228,13 +3252,38 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 None
                                             }
                                         }
-                                        5 => {
+                                        6 => {
+                                            // System Information: CPU / chip
+                                            if (5..=8).contains(&ix) && (5..=8).contains(&iy) {
+                                                Some(0xffd2a8ff)
+                                            } else if (3..=10).contains(&ix) && (3..=10).contains(&iy) {
+                                                Some(0xff8957e5)
+                                            } else if ((iy == 1 || iy == 12) && (ix == 4 || ix == 6 || ix == 9))
+                                                || ((ix == 1 || ix == 12) && (iy == 4 || iy == 6 || iy == 9))
+                                            {
+                                                Some(0xffa371f7)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        7 => {
                                             // Exit: Power glyph
                                             let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
                                             if dist_sq >= 8 && dist_sq <= 22 && !(ix == 7 && iy <= 7) {
                                                 Some(0xffff6b6b)
                                             } else if ix == 7 && (2..=6).contains(&iy) {
                                                 Some(0xffff6b6b)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        8 => {
+                                            // Restart: circular arrow
+                                            let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
+                                            if dist_sq >= 8 && dist_sq <= 20 && !(ix <= 7 && iy >= 7) {
+                                                Some(0xffe3b341)
+                                            } else if (iy == 3 || iy == 4) && ix == 7 {
+                                                Some(0xffe3b341)
                                             } else {
                                                 None
                                             }
@@ -3250,12 +3299,14 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                 } else {
                                     let (label, is_danger) = match item_idx {
                                         0 => ("Terminal", false),
-                                        1 => ("Notepad", false),
-                                        2 => ("Files", false),
-                                        3 => ("System Information", false),
-                                        4 => ("Settings", false),
-                                        5 => ("Exit to Console", true),
-                                        6 => ("Restart (save/close apps)", false),
+                                        1 => ("Files", false),
+                                        2 => ("Notepad", false),
+                                        3 => ("Calculator", false),
+                                        4 => ("Vault", false),
+                                        5 => ("Settings", false),
+                                        6 => ("System Information", false),
+                                        7 => ("Exit to Console", true),
+                                        8 => ("Restart (save/close apps)", false),
                                         _ => ("", false),
                                     };
                                     let fg = if is_hover {
