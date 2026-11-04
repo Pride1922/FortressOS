@@ -35,9 +35,12 @@ static inline void boot_timing_begin_at(boot_timing_t *t,const char *phase,uint6
     t->entries[0].name="early-platform";t->entries[0].ticks=t->last-entry;
     t->count=1;t->start=entry;t->total=t->last-entry;
 }
-static inline void boot_timing_mark(boot_timing_t *t,const char *next) {
-    if (!t->hz || !t->valid) return;
-    uint64_t now=BOOT_TIMING_READ();
+/* Early boot records raw deltas and supplies the calibrated rate at the end. */
+static inline void boot_timing_begin_raw(boot_timing_t *t,const char *phase,uint64_t entry) {
+    *t=(boot_timing_t){.start=entry,.last=entry,.phase=phase,.valid=true};
+}
+static inline void boot_timing_mark_at(boot_timing_t *t,const char *next,uint64_t now) {
+    if (!t->valid) return;
     if (now<t->last) {t->valid=false;return;}
     if (t->phase) {
         if (t->count<BOOT_TIMING_SLOTS) {
@@ -46,6 +49,9 @@ static inline void boot_timing_mark(boot_timing_t *t,const char *next) {
         } else t->omitted++;
     }
     t->last=now;t->phase=next;t->total=now-t->start;
+}
+static inline void boot_timing_mark(boot_timing_t *t,const char *next) {
+    if (t->valid) boot_timing_mark_at(t,next,BOOT_TIMING_READ());
 }
 static inline void boot_timing_text(char *out,unsigned cap,unsigned *n,const char *s) {
     while (*s && *n+1<cap) out[(*n)++]=*s++;

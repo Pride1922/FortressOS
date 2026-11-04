@@ -190,6 +190,7 @@ static void render_boot_logo(const boot_info_t *boot_info) {
 }
 
 static boot_timing_t boot_profile;
+static boot_timing_t early_boot_profile;
 static bool verbose_boot = false;
 static bool boot_selftests;
 
@@ -4918,6 +4919,7 @@ static void test_pipe_kernel_lifecycle(void) {
 
 void kmain(void) {
     uint64_t kernel_entry_ticks=apic_poll_clock_read();
+    boot_timing_begin_raw(&early_boot_profile,"console-and-boot-metadata",kernel_entry_ticks);
 
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
@@ -5067,6 +5069,7 @@ void kmain(void) {
         serial_puts("[FAIL] PMM requires valid Limine memory map and HHDM response!\n");
         hcf();
     }
+    boot_timing_mark(&early_boot_profile,"physical-memory");
     pmm_init(memmap_request.response, hhdm_request.response->offset);
     
 
@@ -5149,6 +5152,7 @@ void kmain(void) {
     }
 
     /* 10. Deep-Copy Boot Metadata into Kernel-Owned Storage */
+    boot_timing_mark(&early_boot_profile,"boot-info-copy");
     static boot_info_t boot_info;
     boot_info_init(&boot_info,
                    memmap_request.response,
@@ -5170,6 +5174,7 @@ void kmain(void) {
     /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
     /* Step 1 & 2: Build new tables and inspect required mappings */
     /* Step 3: Switch CR3 to new PML4 and survive */
+    boot_timing_mark(&early_boot_profile,"virtual-memory");
     vmm_init(&boot_info);
     if (memory_boot_test) memory_boot_test_after_vmm();
 
@@ -5410,6 +5415,7 @@ pf_boot_guard_done:
     }
 
     /* 12. Dynamic Kernel Heap Allocator (Phase 4B) */
+    boot_timing_mark(&early_boot_profile,"heap");
     heap_init();
     if (!heap_verify_integrity()) {
         serial_puts("       [FAIL] Heap integrity walk failed on initialization!\n");
@@ -5809,6 +5815,7 @@ pf_boot_guard_done:
     if (qemu_fw_cfg_has_key("opt/fortress/memory_pressure_test")) memory_pressure_test_run();
 
     /* 13. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
+    boot_timing_mark(&early_boot_profile,"framebuffer");
     if (!boot_info.has_framebuffer) {
         serial_puts("[WARN] No Framebuffer found (running headless)\n");
     } else {
@@ -5848,6 +5855,7 @@ pf_boot_guard_done:
 
     /* 14. Virtual File System & Initramfs Mount (Step 8B) */
     boot_status("Mounting virtual file system...");
+    boot_timing_mark(&early_boot_profile,"bootstrap-filesystem");
     if (boot_info.has_initramfs && boot_info.initramfs_vaddr) {
         tarfs_init((const void *)boot_info.initramfs_vaddr, boot_info.initramfs_size);
     } else {
@@ -5857,6 +5865,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 5: ACPI Discovery, 8259 PIC Masking, LAPIC Setup & APIC Timer
      * ========================================================================= */
+    boot_timing_mark(&early_boot_profile,"acpi-tables-and-power");
     boot_status("Configuring ACPI and interrupts...");
     if (boot_selftests) serial_puts("[TEST] ACPI and timer verification suite\n");
     if (!boot_info.has_rsdp) {
@@ -5869,7 +5878,9 @@ pf_boot_guard_done:
     }
     serial_puts("       [PASS] ACPI RSDP and Root SDT verified\n");
     power_init();
+    boot_timing_mark(&early_boot_profile,"battery-probe");
     acpi_battery_init();
+    boot_timing_mark(&early_boot_profile,"interrupt-controllers");
 
     if (boot_selftests) acpi_parser_selftest();
 
@@ -5926,7 +5937,9 @@ pf_boot_guard_done:
     /* Test 5: APIC Timer Calibration & Periodic Tick Verification */
     if (boot_selftests) serial_puts("[TEST 5] Calibrating APIC Timer (100 Hz Target) & Verifying Interrupts...\n");
     __asm__ volatile("cli" ::: "memory");
-    if (!ioapic_init(&madt_info) || !apic_timer_init(100)) hcf();
+    if (!ioapic_init(&madt_info)) hcf();
+    boot_timing_mark(&early_boot_profile,"apic-timer");
+    if (!apic_timer_init(100)) hcf();
     if (boot_selftests) {
     if (apic_timer_init(0) || ioapic_route_gsi(UINT32_MAX, 0x21, 0, false, false) ||
         ioapic_route_gsi(0, 0x10, 0, false, false)) hcf();
@@ -5951,6 +5964,7 @@ pf_boot_guard_done:
     serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
     serial_puts("[BOOT] ACPI, interrupt controllers and timer ready\n");
 
+    boot_timing_mark(&early_boot_profile,"rtc-and-timekeeper");
     /* Initialize CMOS RTC and Kernel Timekeeper */
     uint8_t century_reg = 0;
     acpi_fadt_t *fadt = (acpi_fadt_t *)acpi_find_table("FACP");
@@ -5960,6 +5974,10 @@ pf_boot_guard_done:
     rtc_init(century_reg);
     time_init();
     boot_timing_begin_at(&boot_profile,"clock-ready",kernel_entry_ticks);
+    if (boot_profile.hz) {
+        boot_timing_mark_at(&early_boot_profile,NULL,boot_profile.last);
+        early_boot_profile.hz=boot_profile.hz;
+    }
     random_init(&boot_info, time_get_epoch_seconds());
     serial_puts(random_ready() ? "[RANDOM] hardware-seeded HMAC-DRBG ready\n" :
                                "[RANDOM] unavailable; strong randomness fails closed\n");
@@ -6758,6 +6776,7 @@ pf_boot_guard_done:
     boot_status(installed_ready ? "Interactive shell ready." : "Recovery environment selected.");
     boot_timing_mark(&boot_profile,NULL);
     boot_timing_emit(&boot_profile,"KERNEL");
+    boot_timing_emit(&early_boot_profile,"EARLY-PLATFORM");
     if (console_is_quiet()) {
         console_set_quiet(false);
         console_clear();

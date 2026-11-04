@@ -20,5 +20,9 @@ int main(void){
  clock_hz=UINT64_MAX;boot_timing_begin(&t,"off");assert(!t.hz);
  clear();clock_hz=999;clock_value=0;boot_timing_begin(&t,"huge");clock_value=(UINT64_MAX/1000)*999+998;boot_timing_mark(&t,NULL);boot_timing_emit(&t,"ROOT");assert(strstr(output,"overflow"));
  clear();clock_hz=1000;clock_value=100;boot_timing_begin_at(&t,"clock-ready",20);assert(t.start==20&&t.entries[0].ticks==80);clock_value=120;boot_timing_mark(&t,NULL);assert(t.total==100);boot_timing_emit(&t,"KERNEL");assert(strstr(output,"early-platform: 80 ms")&&strstr(output,"total: 100 ms"));
+ clear();clock_hz=0;boot_timing_begin_raw(&t,"memory",20);clock_value=60;boot_timing_mark(&t,"timer");boot_timing_mark_at(&t,NULL,100);
+ boot_timing_emit(&t,"EARLY-PLATFORM");assert(!length&&t.total==80);
+ t.hz=1000;boot_timing_emit(&t,"EARLY-PLATFORM");
+ assert(strstr(output,"memory: 40 ms")&&strstr(output,"timer: 40 ms")&&strstr(output,"total: 80 ms"));
  puts("PASS boot timing: calibrated deltas/totals, bounded phases, unavailable/rollback clocks and overflow");return 0;
 }
