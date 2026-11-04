@@ -227,6 +227,10 @@ test-root-phase2:
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
+
+# Boot readiness hashes full kernel/bootstrap banks with this scalar codec.
+$(BUILD_DIR)/lib/root_digest.o: CFLAGS += -O2 -fstack-usage -Wframe-larger-than=1024
+$(BUILD_DIR)/lib/root_digest.o: Makefile
 # Recompile dormant objects when normal engine selection/link rules change.
 $(BUILD_DIR)/fs/ext4.o: src/fs/pkg_executor.inc src/fs/pkg_upgrade.inc Makefile
 $(BUILD_DIR)/fs/pkg_plan.o: Makefile
