@@ -17,13 +17,15 @@ static const char *history_path(void) {
 #ifdef HISTORY_PERSIST_HOST_MOCK
     return HISTORY_PATH;
 #else
-    if (!machine_installed(call)) return HISTORY_PATH;
     const char *home=vars_get("HOME");size_t n=home ? length(home) : 0;
-    if (!n || home[0]!='/' || n+18>=sizeof(installed_history)) return NULL;
-    for (size_t i=0;i<n;i++) installed_history[i]=home[i];
-    const char tail[]="/.fortress-history";
-    for (size_t i=0;i<sizeof(tail);i++) installed_history[n+i]=tail[i];
-    return installed_history;
+    if (n > 1 && home[0]=='/' && n+18<sizeof(installed_history)) {
+        for (size_t i=0;i<n;i++) installed_history[i]=home[i];
+        const char tail[]="/.fortress-history";
+        for (size_t i=0;i<sizeof(tail);i++) installed_history[n+i]=tail[i];
+        return installed_history;
+    }
+    if (!machine_installed(call)) return HISTORY_PATH;
+    return NULL;
 #endif
 }
 
@@ -74,12 +76,13 @@ static void put_number_str(char *buf, size_t *pos, uint64_t n) {
 }
 
 bool history_save(void) {
-    const char *path=history_path();if (!path) return false;
+    const char *path=history_path();
+    if (!path) return true;
     /* 1. Ensure directory /mnt/.fortress exists */
     long r = path==installed_history ? 0 : call(SYS_MKDIR, (uintptr_t)HISTORY_DIR, 0755, 0);
-    if (r < 0 && r == SYSCALL_EROFS) {
+    if (r < 0 && (r == SYSCALL_EROFS || r == SYSCALL_EACCES || r == SYSCALL_ENOENT)) {
         if (!s_history_warned) {
-            puts("history: persistent storage is read-only\n");
+            if (r == SYSCALL_EROFS) puts("history: persistent storage is read-only\n");
             s_history_warned = true;
         }
         s_history_cmd_counter = 0;
@@ -97,11 +100,11 @@ bool history_save(void) {
         return false;
     }
     if (fd < 0) {
-        if (fd == SYSCALL_EROFS) {
-            if (!s_history_warned) {
+        if (!s_history_warned) {
+            if (fd == SYSCALL_EROFS) {
                 puts("history: persistent storage is read-only\n");
-                s_history_warned = true;
             }
+            s_history_warned = true;
         }
         s_history_cmd_counter = 0;
         return false;

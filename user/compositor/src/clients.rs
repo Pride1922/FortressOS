@@ -75,12 +75,19 @@ struct Exiting {
     killed: bool,
 }
 
+static mut SESSION_ENVP: *const *const u8 = core::ptr::null();
+
+pub fn set_session_envp(envp: *const *const u8) {
+    unsafe { SESSION_ENVP = envp; }
+}
+
 pub struct Clients {
     slots: [Option<Client>; MAX_CLIENTS],
     exiting: [Option<Exiting>; 8],
     next_window_id: u32,
     /// A validated REQ_OPEN_COMMIT path, launched after the request batch.
     pending_open: Option<[u8; proto::OPEN_PATH_MAX + 1]>,
+    envp: *const *const u8,
 }
 
 impl Clients {
@@ -97,6 +104,7 @@ impl Default for Clients {
             exiting: [None; 8],
             next_window_id: FIRST_WINDOW_ID,
             pending_open: None,
+            envp: unsafe { SESSION_ENVP },
         }
     }
 }
@@ -147,7 +155,7 @@ impl Clients {
             && sys::pipe(&mut req, sys::VFS_O_CLOEXEC) == 0
             && sys::pipe(&mut ev, sys::VFS_O_CLOEXEC) == 0;
         let pid = if piped {
-            spawn(path, args, req[1], ev[0], shm)
+            spawn(path, args, req[1], ev[0], shm, self.envp)
         } else {
             sys::EINVAL
         };
@@ -604,6 +612,7 @@ fn spawn(
     requests: i32,
     events: i32,
     pixels: i32,
+    envp: *const *const u8,
 ) -> isize {
     let null = c"/dev/null".as_ptr() as u64;
     let open = |fd| sys::SpawnFdAction {
@@ -660,6 +669,7 @@ fn spawn(
         size: core::mem::size_of::<sys::SpawnOpts>() as u32,
         version: 2,
         argv: argv.as_ptr() as u64,
+        envp: envp as u64,
         fd_actions: actions.as_ptr() as u64,
         action_count: actions.len() as u32,
         ..Default::default()

@@ -21,7 +21,7 @@ static void prompt_sigtstp(unsigned sig) { (void)sig; }
 
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
-static char g_ui_user[32]="user",g_ui_host[64]="fortress";
+static char g_ui_user[32]="user",g_ui_host[64]="fortress",g_ui_home[128]="/";
 static userdb_t prompt_database;
 static char prompt_accounts[DB_FILE_MAX+1];
 static uint32_t g_ui_euid = UINT32_MAX;
@@ -50,6 +50,14 @@ void shell_set_terminal_fd(int fd) {
 
 int shell_get_terminal_fd(void) {
     return g_term_fd;
+}
+
+const char *shell_ui_get_user(void) {
+    return g_ui_user;
+}
+
+const char *shell_ui_get_home(void) {
+    return g_ui_home;
 }
 
 void shell_ui_init(void) {
@@ -119,6 +127,8 @@ void shell_set_prompt_state(int64_t status, const char *cwd) {
     }
     const char *name=user ? user->name : g_ui_euid==0 ? "root" : "user";
     unsigned un=0;while (name[un] && un<31) {g_ui_user[un]=name[un];un++;}g_ui_user[un]=0;
+    const char *home=user ? user->home : g_ui_euid==0 ? "/root" : "/";
+    unsigned hn=0;while (home[hn] && hn<127) {g_ui_home[hn]=home[hn];hn++;}g_ui_home[hn]=0;
     const char *default_host="fortress";for (unsigned i=0;i<9;i++) g_ui_host[i]=default_host[i];
     fd=call(SYS_OPEN,(uintptr_t)"/etc/hostname",VFS_O_RDONLY|VFS_O_CLOEXEC,0);
     if (fd>=0) {

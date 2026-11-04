@@ -965,6 +965,21 @@ int shell_main(int argc,char **argv,const char *const *envp) {
     shell_ui_init();
     vars_init();
     if (!user_entry_secure(envp) && !vars_import(envp)) {puts("shell: invalid entry environment\n");return 1;}
+    shell_set_prompt_state(0, current_cwd);
+    const char *cur_home = vars_get("HOME");
+    if (!cur_home || !cur_home[0] || (cur_home[0] == '/' && cur_home[1] == '\0')) {
+        const char *resolved_home = shell_ui_get_home();
+        if (resolved_home && resolved_home[0] == '/' && resolved_home[1] != '\0') {
+            vars_set("HOME", resolved_home, true);
+        }
+    }
+    const char *cur_user = vars_get("USER");
+    if (!cur_user || !cur_user[0]) {
+        const char *resolved_user = shell_ui_get_user();
+        if (resolved_user && resolved_user[0]) {
+            vars_set("USER", resolved_user, true);
+        }
+    }
     (void)vars_positionals(argc && argv ? argv[0] : "sh",0,NULL);
     alias_init();
     (void)history_load();

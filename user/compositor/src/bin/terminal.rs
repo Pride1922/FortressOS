@@ -52,6 +52,8 @@ core::arch::global_asm!(
 const HEAP_BYTES: usize = 4 << 20;
 const EAGAIN: isize = -21;
 
+static mut SESSION_ENVP: *const *const u8 = core::ptr::null();
+
 fn winsize(cols: usize, rows: usize) -> sys::WinSize {
     sys::WinSize {
         ws_row: rows as u16,
@@ -79,11 +81,38 @@ fn start_shell(cols: usize, rows: usize) -> Option<i32> {
     };
     let actions = [dup(0), dup(1), dup(2)];
     let argv: [*const u8; 2] = [c"/bin/sh".as_ptr() as *const u8, core::ptr::null()];
+
+    let envp = unsafe { SESSION_ENVP };
+    let mut cwd_ptr = 0u64;
+    if !envp.is_null() {
+        let mut i = 0;
+        loop {
+            let entry = unsafe { *envp.add(i) };
+            if entry.is_null() {
+                break;
+            }
+            let is_home = unsafe {
+                *entry == b'H'
+                    && *entry.add(1) == b'O'
+                    && *entry.add(2) == b'M'
+                    && *entry.add(3) == b'E'
+                    && *entry.add(4) == b'='
+            };
+            if is_home {
+                cwd_ptr = unsafe { entry.add(5) } as u64;
+                break;
+            }
+            i += 1;
+        }
+    }
+
     let opts = sys::SpawnOpts {
         size: core::mem::size_of::<sys::SpawnOpts>() as u32,
         version: 2,
         flags: sys::SPAWN_SETSID | sys::SPAWN_STAGED,
         argv: argv.as_ptr() as u64,
+        envp: envp as u64,
+        cwd: cwd_ptr,
         fd_actions: actions.as_ptr() as u64,
         action_count: actions.len() as u32,
         ..Default::default()
@@ -115,7 +144,8 @@ fn resize(app: &mut App, term: &mut Terminal, master: i32) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
+pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8, envp: *const *const u8) -> i32 {
+    unsafe { SESSION_ENVP = envp; }
     if !allocator::init_heap_bytes(HEAP_BYTES) {
         return 1;
     }

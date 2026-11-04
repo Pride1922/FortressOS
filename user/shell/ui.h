@@ -12,5 +12,7 @@ const char *shell_get_prompt_template(void);
 void shell_set_terminal_fd(int fd);
 int  shell_get_terminal_fd(void);
 void shell_ui_init(void);
+const char *shell_ui_get_user(void);
+const char *shell_ui_get_home(void);
 
 #endif /* SHELL_UI_H */

@@ -47,6 +47,7 @@ core::arch::global_asm!(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *const u8) -> i32 {
+    clients::set_session_envp(envp);
     RESTART_SUPPORTED.store(privilege::desktop_session_from_env(envp), core::sync::atomic::Ordering::Relaxed);
     RESTART_REQUESTED.store(false, core::sync::atomic::Ordering::Relaxed);
     let mut is_test = false;
