@@ -4924,22 +4924,7 @@ typedef struct {
     bool started;
 } boot_peripherals_t;
 
-static void boot_peripherals(void *context) {
-    boot_peripherals_t *boot=context;
-    const boot_info_t *info=boot->info;
-    boot->started=true;
-    boot_status("Initializing input & USB controllers...");
-    __asm__ volatile("cli" ::: "memory");
-    sched_disable_preemption();
-    if (!input_init(boot->madt)) {
-        serial_puts("[FAIL] No keyboard or serial input available.\n");
-        hcf();
-    }
-    /* Keep discovery visible near the shell on hardware without COM1. */
-    pci_report_xhci();
-    xhci_boot_probe(info);
-    boot_timing_mark(&boot_profile,"Network controllers");
-    net_boot_probe();
+static void boot_probe_pci_wireless(void) {
     if (iwlwifi_probe()) {
         iwlwifi_map_mmio();
         iwlwifi_init_hw();
@@ -4948,6 +4933,31 @@ static void boot_peripherals(void *context) {
     if (rtw88_probe()) {
         serial_puts("[RTW88] PCIe wireless adapter detected\n");
     }
+}
+
+static void boot_peripherals(void *context) {
+    boot_peripherals_t *boot=context;
+    const boot_info_t *info=boot->info;
+    boot->started=true;
+    boot_status("Initializing input & USB controllers...");
+    boot_timing_t timing;
+    boot_timing_begin(&timing,"legacy-input");
+    __asm__ volatile("cli" ::: "memory");
+    sched_disable_preemption();
+    if (!input_init(boot->madt)) {
+        serial_puts("[FAIL] No keyboard or serial input available.\n");
+        hcf();
+    }
+    /* Keep discovery visible near the shell on hardware without COM1. */
+    boot_timing_mark(&timing,"pci-report");
+    pci_report_xhci();
+    boot_timing_mark(&timing,"xhci");
+    bool wireless_probed=xhci_boot_probe(info,g_installed_boot && !boot_selftests ? boot_probe_pci_wireless : NULL);
+    boot_timing_mark(&timing,NULL);
+    boot_timing_emit(&timing,"INPUT-USB");
+    boot_timing_mark(&boot_profile,"Network controllers");
+    net_boot_probe();
+    if (!wireless_probed) boot_probe_pci_wireless();
     e1000_raw_selftest(info->cmdline);
     net_start(info->cmdline, sizeof(info->cmdline));
 }

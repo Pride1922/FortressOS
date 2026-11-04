@@ -99,7 +99,7 @@ int main(void) {
     };
 
     xhci_port_report_t report;
-    bool ok = xhci_discover_and_reset_ports(&io, NULL, &report);
+    bool ok = xhci_discover_and_reset_ports(&io, NULL, &report, 0);
     assert(ok);
 
     /* Verify port protocol mappings */
@@ -135,20 +135,27 @@ int main(void) {
     setup_mock(&m);
     m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
     m.connect_at_ms = 750;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
     assert(report.ports[1].connected && report.ports[1].enabled);
     assert(m.elapsed_ms == 1020);
 
     setup_mock(&m);
     m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
     m.regs[0x480 / 4] &= ~XHCI_PORTSC_CCS;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
     assert(report.connected_count == 0 && m.reset_count == 0);
     assert(m.elapsed_ms == 1000);
 
     setup_mock(&m);
+    m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
+    m.elapsed_ms = 600;
+    m.connect_at_ms = 750;
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 600));
+    assert(report.ports[1].connected && report.ports[1].enabled && m.elapsed_ms == 1020);
+
+    setup_mock(&m);
     m.fail_at_ms = 50;
-    assert(!xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(!xhci_discover_and_reset_ports(&io, NULL, &report, 0));
     assert(m.elapsed_ms == 50 && m.reset_count == 0);
 
     puts("PASS xHCI ports: protocols, USB2/USB3 resets, delayed attachment, absent device bound, failed timer, write safety");

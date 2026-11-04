@@ -51,12 +51,13 @@ typedef struct {
     xhci_port_info_t ports[XHCI_MAX_ROOT_PORTS];
 } xhci_port_report_t;
 
-/* Discovers protocol mapping, waits a bounded 1000 ms for post-reset attachment
+/* Discovers protocol mapping, completes the 1000 ms post-reset attachment
+ * window after crediting independently measured elapsed time,
  * using the caller's polling delay (failure aborts), inspects all root ports, performs bounded reset
  * on attached USB 2.0 ports, drains port status events from Event Ring,
  * and populates report. */
 bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                                    const xhci_dma_buffers_t *dma,
-                                   xhci_port_report_t *report);
+                                   xhci_port_report_t *report,unsigned settled_ms);
 
 #endif

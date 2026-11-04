@@ -27,7 +27,7 @@ static void drain_event_ring(const xhci_rings_io_t *io, const xhci_dma_buffers_t
 
 bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                                    const xhci_dma_buffers_t *dma,
-                                   xhci_port_report_t *report) {
+                                   xhci_port_report_t *report,unsigned settled_ms) {
     if (!report) return false;
     *report = (xhci_port_report_t){0};
 
@@ -79,7 +79,7 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
     /* HCRST starts ports disconnected. Allow attached devices time to signal
      * again before the one-shot boot scan. This is bounded PIT polling, not
      * runtime hot-plug; no DMA/event-ring ownership is changed here. */
-    for (unsigned ms = 0; ms < 1000; ++ms) {
+    for (unsigned ms = settled_ms; ms < 1000; ++ms) {
         if (!io->delay_ms(io->mmio_ctx)) return false;
     }
 

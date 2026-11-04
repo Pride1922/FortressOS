@@ -25,7 +25,10 @@ typedef struct {
  * source-GUID-bound log slot. Ordinary mode continues the existing BOT storage
  * probe and retains its DMA/quarantine ownership contracts. Errors
  * report in boot thread context and return to the caller; never halt the OS. */
-void xhci_boot_probe(const boot_info_t *boot_info);
+/* Optional independent work runs once during attachment settling, with
+ * IRQs and preemption disabled. It must not touch USB or change that state.
+ * Returns whether the work ran. */
+bool xhci_boot_probe(const boot_info_t *boot_info,void (*settle_work)(void));
 
 /* Bounded diagnostic callable only from thread context, with no spinlock held.
  * Prints preallocated snapshot if pending or on demand. */

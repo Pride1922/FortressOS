@@ -1,4 +1,6 @@
 #include "xhci.h"
+#include "boot_timing.h"
+#include "apic.h"
 #include "xhci_reset.h"
 #include "xhci_rings.h"
 #include "xhci_ports.h"
@@ -170,7 +172,8 @@ void usb_dump_state(void) {
 
 static void xhci_init_one_controller(xhci_controller_t *ctl,
                                      const pci_device_t *pci_dev,
-                                     bool *out_registered_storage) {
+                                     bool *out_registered_storage,boot_timing_t *timing,
+                                     void (**settle_work)(void)) {
     *out_registered_storage = false;
     const boot_info_t *boot_info = s_probe_boot_info;
     bool installer_log_only=false;
@@ -260,6 +263,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     xhci_reset_io_t io = {(void *)probe_virt, (uint32_t)size,
                           mmio_read, mmio_write, delay_ms};
     xhci_reset_result_t result;
+    boot_timing_mark(timing,"ownership-and-reset");
     bool ok = xhci_reset_controller(&io, &result);
     print_snapshot(&result);
     if (!ok) {
@@ -267,6 +271,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         goto unmap;
     }
     serial_puts("[USB 9G.1b] PASS: reset complete; halted, CNR=0\n");
+    boot_timing_mark(timing,"rings");
 
     /* Installer modules are already resident. Quiesce the firmware controller
      * but do not enroll the source as writable runtime storage or allocate DMA
@@ -422,7 +427,22 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
         /* Phase 9G.1d: Root Port Discovery & Reset */
         xhci_port_report_t port_report;
-        if (xhci_discover_and_reset_ports(&ctl->rings_io, &ctl->dma, &port_report)) {
+        unsigned settled_ms=0;
+        if (*settle_work) {
+            void (*work)(void)=*settle_work;
+            *settle_work=NULL;
+            boot_timing_mark(timing,"overlapped-pci-wireless");
+            uint64_t hz=apic_poll_clock_hz(),start=apic_poll_clock_read();
+            work();
+            uint64_t end=apic_poll_clock_read();
+            if (hz && hz<=UINT64_MAX/1000 && end>=start) {
+                uint64_t elapsed=end-start;
+                settled_ms=elapsed>=hz ? 1000 : (unsigned)(elapsed*1000/hz);
+            }
+        }
+        boot_timing_mark(timing,"root-ports");
+        if (xhci_discover_and_reset_ports(&ctl->rings_io, &ctl->dma, &port_report,settled_ms)) {
+            boot_timing_mark(timing,"device-enumeration");
             serial_puts("[USB 9G.1d] Root ports: total=");
             serial_print_hex(port_report.total_ports);
             serial_puts(" usb2=");
@@ -708,6 +728,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         }
 
         /* Halt controller & disable bus mastering upon probe completion */
+        boot_timing_mark(timing,"controller-stop");
         uint32_t cmd_reg = mmio_read((void *)probe_virt, op_off + 0);
         mmio_write((void *)probe_virt, op_off + 0, cmd_reg & ~1u);
         bool halted = false;
@@ -760,9 +781,9 @@ rejected:
     serial_puts("; returning to shell\n");
 }
 
-void xhci_boot_probe(const boot_info_t *boot_info) {
+bool xhci_boot_probe(const boot_info_t *boot_info,void (*settle_work)(void)) {
     static bool attempted;
-    if (attempted) return;
+    if (attempted) return false;
     attempted = true;
     spin_debug_assert_unheld();
     pci_device_t devices[XHCI_MAX_CONTROLLERS];
@@ -770,15 +791,21 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                         PCI_PROGIF_USB_XHCI, devices, XHCI_MAX_CONTROLLERS);
     if (count == 0) {
         serial_puts("[USB 9G.1b] No xHCI controller; skipped\n");
-        return;
+        return false;
     }
+    bool offered=settle_work!=NULL;
     s_probe_boot_info = boot_info;
     for (size_t i = 0; i < count; ++i) {
         bool registered_storage;
-        xhci_init_one_controller(&s_controllers[i], &devices[i], &registered_storage);
+        boot_timing_t timing;
+        boot_timing_begin(&timing,"pci-and-mmio");
+        xhci_init_one_controller(&s_controllers[i], &devices[i], &registered_storage,&timing,&settle_work);
+        boot_timing_mark(&timing,NULL);
+        boot_timing_emit(&timing,"XHCI");
     }
     s_probe_boot_info = NULL;
     profile_calibrate();
+    return offered && !settle_work;
 }
 
 bool usb_is_initialized(void) {
