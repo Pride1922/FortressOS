@@ -457,12 +457,14 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
             for (uint32_t p = 1; p <= port_report.total_ports; ++p) {
                 const xhci_port_info_t *pi = &port_report.ports[p - 1];
+                char scope[] = "XHCI port 00";
+                scope[10] += p / 10;
+                scope[11] += p % 10;
+                if (pi->attachment_seen && timing->hz && timing->valid)
+                    boot_timing_line(timing, scope, "first-seen-in-settle", pi->attachment_ticks);
                 if (!pi->connected) continue;
                 if (timing->hz && timing->valid &&
                     (pi->protocol_major == 2 || pi->protocol_major == 3)) {
-                    char scope[] = "XHCI port 00";
-                    scope[10] += p / 10;
-                    scope[11] += p % 10;
                     boot_timing_line(timing, scope, "power", pi->power_ticks);
                     boot_timing_line(timing, scope, "reset", pi->reset_ticks);
                     boot_timing_line(timing, scope, pi->protocol_major == 3 ? "link-to-U0" : "recovery",

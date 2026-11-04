@@ -41,6 +41,8 @@ typedef struct {
     bool enabled;
     uint8_t speed;          /* XHCI_SPEED_* */
     uint32_t raw_portsc;
+    bool attachment_seen;
+    uint64_t attachment_ticks;
     uint64_t power_ticks, reset_ticks, recovery_ticks;
 } xhci_port_info_t;
 

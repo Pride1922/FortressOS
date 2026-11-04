@@ -171,8 +171,24 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
      * again before the one-shot boot scan. This is bounded PIT polling, not
      * runtime hot-plug; no DMA/event-ring ownership is changed here. */
     uint64_t settle_start = BOOT_TIMING_READ();
-    for (unsigned ms = settled_ms; ms < 1000; ++ms) {
-        if (!io->delay_ms(io->mmio_ctx)) return false;
+    for (unsigned ms = settled_ms;;) {
+        /* Sample only. The final scan still decides which ports to reset. */
+        uint64_t sample_ticks = elapsed_ticks(settle_start);
+        for (uint32_t i = 0; i < max_ports; ++i) {
+            uint32_t off = op + 0x400 + i * 0x10;
+            if (!fits(io, off, 4)) break;
+            xhci_port_info_t *info = &report->ports[i];
+            if (info->attachment_seen) continue;
+            uint32_t raw = io->read32(io->mmio_ctx, off);
+            if (raw != UINT32_MAX && (raw & XHCI_PORTSC_CCS)) {
+                info->attachment_seen = true;
+                info->attachment_ticks = sample_ticks;
+            }
+        }
+        if (ms >= 1000) break;
+        unsigned next = ms + 10 < 1000 ? ms + 10 : 1000;
+        for (; ms < next; ++ms)
+            if (!io->delay_ms(io->mmio_ctx)) return false;
     }
 
     report->settle_ticks = elapsed_ticks(settle_start);
