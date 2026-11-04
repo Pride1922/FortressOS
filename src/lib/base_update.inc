@@ -75,17 +75,23 @@ int base_update_seed(void *bytes,size_t n,base_update_work *w,uint64_t build,uin
         memset(w->floors[i].kernel_hash,0,96);base_state_encode(w->floors+i,b+w->floor_offset[i]);
     }return 0;
 }
-static bool base_matches(uint8_t *b,base_update_work *w,unsigned i){
+static bool base_matches(uint8_t *b,base_update_work *w,unsigned i,const base_loaded_bank *loaded){
     base_state *s=w->states+i;uint8_t sum[32];root_recovery_t r={0};
     if(s->phase==BASE_STATE_PREPARING)return false;
-    identity(b+w->disk.readiness[i],&r);
+    const void *kernel=b+w->disk.kernel[i],*bootstrap=b+w->bootstrap[i];
     root_readiness_digests_t digests;
-    if(!root_readiness_validate_digests(b+w->disk.readiness[i],512,&r,b+w->disk.kernel[i],
-                                       BASE_BANK_BYTES,b+w->bootstrap[i],BASE_BANK_BYTES,&digests)||
-       memcmp(digests.kernel,s->kernel_hash,32)||memcmp(digests.bootstrap,s->bootstrap_hash,32))return false;
+    if(loaded&&!memcmp(kernel,loaded->kernel,BASE_BANK_BYTES)&&!memcmp(bootstrap,loaded->bootstrap,BASE_BANK_BYTES)){
+        digests=loaded->digests;
+    }else{
+        identity(b+w->disk.readiness[i],&r);
+        if(!root_readiness_validate_digests(b+w->disk.readiness[i],512,&r,kernel,BASE_BANK_BYTES,
+                                           bootstrap,BASE_BANK_BYTES,&digests))return false;
+    }
+    if(memcmp(digests.kernel,s->kernel_hash,32)||memcmp(digests.bootstrap,s->bootstrap_hash,32))return false;
     (void)bsha(b+w->disk.readiness[i],512,sum);return !memcmp(sum,s->readiness_hash,32);
 }
-int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],boot_timing_t *timing){
+int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],
+                              boot_timing_t *timing,const base_loaded_bank *loaded){
     if(!io||!io->read||!io->write||!io->flush||!bytes||!w||!running||
        !disjoint(bytes,BASE_ESP_BYTES,w,sizeof *w)||!disjoint(bytes,BASE_ESP_BYTES,io,sizeof *io)||
        !disjoint(bytes,BASE_ESP_BYTES,running,512)||!disjoint(w,sizeof *w,running,512))return -1;
@@ -110,7 +116,7 @@ int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_upda
         bool valid=identical ? s->phase!=BASE_STATE_PREPARING &&
             !memcmp(s->kernel_hash,previous->kernel_hash,32) &&
             !memcmp(s->bootstrap_hash,previous->bootstrap_hash,32) &&
-            !memcmp(s->readiness_hash,previous->readiness_hash,32) : base_matches(b,w,i);
+            !memcmp(s->readiness_hash,previous->readiness_hash,32) : base_matches(b,w,i,loaded);
         if(valid){
             if(w->running!=2&&!identical)return -1;
             matched|=1u<<i;
@@ -154,7 +160,7 @@ int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_upda
     memcpy(w->disk.ready,running,512);w->disk.prepared=true;return 0;
 }
 int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512]){
-    return base_update_prepare_timed(io,bytes,w,running,NULL);
+    return base_update_prepare_timed(io,bytes,w,running,NULL,NULL);
 }
 static int base_publish(const kernel_update_io_t *io,base_update_work *w,uint32_t offset,const uint8_t *p,unsigned bytes){
     if((offset|bytes)&511||offset>BASE_ESP_BYTES||bytes>BASE_ESP_BYTES-offset)return -1;

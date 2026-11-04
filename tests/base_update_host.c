@@ -73,6 +73,18 @@ int main(int argc,char **argv){
     kernel_update_io_t io={.sectors=disk_size/512,.read=rd,.write=wr,.flush=flush};
     assert(!base_update_prepare(&io,prefix,&work,ready));assert(!work.mixed&&!work.invalid&&work.running==0);saved=work;
     memcpy(initial,disk_bytes+4096*512,BASE_ESP_BYTES);
+    base_loaded_bank loaded={.kernel=initial+saved.disk.kernel[0],.bootstrap=initial+saved.bootstrap[0]};
+    root_recovery_t identity;
+    assert(root_recovery_parse(recovery,sizeof recovery-1,&identity));
+    assert(root_readiness_validate_digests(ready,512,&identity,loaded.kernel,BASE_BANK_BYTES,
+                                           loaded.bootstrap,BASE_BANK_BYTES,&loaded.digests));
+    assert(!base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded)&&work.running==0);
+    uint8_t *esp=disk_bytes+4096*512;
+    esp[saved.disk.kernel[0]+BASE_BANK_BYTES-1]^=1;
+    assert(!base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded)&&work.running==1);
+    esp[saved.bootstrap[1]+BASE_BANK_BYTES-1]^=1;
+    assert(base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded));
+    restore();
     /* Identical bank bytes do not authorize a mismatched state for the
      * selected bank. Keep running from the independently valid copy. */
     base_state bad_selected=saved.states[1];

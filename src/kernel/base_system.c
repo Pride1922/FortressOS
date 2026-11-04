@@ -45,11 +45,14 @@ bool base_system_boot(const boot_info_t *info,const root_readiness_digests_t *lo
     if(config_file("/base/release.v1",marker,sizeof marker,&n,true)||base_release_parse(marker,n,&current_build,&current_abi,current_platform)||
        config_file("/bootstrap/recovery.v1",(uint8_t *)recovery_record,sizeof recovery_record,&recovery_bytes,true))return false;
     memcpy(running_ready,(void *)info->readiness_vaddr,512);
+    base_loaded_bank bank={.kernel=(const void *)info->kernel_file_vaddr,
+                           .bootstrap=(const void *)info->initramfs_vaddr,.digests=*loaded};
+    bool full_bank=info->kernel_file_size==BASE_BANK_BYTES&&info->initramfs_size==BASE_BANK_BYTES;
     boot_timing_t timing;boot_timing_begin(&timing,"workspace");
     base_update_work *w=kmalloc(sizeof *w);void *bytes=kmalloc_large(BASE_ESP_BYTES);bool ok=false;
     if(w&&bytes){kernel_update_io_t io=io_value();
         boot_timing_mark(&timing,"disk-layout");
-        if(!base_update_prepare_timed(&io,bytes,w,running_ready,&timing)){
+        if(!base_update_prepare_timed(&io,bytes,w,running_ready,&timing,full_bank ? &bank : NULL)){
             boot_timing_mark(&timing,"loaded-modules");
             base_state *s=w->states+w->running;
             ok=s->build==current_build&&s->abi==current_abi&&!memcmp(s->platform,current_platform,32)&&
