@@ -39,8 +39,8 @@ static int config_file(const char *path,uint8_t *out,size_t cap,size_t *n,bool b
         if(got<=0||(uint64_t)got>m.size-at)r=-VFS_EIO;else at+=(size_t)got;}
     vfs_node_put(node);if(!r)*n=at;return r;
 }
-bool base_system_boot(const boot_info_t *info){
-    if(enabled||live||!info||!info->installed_modules_valid||info->readiness_size!=512)return false;
+bool base_system_boot(const boot_info_t *info,const root_readiness_digests_t *loaded){
+    if(enabled||live||!info||!loaded||!info->installed_modules_valid||info->readiness_size!=512)return false;
     uint8_t marker[BASE_RELEASE_BYTES];size_t n=0;
     if(config_file("/base/release.v1",marker,sizeof marker,&n,true)||base_release_parse(marker,n,&current_build,&current_abi,current_platform)||
        config_file("/bootstrap/recovery.v1",(uint8_t *)recovery_record,sizeof recovery_record,&recovery_bytes,true))return false;
@@ -51,10 +51,9 @@ bool base_system_boot(const boot_info_t *info){
         boot_timing_mark(&timing,"disk-layout");
         if(!base_update_prepare_timed(&io,bytes,w,running_ready,&timing)){
             boot_timing_mark(&timing,"loaded-modules");
-            uint8_t kh[32],bh[32];(void)crypto_sha256((void *)info->kernel_file_vaddr,info->kernel_file_size,kh);
-            (void)crypto_sha256((void *)info->initramfs_vaddr,info->initramfs_size,bh);base_state *s=w->states+w->running;
+            base_state *s=w->states+w->running;
             ok=s->build==current_build&&s->abi==current_abi&&!memcmp(s->platform,current_platform,32)&&
-                !memcmp(kh,s->kernel_hash,32)&&!memcmp(bh,s->bootstrap_hash,32);
+                !memcmp(loaded->kernel,s->kernel_hash,32)&&!memcmp(loaded->bootstrap,s->bootstrap_hash,32);
             if(ok)capture(w);
         }
     }

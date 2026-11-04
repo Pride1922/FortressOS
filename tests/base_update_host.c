@@ -73,6 +73,14 @@ int main(int argc,char **argv){
     kernel_update_io_t io={.sectors=disk_size/512,.read=rd,.write=wr,.flush=flush};
     assert(!base_update_prepare(&io,prefix,&work,ready));assert(!work.mixed&&!work.invalid&&work.running==0);saved=work;
     memcpy(initial,disk_bytes+4096*512,BASE_ESP_BYTES);
+    /* Identical bank bytes do not authorize a mismatched state for the
+     * selected bank. Keep running from the independently valid copy. */
+    base_state bad_selected=saved.states[1];
+    bad_selected.bootstrap_hash[0]^=1;
+    base_state_encode(&bad_selected,disk_bytes+4096*512+saved.state_offset[1]);
+    for(unsigned i=0;i<4;i++)disk_bytes[4096*512+saved.disk.configs[i]+15]='3';
+    assert(!base_update_prepare(&io,prefix,&work,ready)&&work.running==0&&work.disk.active==1);
+    restore();
     /* A valid readiness record cannot substitute for either bank-state digest. */
     for(unsigned payload=0;payload<2;payload++){
         for(unsigned slot=0;slot<2;slot++){

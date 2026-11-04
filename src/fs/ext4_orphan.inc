@@ -43,6 +43,15 @@ static void e4_orphan_added(ext4_engine_t *e,uint32_t ino) {
  * complete allocation bitmap, including orphan extents beyond the target EOF.
  * This rejects aliasing, unlisted deleted inodes, cycles and dangling names.
  * Bounds deliberately narrow only this intermediate workbench. */
+static bool e4_unowned_gap(const uint8_t *owned,uint32_t start,uint32_t end) {
+    static const uint8_t zero[4096];
+    while (start<end && start%8) if (e4_bit(owned,start++)) return false;
+    size_t bytes=(end-start)/8;
+    if (bytes>sizeof(zero) || memcmp(owned+start/8,zero,bytes)) return false;
+    start+=(uint32_t)bytes*8;
+    while (start<end) if (e4_bit(owned,start++)) return false;
+    return true;
+}
 static int e4_orphan_validate(ext4_engine_t *e) {
     ext4_mount_t *fs=e->fs;uint8_t sb[1024];
     if (!e4_bytes(fs,1024,sb,sizeof(sb))) return -VFS_EIO;
@@ -163,15 +172,21 @@ static int e4_orphan_validate(ext4_engine_t *e) {
     }
     for (uint32_t g=0;g<fs->groups;g++) {
         uint32_t start=fs->first+g*fs->bpg,count=fs->blocks-start;if (count>fs->bpg) count=fs->bpg;
-        /* Uninitialized bitmap helper does not synthesize bits; compare fixed
-         * ranges instead, as the allocator's initialization contract does. */
-        bool lazy=(e4_u16(fs->gd[g].raw+18)&2)!=0;
-        if (!lazy && !e4_bitmap(fs,g,false)) { r=-VFS_EIO;goto done; }
-        if (lazy) {
-            memset(fs->scratch,0,fs->bs);
-            for (unsigned i=e4_reserved_first(fs,start);i<fs->ranges && fs->reserved[i].lo<start+count;i++)
-                for (uint32_t k=0;k<fs->reserved[i].len;k++) e4_set_bit(fs->scratch,fs->reserved[i].lo-start+k,true);
+        if (e4_u16(fs->gd[g].raw+18)&2) {
+            /* The ownership map was seeded with all fixed reservations.
+             * Every gap must be empty, and only fixed blocks count as used. */
+            uint32_t at=start,end=start+count,free=count;
+            for (unsigned i=e4_reserved_first(fs,start);i<fs->ranges && fs->reserved[i].lo<end;i++) {
+                e4_range_t range=fs->reserved[i];
+                if (range.lo<at || range.len>end-range.lo || !e4_unowned_gap(owned,at,range.lo)) {
+                    r=-VFS_EIO;goto done;
+                }
+                at=range.lo+range.len;free-=range.len;
+            }
+            if (!e4_unowned_gap(owned,at,end) || free!=e4_u16(fs->gd[g].raw+12)) { r=-VFS_EIO;goto done; }
+            continue;
         }
+        if (!e4_bitmap(fs,g,false)) { r=-VFS_EIO;goto done; }
         unsigned free=0;
         for (uint32_t byte=0;byte<count/8;byte++) {
             uint8_t value=fs->scratch[byte];

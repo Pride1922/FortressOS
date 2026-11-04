@@ -99,9 +99,20 @@ int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_upda
     unsigned matched=0;
     for(unsigned i=0;i<2;i++){
         if(base_boot_state_decode(b+w->state_offset[i],w->states+i)||w->states[i].slot!=i||w->states[i].phase==BASE_STATE_FLOOR||w->states[i].generation){w->invalid|=1u<<i;continue;}
-        if(!memcmp(b+w->disk.readiness[i],running,512)&&base_matches(b,w,i)){
-            if(w->running!=2 && (memcmp(b+w->disk.kernel[i],b+w->disk.kernel[w->running],BASE_BANK_BYTES)||
-                memcmp(b+w->bootstrap[i],b+w->bootstrap[w->running],BASE_BANK_BYTES)))return -1;
+        if(memcmp(b+w->disk.readiness[i],running,512))continue;
+        bool identical=w->running!=2 &&
+            !memcmp(b+w->disk.kernel[i],b+w->disk.kernel[w->running],BASE_BANK_BYTES) &&
+            !memcmp(b+w->bootstrap[i],b+w->bootstrap[w->running],BASE_BANK_BYTES);
+        const base_state *s=w->states+i;
+        const base_state *previous=w->states+(w->running==2 ? i : w->running);
+        /* Identical payload and readiness bytes have already been hashed.
+         * The second bank must still independently bind all three digests. */
+        bool valid=identical ? s->phase!=BASE_STATE_PREPARING &&
+            !memcmp(s->kernel_hash,previous->kernel_hash,32) &&
+            !memcmp(s->bootstrap_hash,previous->bootstrap_hash,32) &&
+            !memcmp(s->readiness_hash,previous->readiness_hash,32) : base_matches(b,w,i);
+        if(valid){
+            if(w->running!=2&&!identical)return -1;
             matched|=1u<<i;
             w->running=i;
         }

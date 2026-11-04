@@ -160,8 +160,9 @@ static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timi
     if (!gpt_str_to_guid(recovery.partuuid,&expected) || !gpt_guid_equal(&expected,&c.partuuid)) {recovery_valid=false;return false;}
     if (c.mode==ROOT_BOOT_RECOVERY) {reason="explicit recovery mode (no root writes)";return false;}
     reason="invalid or incomplete boot readiness";
-    if (!info->installed_modules_valid || !root_readiness_validate((void *)info->readiness_vaddr,info->readiness_size,&recovery,
-        (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size)) return false;
+    root_readiness_digests_t loaded;
+    if (!info->installed_modules_valid || !root_readiness_validate_digests((void *)info->readiness_vaddr,info->readiness_size,&recovery,
+        (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size,&loaded)) return false;
     boot_timing_mark(timing,"bootstrap-cli");
     /* Keep a current package CLI available on installations predating /bin/pkg. */
     int tool=pkg_boot_cli_publish(info);
@@ -202,7 +203,7 @@ static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timi
     boot_timing_mark(timing,"base-boot-set");
     if(c.base_layout){
         reason="complete base boot-set admission failed";
-        if(!base_system_boot(info))return false;
+        if(!base_system_boot(info,&loaded))return false;
         complete_base=true;
         if(vfs_boot_enable_base())return false;
     }
