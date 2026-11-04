@@ -21,6 +21,7 @@ static struct {
 };
 void serial_puts(const char *s) { message=s; ++logs; }
 void serial_print_dec(uint64_t val) { (void)val; }
+void serial_print_hex(uint64_t val) { (void)val; }
 uint64_t apic_timer_get_ticks(void) { ++timers; return 0; }
 uint64_t apic_timer_get_frequency(void) { ++timers; return 1000; }
 acpi_sdt_header_t *acpi_find_table(const char *s) { (void)s; ++table_reads; return NULL; }

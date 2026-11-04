@@ -466,6 +466,68 @@ static void test_dell_ec_field_parsing_and_ecdt(void) {
     puts("       [PASS] Dell scoped EC fields, 16-bit state, and ECDT parser verified");
 }
 
+static void test_dell_cap0_fcp0_fields(void) {
+    puts("[TEST 9] Dell Latitude CAP0/FCP0/CRT0/VOT0/BST0 Field Parsing & Status...");
+
+    /* Dell Latitude / XPS AML FieldOp with CAP0 (rem), VOT0 (volt), CRT0 (rate), FCP0 (full), BST0 (state) */
+    uint8_t dell_cap0_aml[] = {
+        0x5B, 0x81, 0x25,                   /* FieldOp, PkgLength = 37 */
+        0x5C, 0x2E, 'E', 'C', '0', '_', 'E', 'C', 'O', 'R', /* RegionName: \EC0_.ECOR */
+        0x01,                               /* FieldFlags */
+        'C', 'A', 'P', '0', 0x10,           /* CAP0: 16-bit Remaining Capacity at offset 0 */
+        'V', 'O', 'T', '0', 0x10,           /* VOT0: 16-bit Present Voltage at offset 2 */
+        'C', 'R', 'T', '0', 0x10,           /* CRT0: 16-bit Present Rate at offset 4 */
+        'F', 'C', 'P', '0', 0x10,           /* FCP0: 16-bit Full Charge Capacity at offset 6 */
+        'B', 'S', 'T', '0', 0x10            /* BST0: 16-bit Battery State at offset 8 */
+    };
+
+    acpi_ec_battery_map_t map;
+    memset(&map, 0, sizeof(map));
+    assert(acpi_parse_ec_fields(dell_cap0_aml, sizeof(dell_cap0_aml), &map));
+    assert(map.found_rem && map.found_full && map.found_rate && map.found_volt && map.found_state);
+    assert(map.rem_cap_offset == 0 && map.rem_cap_bits == 16);
+    assert(map.volt_offset == 2 && map.volt_bits == 16);
+    assert(map.rate_offset == 4 && map.rate_bits == 16);
+    assert(map.full_cap_offset == 6 && map.full_cap_bits == 16);
+    assert(map.state_offset == 8 && map.state_bits == 16);
+
+    /* Test live EC reading with these offsets */
+    memset(s_mock_ec_regs, 0, sizeof(s_mock_ec_regs));
+    /* CAP0: 3000 mAh = 0x0BB8 */
+    s_mock_ec_regs[0] = 0xB8; s_mock_ec_regs[1] = 0x0B;
+    /* VOT0: 12000 mV = 0x2EE0 */
+    s_mock_ec_regs[2] = 0xE0; s_mock_ec_regs[3] = 0x2E;
+    /* CRT0: 1500 mA = 0x05DC */
+    s_mock_ec_regs[4] = 0xDC; s_mock_ec_regs[5] = 0x05;
+    /* FCP0: 6000 mAh = 0x1770 */
+    s_mock_ec_regs[6] = 0x70; s_mock_ec_regs[7] = 0x17;
+    /* BST0: 0x0001 (Discharging) */
+    s_mock_ec_regs[8] = 0x01; s_mock_ec_regs[9] = 0x00;
+
+    acpi_battery_set_ec_reader(mock_ec_reader);
+    battery_status_t st;
+    memset(&st, 0, sizeof(st));
+    assert(acpi_read_ec_battery(&map, &st));
+    assert(st.capacity_percent == 50); /* 3000 / 6000 = 50% */
+    assert(st.state == BATTERY_STATE_DISCHARGING);
+    assert(st.time_remaining_mins == 120); /* (3000 * 60) / 1500 = 120 */
+    assert(st.voltage_mv == 12000);
+
+    /* Test fallback state with AC online */
+    s_mock_ec_regs[8] = 0x00; /* EC reports state 0 (unknown) */
+    acpi_ac_adapter_set_mock(AC_POWER_ONLINE);
+    assert(acpi_read_ec_battery(&map, &st));
+    assert(st.state == BATTERY_STATE_CHARGING);
+
+    /* Test fallback state with AC online and >=98% capacity */
+    s_mock_ec_regs[0] = 0x70; s_mock_ec_regs[1] = 0x17; /* 6000 / 6000 = 100% */
+    assert(acpi_read_ec_battery(&map, &st));
+    assert(st.capacity_percent == 100);
+    assert(st.state == BATTERY_STATE_FULL);
+
+    puts("       [PASS] Dell Latitude CAP0/FCP0/CRT0/VOT0/BST0 and state fallback verified");
+}
+
 int main(void) {
     puts("=== Running FortressOS ACPI Battery Verification Suite ===");
     test_percentage_calculation();
@@ -477,6 +539,7 @@ int main(void) {
     test_ac_and_thermal();
     test_ec_field_parsing_and_status();
     test_dell_ec_field_parsing_and_ecdt();
+    test_dell_cap0_fcp0_fields();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;
 }
