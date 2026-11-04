@@ -1320,6 +1320,35 @@ static bool should_map_in_hhdm(uint64_t type) {
 
 extern uint8_t kernel_stack_guard[];
 
+/* The BSP owns this new root before CR3 publication. Walk the hierarchy once
+ * per PT and fill ordinary 4 KiB leaves. There are no translations to flush. */
+static bool vmm_boot_map_ram(uint64_t *root, uintptr_t phys, uintptr_t end) {
+    const uint64_t flags = PTE_PRESENT | PTE_WRITABLE | PTE_NX;
+    while (phys < end) {
+        uintptr_t va = hhdm_offset + phys;
+        int needed = missing_tables(root, va);
+        if (needed < 0) return false;
+        uintptr_t spares[3];
+        unsigned count = 0;
+        while (count < (unsigned)needed) {
+            uintptr_t table = pmm_alloc_page();
+            if (!table) {
+                while (count) pmm_free_page(spares[--count]);
+                return false;
+            }
+            memset(phys_to_virt(table), 0, PAGE_SIZE);
+            spares[count++] = table;
+        }
+        uint64_t *pdpt = get_or_create_table(root, pml4_index(va), flags, spares, &count);
+        uint64_t *pd = get_or_create_table(pdpt, pdpt_index(va), flags, spares, &count);
+        uint64_t *pt = get_or_create_table(pd, pd_index(va), flags, spares, &count);
+        for (size_t i = pt_index(va); i < 512 && phys < end; i++, phys += PAGE_SIZE) {
+            if (!(pt[i] & PTE_PRESENT)) pt[i] = phys | flags;
+        }
+    }
+    return true;
+}
+
 void vmm_init(boot_info_t *boot_info) {
     if (!boot_info) {
         serial_puts("[FAIL] VMM: Missing boot info!\n");
@@ -1378,17 +1407,17 @@ void vmm_init(boot_info_t *boot_info) {
         uintptr_t end_phys   = (entry->base + entry->length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
         if (end_phys > PTE_ADDR_MASK + PAGE_SIZE ||
             end_phys - 1 > UINT64_MAX - hhdm_offset ||
+            hhdm_offset % PAGE_SIZE ||
+            hhdm_offset + start_phys < 0xFFFF800000000000ULL ||
             !is_canonical_address(hhdm_offset + start_phys) ||
             !is_canonical_address(hhdm_offset + end_phys - 1)) {
             serial_puts("[FAIL] VMM: RAM range outside representable HHDM\n");
             for (;;) { __asm__ volatile("cli; hlt"); }
         }
 
-        for (uintptr_t phys = start_phys; phys < end_phys; phys += PAGE_SIZE) {
-            uintptr_t virt = hhdm_offset + phys;
-            if (!vmm_is_mapped(pml4, virt)) {
-                vmm_must_map(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX, "HHDM RAM");
-            }
+        if (!vmm_boot_map_ram(pml4, start_phys, end_phys)) {
+            serial_puts("[FAIL] VMM: Failed to map HHDM RAM\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
         }
     }
     serial_puts("[VMM] Higher-Half Direct Map (HHDM) physical RAM regions mapped (RW, NX)\n");
