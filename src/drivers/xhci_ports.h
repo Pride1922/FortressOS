@@ -41,6 +41,7 @@ typedef struct {
     bool enabled;
     uint8_t speed;          /* XHCI_SPEED_* */
     uint32_t raw_portsc;
+    uint64_t power_ticks, reset_ticks, recovery_ticks;
 } xhci_port_info_t;
 
 typedef struct {
@@ -48,6 +49,7 @@ typedef struct {
     uint32_t usb2_port_count;
     uint32_t usb3_port_count;
     uint32_t connected_count;
+    uint64_t settle_ticks;
     xhci_port_info_t ports[XHCI_MAX_ROOT_PORTS];
 } xhci_port_report_t;
 

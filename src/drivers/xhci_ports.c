@@ -1,4 +1,10 @@
 #include "xhci_ports.h"
+#include "boot_timing.h"
+
+static uint64_t elapsed_ticks(uint64_t start) {
+    uint64_t end = BOOT_TIMING_READ();
+    return end >= start ? end - start : 0;
+}
 
 static bool fits(const xhci_rings_io_t *io, uint32_t off, uint32_t len) {
     return !(off & 3) && off <= io->mmio_size && len <= io->mmio_size - off;
@@ -79,9 +85,12 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
     /* HCRST starts ports disconnected. Allow attached devices time to signal
      * again before the one-shot boot scan. This is bounded PIT polling, not
      * runtime hot-plug; no DMA/event-ring ownership is changed here. */
+    uint64_t settle_start = BOOT_TIMING_READ();
     for (unsigned ms = settled_ms; ms < 1000; ++ms) {
         if (!io->delay_ms(io->mmio_ctx)) return false;
     }
+
+    report->settle_ticks = elapsed_ticks(settle_start);
 
     /* 2. Inspect each root port */
     for (uint32_t p = 1; p <= max_ports; ++p) {
@@ -101,58 +110,67 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
         if (!info->connected) continue;
         report->connected_count++;
 
-if (info->protocol_major == 3) {
-    /* USB 3.0 attachment: ensure power, issue port reset, then wait
-     * for the link to reach U0 (operational). SuperSpeed ports report
-     * operational state via PLS rather than PED alone. */
-    if (!(raw & XHCI_PORTSC_PP)) {
-        io->write32(io->mmio_ctx, portsc_off,
-                    (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PP);
-        for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
-        raw = io->read32(io->mmio_ctx, portsc_off);
-    }
+        if (info->protocol_major == 3) {
+            /* USB 3.0 attachment: ensure power, issue port reset, then wait
+             * for the link to reach U0 (operational). SuperSpeed ports report
+             * operational state via PLS rather than PED alone. */
+            if (!(raw & XHCI_PORTSC_PP)) {
+                uint64_t power_start = BOOT_TIMING_READ();
+                io->write32(io->mmio_ctx, portsc_off,
+                            (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PP);
+                for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
+                info->power_ticks = elapsed_ticks(power_start);
+                raw = io->read32(io->mmio_ctx, portsc_off);
+            }
 
-    io->write32(io->mmio_ctx, portsc_off,
-                (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PR);
+            uint64_t reset_start = BOOT_TIMING_READ();
+            io->write32(io->mmio_ctx, portsc_off,
+                        (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PR);
 
-    bool reset_done = false;
-    for (unsigned ms = 0; ms <= 100; ++ms) {
-        raw = io->read32(io->mmio_ctx, portsc_off);
-        if (raw != UINT32_MAX && !(raw & XHCI_PORTSC_PR)) {
-            reset_done = true;
-            break;
+            bool reset_done = false;
+            for (unsigned ms = 0; ms <= 100; ++ms) {
+                raw = io->read32(io->mmio_ctx, portsc_off);
+                if (raw != UINT32_MAX && !(raw & XHCI_PORTSC_PR)) {
+                    reset_done = true;
+                    break;
+                }
+                io->delay_ms(io->mmio_ctx);
+            }
+
+            info->reset_ticks = elapsed_ticks(reset_start);
+            if (reset_done) {
+                uint64_t recovery_start = BOOT_TIMING_READ();
+                /* Wait for PLS to reach U0. PLS = bits [8:5], U0 = 0. */
+                for (unsigned ms = 0; ms <= 100; ++ms) {
+                    raw = io->read32(io->mmio_ctx, portsc_off);
+                    if (raw != UINT32_MAX && ((raw >> 5) & 0x7) == 0) break;
+                    io->delay_ms(io->mmio_ctx);
+                }
+
+                info->recovery_ticks = elapsed_ticks(recovery_start);
+                raw = io->read32(io->mmio_ctx, portsc_off);
+                info->raw_portsc = raw;
+                info->enabled = (raw & XHCI_PORTSC_PED) != 0;
+                info->speed = (uint8_t)((raw & XHCI_PORTSC_SPEED_MASK) >> XHCI_PORTSC_SPEED_SHIFT);
+
+                io->write32(io->mmio_ctx, portsc_off,
+                            (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PRC | XHCI_PORTSC_CSC);
+            }
+            continue;
         }
-        io->delay_ms(io->mmio_ctx);
-    }
-
-    if (reset_done) {
-        /* Wait for PLS to reach U0. PLS = bits [8:5], U0 = 0. */
-        for (unsigned ms = 0; ms <= 100; ++ms) {
-            raw = io->read32(io->mmio_ctx, portsc_off);
-            if (raw != UINT32_MAX && ((raw >> 5) & 0x7) == 0) break;
-            io->delay_ms(io->mmio_ctx);
-        }
-
-        raw = io->read32(io->mmio_ctx, portsc_off);
-        info->raw_portsc = raw;
-        info->enabled = (raw & XHCI_PORTSC_PED) != 0;
-        info->speed = (uint8_t)((raw & XHCI_PORTSC_SPEED_MASK) >> XHCI_PORTSC_SPEED_SHIFT);
-
-        io->write32(io->mmio_ctx, portsc_off,
-                    (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PRC | XHCI_PORTSC_CSC);
-    }
-    continue;
-}
 
         if (info->protocol_major == 2) {
             /* USB 2.0 attachment: ensure power and issue bounded port reset */
             if (!(raw & XHCI_PORTSC_PP)) {
+                uint64_t power_start = BOOT_TIMING_READ();
                 io->write32(io->mmio_ctx, portsc_off, (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PP);
                 for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
+                info->power_ticks = elapsed_ticks(power_start);
                 raw = io->read32(io->mmio_ctx, portsc_off);
             }
 
             /* Issue Port Reset */
+            uint64_t reset_start = BOOT_TIMING_READ();
             io->write32(io->mmio_ctx, portsc_off, (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PR);
 
             /* Wait for reset completion (PR clears to 0), bounded at 100 ms */
@@ -166,9 +184,13 @@ if (info->protocol_major == 3) {
                 io->delay_ms(io->mmio_ctx);
             }
 
+            info->reset_ticks = elapsed_ticks(reset_start);
             if (reset_done) {
+                uint64_t recovery_start = BOOT_TIMING_READ();
                 /* USB 2.0 reset recovery time (TRSTRCY >= 10 ms, wait 20 ms) */
                 for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
+
+                info->recovery_ticks = elapsed_ticks(recovery_start);
 
                 /* Acknowledge PRC and CSC (RW1C) */
                 io->write32(io->mmio_ctx, portsc_off,
