@@ -349,6 +349,123 @@ static void test_ec_field_parsing_and_status(void) {
     puts("       [PASS] Dynamic AML EC Field parsing and EC status verified");
 }
 
+static void test_dell_ec_field_parsing_and_ecdt(void) {
+    puts("[TEST 8] Dell Scoped EC Field Parsing, 16-bit State & ECDT Validation...");
+
+    /* 1. Test ECDT parser with valid System I/O ports */
+    uint8_t valid_ecdt[68];
+    memset(valid_ecdt, 0, sizeof(valid_ecdt));
+    memcpy(valid_ecdt, "ECDT", 4);
+    uint32_t len = sizeof(valid_ecdt);
+    memcpy(valid_ecdt + 4, &len, 4);
+    /* ec_control GAS at offset 36: space 1 (I/O), port 0x6C */
+    valid_ecdt[36] = 1;
+    uint64_t ctrl_port = 0x6C;
+    memcpy(valid_ecdt + 40, &ctrl_port, 8);
+    /* ec_data GAS at offset 48: space 1 (I/O), port 0x68 */
+    valid_ecdt[48] = 1;
+    uint64_t data_port = 0x68;
+    memcpy(valid_ecdt + 52, &data_port, 8);
+
+    uint16_t parsed_cmd = 0, parsed_data = 0;
+    assert(acpi_parse_ecdt(valid_ecdt, sizeof(valid_ecdt), &parsed_cmd, &parsed_data));
+    assert(parsed_cmd == 0x6C);
+    assert(parsed_data == 0x68);
+
+    /* Test ECDT rejection of MMIO space (space 0) */
+    valid_ecdt[36] = 0; /* MMIO */
+    assert(!acpi_parse_ecdt(valid_ecdt, sizeof(valid_ecdt), &parsed_cmd, &parsed_data));
+
+    /* Test ECDT rejection of bad signature */
+    memcpy(valid_ecdt, "FACP", 4);
+    valid_ecdt[36] = 1;
+    assert(!acpi_parse_ecdt(valid_ecdt, sizeof(valid_ecdt), &parsed_cmd, &parsed_data));
+
+    /* 2. Test port setters, getters, and reset isolation */
+    acpi_battery_reset();
+    uint16_t d_port = 0, c_port = 0;
+    acpi_battery_get_ec_ports(&d_port, &c_port);
+    assert(d_port == 0x62 && c_port == 0x66);
+
+    acpi_battery_set_ec_ports(0x68, 0x6C);
+    acpi_battery_get_ec_ports(&d_port, &c_port);
+    assert(d_port == 0x68 && c_port == 0x6C);
+
+    acpi_battery_reset();
+    acpi_battery_get_ec_ports(&d_port, &c_port);
+    assert(d_port == 0x62 && c_port == 0x66);
+
+    /* 3. Dell DSDT Fixture with DualNamePath (0x2E: \_SB.PCI0.LPCB.ECDV / \EC0_.ECOR) and Dell field names */
+    uint8_t dell_dual_aml[] = {
+        0x5B, 0x81, 0x28,                   /* FieldOp, PkgLength = 40 */
+        0x5C, 0x2E, 'E', 'C', '0', '_', 'E', 'C', 'O', 'R', /* RegionName: \EC0_.ECOR (DualNamePath) */
+        0x01,                               /* FieldFlags */
+        0x00, 0x40, 0x10,                   /* ReservedField: skip 256 bits (offset 0x20 = 32 bytes) */
+        'M', 'B', 'S', 'T', 0x10,           /* MBST (Dell Main Battery State, 16-bit) */
+        'M', 'B', 'P', 'R', 0x10,           /* MBPR (Dell Present Rate, 16-bit) */
+        'M', 'B', 'R', 'M', 0x10,           /* MBRM (Dell Remaining Capacity, 16-bit) */
+        'M', 'B', 'V', 'O', 0x10,           /* MBVO (Dell Present Voltage, 16-bit) */
+        'M', 'B', 'F', 'C', 0x10            /* MBFC (Dell Full Capacity, 16-bit) */
+    };
+
+    acpi_ec_battery_map_t map;
+    memset(&map, 0, sizeof(map));
+    assert(acpi_parse_ec_fields(dell_dual_aml, sizeof(dell_dual_aml), &map));
+    assert(map.found_state && map.found_rate && map.found_rem && map.found_volt && map.found_full);
+    assert(map.state_offset == 0x20 && map.state_bits == 16);
+    assert(map.rate_offset == 0x22 && map.rate_bits == 16);
+    assert(map.rem_cap_offset == 0x24 && map.rem_cap_bits == 16);
+    assert(map.volt_offset == 0x26 && map.volt_bits == 16);
+    assert(map.full_cap_offset == 0x28 && map.full_cap_bits == 16);
+
+    /* 4. Test live reading of Dell EC mapping with 16-bit state */
+    memset(s_mock_ec_regs, 0, sizeof(s_mock_ec_regs));
+    /* MBST: 0x0001 = Discharging */
+    s_mock_ec_regs[0x20] = 0x01;
+    s_mock_ec_regs[0x21] = 0x00;
+    /* MBPR: 1200 mA (0x04B0) */
+    s_mock_ec_regs[0x22] = 0xB0;
+    s_mock_ec_regs[0x23] = 0x04;
+    /* MBRM: 3600 mAh (0x0E10) */
+    s_mock_ec_regs[0x24] = 0x10;
+    s_mock_ec_regs[0x25] = 0x0E;
+    /* MBVO: 11400 mV (0x2C88) */
+    s_mock_ec_regs[0x26] = 0x88;
+    s_mock_ec_regs[0x27] = 0x2C;
+    /* MBFC: 4800 mAh (0x12C0) */
+    s_mock_ec_regs[0x28] = 0xC0;
+    s_mock_ec_regs[0x29] = 0x12;
+
+    acpi_battery_set_ec_reader(mock_ec_reader);
+    battery_status_t st;
+    memset(&st, 0, sizeof(st));
+    assert(acpi_read_ec_battery(&map, &st));
+    /* 3600 / 4800 = 75% */
+    assert(st.capacity_percent == 75);
+    assert(st.state == BATTERY_STATE_DISCHARGING);
+    /* (3600 * 60) / 1200 = 180 mins (3h) */
+    assert(st.time_remaining_mins == 180);
+    assert(st.voltage_mv == 11400);
+
+    /* 5. Dell MultiNamePath Fixture (0x2F: 3 segments) */
+    uint8_t dell_multi_aml[] = {
+        0x5B, 0x81, 0x1A,                   /* FieldOp, PkgLength = 26 */
+        0x2F, 0x03,                         /* MultiNamePrefix, 3 segments */
+        'L', 'P', 'C', 'B',
+        'E', 'C', 'D', 'V',
+        'E', 'C', 'O', 'R',
+        0x01,                               /* FieldFlags */
+        'M', 'B', 'R', 'M', 0x10,           /* MBRM, 16-bit at offset 0 */
+        'M', 'B', 'F', 'C', 0x10            /* MBFC, 16-bit at offset 2 */
+    };
+    memset(&map, 0, sizeof(map));
+    assert(acpi_parse_ec_fields(dell_multi_aml, sizeof(dell_multi_aml), &map));
+    assert(map.found_rem && map.found_full);
+    assert(map.rem_cap_offset == 0 && map.full_cap_offset == 2);
+
+    puts("       [PASS] Dell scoped EC fields, 16-bit state, and ECDT parser verified");
+}
+
 int main(void) {
     puts("=== Running FortressOS ACPI Battery Verification Suite ===");
     test_percentage_calculation();
@@ -359,6 +476,7 @@ int main(void) {
     test_unavailable_refresh();
     test_ac_and_thermal();
     test_ec_field_parsing_and_status();
+    test_dell_ec_field_parsing_and_ecdt();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;
 }

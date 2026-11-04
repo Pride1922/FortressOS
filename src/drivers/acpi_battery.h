@@ -28,6 +28,8 @@
 void acpi_battery_init(void);
 int  acpi_battery_get(battery_status_t *out);
 bool acpi_battery_is_present(void);
+void acpi_battery_set_ec_ports(uint16_t data_port, uint16_t cmd_port);
+void acpi_battery_get_ec_ports(uint16_t *data_port, uint16_t *cmd_port);
 
 /* Dynamic EC Field Mapping extracted from DSDT/SSDT OperationRegions */
 typedef struct {
@@ -50,6 +52,7 @@ typedef struct {
 
 bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t *map);
 bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *out);
+bool acpi_parse_ecdt(const uint8_t *table, size_t len, uint16_t *cmd_port, uint16_t *data_port);
 
 /* ACPI AML Parser and Evaluation Primitives */
 bool acpi_battery_locate(const uint8_t *aml, size_t len, size_t *out_offset);
