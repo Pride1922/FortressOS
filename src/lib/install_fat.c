@@ -136,9 +136,7 @@ static bool directory(const uint8_t *b,install_fat_work_t *w,uint32_t c,const ch
     }
     return false;
 }
-static int validate(const void *bytes,size_t n,install_fat_work_t *w,bool installed) {
-    if (!bytes || !w || (installed ? (n<1024*1024 || n>INSTALL_FAT_BYTES) : n!=INSTALL_FAT_BYTES) || !disjoint(bytes,n,w,sizeof(*w))) return -1;
-    memset(w,0,sizeof(*w));w->installed=installed;w->backing_bytes=n;const uint8_t *b=bytes;
+static int fat_layout(const uint8_t *b,size_t n,install_fat_work_t *w) {
     uint32_t spc=b[13],reserved=u16(b+14),fat=u32(b+36),total=u32(b+32);
     if (u16(b+11)!=512 || !spc || (spc&(spc-1)) || spc>128 || reserved<8 || b[16]!=2 ||
         u16(b+17) || u16(b+19) || u16(b+22) || u16(b+40) || u16(b+42) || total!=INSTALL_FAT_BYTES/512 ||
@@ -154,6 +152,20 @@ static int validate(const void *bytes,size_t n,install_fat_work_t *w,bool instal
     const uint8_t *info=b+w->fsinfo;
     if (u32(info)!=0x41615252 || u32(info+484)!=0x61417272 || u32(info+508)!=0xaa550000 ||
         memcmp(info,b+w->backup+w->fsinfo,512) || (next(b,w,0)&0xffffff8)!=0xffffff8 || next(b,w,1)<0xffffff8) return -1;
+    return 0;
+}
+size_t install_fat_allocated_prefix(const void *bytes,size_t n,install_fat_work_t *w) {
+    if (!bytes || !w || n<1024*1024 || n>INSTALL_FAT_BYTES ||
+        !disjoint(bytes,n,w,sizeof(*w)) || fat_layout(bytes,n,w)) return 0;
+    const uint8_t *b=bytes;
+    for (uint32_t c=w->clusters+1;c>=2;c--)
+        if (next(b,w,c)) return cluster_offset(w,c)+w->cluster_bytes;
+    return w->data;
+}
+static int validate(const void *bytes,size_t n,install_fat_work_t *w,bool installed) {
+    if (!bytes || !w || (installed ? (n<1024*1024 || n>INSTALL_FAT_BYTES) : n!=INSTALL_FAT_BYTES) || !disjoint(bytes,n,w,sizeof(*w))) return -1;
+    memset(w,0,sizeof(*w));w->installed=installed;w->backing_bytes=n;const uint8_t *b=bytes;
+    if (fat_layout(b,n,w)) return -1;
     if (!directory(b,w,w->root,"",0,0) || w->found!=(1u<<INSTALL_FAT_SLOTS)-1) return -1;
     w->next_free=UINT32_MAX;
     for (uint32_t c=2;c<w->clusters+2;c++) {

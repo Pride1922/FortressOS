@@ -34,6 +34,10 @@ typedef struct {
  * every allocated data cluster must fit in that prefix. Slot sizes are actual
  * installed lengths rather than reserved template capacities. */
 int install_fat_inspect(const void *,size_t,install_fat_work_t *);
+/* Size through the last allocated cluster, from validated FAT metadata only.
+ * Zero means the metadata prefix is insufficient or invalid. Full graph
+ * inspection is still required before accepting the volume. */
+size_t install_fat_allocated_prefix(const void *,size_t,install_fat_work_t *);
 /* Optional A/B template enrollment; both kernel files are identical 8 MiB ELF
  * banks. Zero means ordinary legacy template; one means validated A/B template. */
 int install_fat_complete(const install_fat_work_t *);

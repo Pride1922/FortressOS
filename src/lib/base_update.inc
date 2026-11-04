@@ -90,17 +90,24 @@ static bool base_matches(uint8_t *b,base_update_work *w,unsigned i,const base_lo
     if(memcmp(digests.kernel,s->kernel_hash,32)||memcmp(digests.bootstrap,s->bootstrap_hash,32))return false;
     (void)bsha(b+w->disk.readiness[i],512,sum);return !memcmp(sum,s->readiness_hash,32);
 }
-int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],
-                              boot_timing_t *timing,const base_loaded_bank *loaded){
+static int base_update_prepare_impl(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],
+                                     boot_timing_t *timing,const base_loaded_bank *loaded,bool boot){
     if(!io||!io->read||!io->write||!io->flush||!bytes||!w||!running||
        !disjoint(bytes,BASE_ESP_BYTES,w,sizeof *w)||!disjoint(bytes,BASE_ESP_BYTES,io,sizeof *io)||
        !disjoint(bytes,BASE_ESP_BYTES,running,512)||!disjoint(w,sizeof *w,running,512))return -1;
     memset(w,0,sizeof *w);w->running=2;uint8_t *b=bytes;
     if(disk(io,&w->disk))return -1;
     if(timing)boot_timing_mark(timing,"esp-read");
-    if(read_runs(io,w->disk.esp,b,BASE_ESP_BYTES/512))return -1;
+    size_t n=BASE_ESP_BYTES;
+    if(boot){
+        const size_t metadata=2u*1024*1024;
+        if(read_runs(io,w->disk.esp,b,metadata/512))return -1;
+        size_t used=install_fat_allocated_prefix(b,metadata,&w->disk.fat);
+        if(used)n=used>metadata ? used : metadata;
+        if(read_runs(io,w->disk.esp+metadata/512,b+metadata,(unsigned)((n-metadata)/512)))return -1;
+    }else if(read_runs(io,w->disk.esp,b,BASE_ESP_BYTES/512))return -1;
     if(timing)boot_timing_mark(timing,"fat-layout");
-    if(install_fat_inspect(b,BASE_ESP_BYTES,&w->disk.fat)||base_offsets(b,w))return -1;
+    if(install_fat_inspect(b,n,&w->disk.fat)||base_offsets(b,w))return -1;
     if(timing)boot_timing_mark(timing,"bank-validation");
     unsigned matched=0;
     for(unsigned i=0;i<2;i++){
@@ -160,7 +167,11 @@ int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_upda
     memcpy(w->disk.ready,running,512);w->disk.prepared=true;return 0;
 }
 int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512]){
-    return base_update_prepare_timed(io,bytes,w,running,NULL,NULL);
+    return base_update_prepare_impl(io,bytes,w,running,NULL,NULL,false);
+}
+int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],
+                              boot_timing_t *timing,const base_loaded_bank *loaded){
+    return base_update_prepare_impl(io,bytes,w,running,timing,loaded,true);
 }
 static int base_publish(const kernel_update_io_t *io,base_update_work *w,uint32_t offset,const uint8_t *p,unsigned bytes){
     if((offset|bytes)&511||offset>BASE_ESP_BYTES||bytes>BASE_ESP_BYTES-offset)return -1;

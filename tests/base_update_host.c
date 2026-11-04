@@ -14,7 +14,7 @@
 #include "crypto.h"
 static base_update_work work,saved;
 static uint8_t *disk_bytes,*prefix,*initial;static size_t disk_size;
-static unsigned events,cut;static uint8_t ready[512];
+static unsigned events,cut,esp_read_sectors;static uint8_t ready[512];
 static const char recovery[]="FORTRESS-RECOVERY-1\ninstall_id=00112233445566778899aabbccddeeff\n"
  "root_partuuid=12345678-1234-4234-8234-123456789abc\nfilesystem_uuid=813ea876-9933-4e1c-ae62-2f6c0f90a441\n"
  "password_hash=$5$rounds=100000$1234567890abcdef$...........................................\n";
@@ -27,7 +27,11 @@ static bool allowed(uint64_t lba,unsigned n){
     for(unsigned i=0;i<4;i++)if(bytes==512&&off==saved.disk.configs[i])return true;
     return false;
 }
-static int rd(void *ctx,uint64_t lba,void *p,unsigned n){(void)ctx;assert(n&&n<=8&&lba<disk_size/512&&n<=disk_size/512-lba);memcpy(p,disk_bytes+lba*512,n*512);return 0;}
+static int rd(void *ctx,uint64_t lba,void *p,unsigned n){
+    (void)ctx;assert(n&&n<=8&&lba<disk_size/512&&n<=disk_size/512-lba);
+    if(lba>=4096&&lba<4096+BASE_ESP_BYTES/512)esp_read_sectors+=n;
+    memcpy(p,disk_bytes+lba*512,n*512);return 0;
+}
 static int wr(void *ctx,uint64_t lba,const void *p,unsigned n){(void)ctx;assert(allowed(lba,n));events++;if(events==cut){memcpy(disk_bytes+lba*512,p,n*256);return -1;}memcpy(disk_bytes+lba*512,p,n*512);return 0;}
 static int flush(void *ctx){(void)ctx;return ++events==cut?-1:0;}
 static void *load(const char *path,size_t *n){FILE *f=fopen(path,"rb");assert(f&&!fseek(f,0,SEEK_END));long size=ftell(f);assert(size>0);rewind(f);uint8_t *p=malloc(size);assert(p&&fread(p,1,size,f)==(size_t)size&&!fclose(f));*n=size;return p;}
@@ -78,8 +82,23 @@ int main(int argc,char **argv){
     assert(root_recovery_parse(recovery,sizeof recovery-1,&identity));
     assert(root_readiness_validate_digests(ready,512,&identity,loaded.kernel,BASE_BANK_BYTES,
                                            loaded.bootstrap,BASE_BANK_BYTES,&loaded.digests));
+    esp_read_sectors=0;
     assert(!base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded)&&work.running==0);
+    assert(esp_read_sectors==work.disk.fat.backing_bytes/512 && esp_read_sectors<BASE_ESP_BYTES/512);
+    printf("PASS boot ESP prefix: %u of %u sectors read\n",esp_read_sectors,BASE_ESP_BYTES/512);
     uint8_t *esp=disk_bytes+4096*512;
+    /* A high allocation extends the read, but an orphan chain is rejected
+     * even if its FAT entries agree in both copies. */
+    uint32_t last=work.disk.fat.clusters+1;
+    for(unsigned copy=0;copy<2;copy++){
+        uint8_t *entry=esp+work.disk.fat.fat+copy*work.disk.fat.fat_sectors*512+last*4;
+        assert(!entry[0]&&!entry[1]&&!entry[2]&&!entry[3]);
+        memset(entry,0xff,4);
+    }
+    esp_read_sectors=0;
+    assert(base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded));
+    assert(esp_read_sectors==BASE_ESP_BYTES/512);
+    restore();
     esp[saved.disk.kernel[0]+BASE_BANK_BYTES-1]^=1;
     assert(!base_update_prepare_timed(&io,prefix,&work,ready,NULL,&loaded)&&work.running==1);
     esp[saved.bootstrap[1]+BASE_BANK_BYTES-1]^=1;
