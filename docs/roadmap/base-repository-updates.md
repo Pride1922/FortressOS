@@ -82,3 +82,30 @@ removed after replacement. Concurrent unrelated desktop edits/build artifacts
 were preserved. Cleanup receipt: `build/base-update-image-cleanup.json`.
 
 [Installation/update and publisher commands](../base-repository-updates.md).
+
+## Dell Latitude 5590 manual A/B recovery — PASS
+
+On 2026-11-04, an installed base B hung during startup. A verbose boot reached
+xHCI controller startup and the Intel wireless probe before output stopped.
+The exact cause of the hang was undetermined.
+
+1. The operator selected **FortressOS base A installed** in Limine. The laptop
+   reached the shell and accepted SSH on the existing installation.
+2. From base A, `pkg base-status` reported a pending update. The operator ran
+   `sudo pkg recover-base` to reselect base A. An SSH check then reported
+   `fortress-base: current base confirmed.`
+3. The operator staged the corrected update with `sudo pkg upgrade fortress-base`
+   and booted **FortressOS base B installed**. The SSH boot trace contained the
+   new progress markers from `edd790c`, reported `ROOT result: admitted`, and
+   reached shell-ready in 4,971 ms. `pkg base-status` reported the current base
+   confirmed.
+
+The operator recovered and reapplied the update on the same internal drive
+without reinstalling or reflashing. This physical test covered manual selection
+of the previous installed base and recovery from that running system. The
+authenticated recovery menu entries and automatic fallback were outside its scope.
+
+## Dell Latitude 5590 USB follow-up — PASS
+
+The operator confirmed that the live USB booted, a USB keyboard worked at
+login, and FortressOS detected the keyboard and USB storage through the dock.

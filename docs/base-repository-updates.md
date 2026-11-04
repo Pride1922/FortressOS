@@ -106,6 +106,10 @@ runs from a verified installed base, uses retained local boot data and needs no
 network or unexpired catalog. The authenticated recovery entry keeps its existing
 read-only recovery role; it does not grant a mounted-root raw-write lease.
 
+The Dell Latitude 5590 recovered from a failed base B boot by selecting the
+previous installed base, running `sudo pkg recover-base`, and staging a corrected
+update. [Physical recovery record](roadmap/base-repository-updates.md#dell-latitude-5590-manual-ab-recovery--pass)
+
 ## Format and implementation limits
 
 `FORTBAS1` has a 256-byte little-endian header: version/header bytes at 8/12,
