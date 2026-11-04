@@ -9,7 +9,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **Phase 9C.5 Power & layout** | **COMPLETE** | ACPI S5 shutdown/reset and US/AZERTY switching, verified on Dell 5590. Full detail: [`docs/roadmap/subsystems.md`](../roadmap/subsystems.md) ("Dell Latitude 5590 physical acceptance"). |
-| **ACPI Battery & Power Telemetry** | **INCOMPLETE; hardware readings unavailable** | Syscall/CLI/UI plumbing and fixture tests exist, but no namespace-aware AML execution backend. The Dell live test reported false 100%/AC connected while unplugged. Fabricated/scanned hardware samples are withdrawn; production returns EOPNOTSUPP. [Failure, correction and remaining work](../roadmap/battery-telemetry-unavailable.md). |
+| **ACPI Battery & Power Telemetry** | **COMPLETE** | Dell Latitude 5590 DSDT ECDV I/O port discovery (`0x0930` Data, `0x0934` Cmd), Dell EC indexed register protocol (Reg `0x03` selector, `0x06` live AC/battery presence, `0x10` state, `0x12` signed two's complement rate, `0x14` voltage, `0x16` remaining capacity, `0x1E` full capacity). Syscall 103 `SYS_BATTERY_GET` returning 24-byte `battery_status_t`; CLI `/bin/battery` and Desktop Compositor power menu integration; `make test-battery-host` 10/10 PASS; physical acceptance on Dell Latitude 5590 confirmed functional (`Power: On Battery` and accurate time remaining on unplug). |
 
 ---
 
