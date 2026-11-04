@@ -374,7 +374,7 @@ impl Clients {
             events: sys::POLLOUT,
             revents: 0,
         }];
-        if sys::poll(&mut fds, 0) != 1 || fds[0].revents != sys::POLLOUT {
+        if sys::poll(&mut fds, 0) != 1 || (fds[0].revents & sys::POLLOUT) == 0 {
             return false;
         }
         sys::write_all(client.events, &msg.to_bytes())

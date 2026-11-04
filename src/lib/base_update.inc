@@ -84,22 +84,29 @@ static bool base_matches(uint8_t *b,base_update_work *w,unsigned i){
     (void)bsha(b+w->bootstrap[i],BASE_BANK_BYTES,sum);if(memcmp(sum,s->bootstrap_hash,32))return false;
     (void)bsha(b+w->disk.readiness[i],512,sum);return !memcmp(sum,s->readiness_hash,32);
 }
-int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512]){
+int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],boot_timing_t *timing){
     if(!io||!io->read||!io->write||!io->flush||!bytes||!w||!running||
        !disjoint(bytes,BASE_ESP_BYTES,w,sizeof *w)||!disjoint(bytes,BASE_ESP_BYTES,io,sizeof *io)||
        !disjoint(bytes,BASE_ESP_BYTES,running,512)||!disjoint(w,sizeof *w,running,512))return -1;
     memset(w,0,sizeof *w);w->running=2;uint8_t *b=bytes;
-    if(disk(io,&w->disk)||read_runs(io,w->disk.esp,b,BASE_ESP_BYTES/512)||
-       install_fat_inspect(b,BASE_ESP_BYTES,&w->disk.fat)||base_offsets(b,w))return -1;
+    if(disk(io,&w->disk))return -1;
+    if(timing)boot_timing_mark(timing,"esp-read");
+    if(read_runs(io,w->disk.esp,b,BASE_ESP_BYTES/512))return -1;
+    if(timing)boot_timing_mark(timing,"fat-layout");
+    if(install_fat_inspect(b,BASE_ESP_BYTES,&w->disk.fat)||base_offsets(b,w))return -1;
+    if(timing)boot_timing_mark(timing,"bank-validation");
+    unsigned matched=0;
     for(unsigned i=0;i<2;i++){
         if(base_boot_state_decode(b+w->state_offset[i],w->states+i)||w->states[i].slot!=i||w->states[i].phase==BASE_STATE_FLOOR||w->states[i].generation){w->invalid|=1u<<i;continue;}
         if(!memcmp(b+w->disk.readiness[i],running,512)&&base_matches(b,w,i)){
             if(w->running!=2 && (memcmp(b+w->disk.kernel[i],b+w->disk.kernel[w->running],BASE_BANK_BYTES)||
                 memcmp(b+w->bootstrap[i],b+w->bootstrap[w->running],BASE_BANK_BYTES)))return -1;
+            matched|=1u<<i;
             w->running=i;
         }
     }
     if(w->running==2)return -1;
+    if(timing)boot_timing_mark(timing,"floor-and-root-identity");
     for(unsigned i=0;i<2;i++){
         base_state *s=w->floors+i;
         if(!base_state_decode(b+w->floor_offset[i],s)&&s->phase==BASE_STATE_FLOOR&&s->slot==i&&s->generation&&
@@ -121,6 +128,7 @@ int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_wor
        !gpt_str_to_guid(r.filesystem_uuid,&guid))return -1;
     const uint8_t *g=guid.bytes;uint8_t fsuuid[16]={g[3],g[2],g[1],g[0],g[5],g[4],g[7],g[6],g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]};
     if(memcmp(w->disk.verify+104,fsuuid,16))return -1;
+    if(timing)boot_timing_mark(timing,"boot-menus");
     for(unsigned i=0;i<4;i++){
         char *menu=(char *)b+w->disk.configs[i];unsigned selected=menu[15]=='3';
         size_t n=base_update_menu((char *)w->disk.entries,sizeof w->disk.entries,r.partuuid,selected);
@@ -128,9 +136,13 @@ int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_wor
         if(!i)w->disk.active=selected;else if(selected!=w->disk.active)w->mixed=true;
         w->disk.config_sizes[i]=(uint32_t)n;
     }
-    /* Identical initial banks are interchangeable; use the selected one. */
-    if(!(w->invalid&(1u<<w->disk.active))&&!memcmp(b+w->disk.readiness[w->disk.active],running,512)&&base_matches(b,w,w->disk.active))w->running=w->disk.active;
+    /* The private ESP snapshot is unchanged. Use the selected bank if it
+     * already matched, including when both initial banks were identical. */
+    if(matched&(1u<<w->disk.active))w->running=w->disk.active;
     memcpy(w->disk.ready,running,512);w->disk.prepared=true;return 0;
+}
+int base_update_prepare(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512]){
+    return base_update_prepare_timed(io,bytes,w,running,NULL);
 }
 static int base_publish(const kernel_update_io_t *io,base_update_work *w,uint32_t offset,const uint8_t *p,unsigned bytes){
     if((offset|bytes)&511||offset>BASE_ESP_BYTES||bytes>BASE_ESP_BYTES-offset)return -1;

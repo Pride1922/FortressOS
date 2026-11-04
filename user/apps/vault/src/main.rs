@@ -514,12 +514,9 @@ fn render(app: &mut App, state: &VaultAppState) {
     app.present(damage);
 }
 
-fn main(_args: Args) -> i32 {
-    let Some(mut app) = App::connect(APP_W as u32, APP_H as u32, "Fortress Vault") else {
-        return 1;
-    };
-
-    let mut state = VaultAppState::new();
+#[inline(never)]
+fn run_vault(mut app: App) -> i32 {
+    let mut state = alloc::boxed::Box::new(VaultAppState::new());
     render(&mut app, &state);
 
     loop {
@@ -803,4 +800,11 @@ fn main(_args: Args) -> i32 {
             }
         }
     }
+}
+
+fn main(_args: Args) -> i32 {
+    let Some(app) = App::connect(APP_W as u32, APP_H as u32, "Fortress Vault") else {
+        return 1;
+    };
+    run_vault(app)
 }

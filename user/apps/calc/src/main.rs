@@ -221,10 +221,8 @@ fn render(app: &mut App, calc: &Calculator, grid: &Grid) {
     app.present(damage);
 }
 
-fn main(_args: Args) -> i32 {
-    let Some(mut app) = App::connect(280, 340, "Calculator") else {
-        return 1;
-    };
+#[inline(never)]
+fn run_calc(mut app: App) -> i32 {
     let mut calc = Calculator::new();
     let grid = Grid::new(12, 60, 4, 58, 48, 8);
 
@@ -258,4 +256,11 @@ fn main(_args: Args) -> i32 {
             _ => {}
         }
     }
+}
+
+fn main(_args: Args) -> i32 {
+    let Some(app) = App::connect(280, 340, "Calculator") else {
+        return 1;
+    };
+    run_calc(app)
 }

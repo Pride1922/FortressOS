@@ -811,6 +811,8 @@ fn handle_key(
             windows.cycle_focus(scene);
         } else if b == b't' || b == b'T' {
             open_terminal(clients, scene);
+        } else if b == b'c' || b == b'C' {
+            open_calc(clients, scene);
         } else if b == b'e' || b == b'E' {
             open_notepad(clients, None, scene);
         } else if b == b'f' || b == b'F' {

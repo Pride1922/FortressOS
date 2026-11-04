@@ -21,6 +21,8 @@ libui::app_main!(main, heap = 8 << 20);
 
 const KBD_PATH: &[u8] = b"/dev/input/keyboard\0";
 const KBD_FALLBACK: &[u8] = b"/dev/kbd0\0";
+const MOUSE_PATH: &[u8] = b"/dev/input/mouse\0";
+const MOUSE_FALLBACK: &[u8] = b"/dev/mouse0\0";
 const UNLOCK_BIN: &[u8] = b"/bin/desktop-unlock\0";
 const DESKTOP_BIN: &[u8] = b"/usr/bin/desktop\0";
 const COMPOSITOR_BIN: &[u8] = b"/bin/compositor\0";
@@ -456,12 +458,88 @@ enum Action {
     Console,
 }
 
+// Standard 16x16 pointer arrow bitmap:
+// '.' transparent, '#' opaque outline, '+' half-alpha edge, 'o' white fill.
+const ARROW: [&[u8; 16]; 16] = [
+    b"#+..............",
+    b"#o#+............",
+    b"#oo#+...........",
+    b"#ooo#+..........",
+    b"#oooo#+.........",
+    b"#ooooo#+........",
+    b"#oooooo#+.......",
+    b"#ooooooo#+......",
+    b"#oooooooo#+.....",
+    b"#oooo#####......",
+    b"#oo#oo#+........",
+    b"#o#+#oo#+.......",
+    b"##..#oo#+.......",
+    b"+....#oo#+......",
+    b".....#oo#+......",
+    b"......##+.......",
+];
+
+fn blit_cursor(
+    vram: *mut u32,
+    pitch: usize,
+    back_buf: &[u32],
+    screen_w: usize,
+    screen_h: usize,
+    cx: usize,
+    cy: usize,
+) {
+    if vram.is_null() {
+        return;
+    }
+    for y in 0..16.min(screen_h.saturating_sub(cy)) {
+        for x in 0..16.min(screen_w.saturating_sub(cx)) {
+            let bg = back_buf[(cy + y) * screen_w + (cx + x)];
+            let pixel = match ARROW[y][x] {
+                b'#' => 0xff101010,
+                b'o' => 0xffffffff,
+                b'+' => {
+                    let r = (((bg >> 16) & 0xff) + 0x10) / 2;
+                    let g = (((bg >> 8) & 0xff) + 0x10) / 2;
+                    let b = ((bg & 0xff) + 0x10) / 2;
+                    0xff000000 | (r << 16) | (g << 8) | b
+                }
+                _ => bg,
+            };
+            unsafe {
+                *vram.add((cy + y) * pitch + (cx + x)) = pixel;
+            }
+        }
+    }
+}
+
+fn restore_cursor_bg(
+    vram: *mut u32,
+    pitch: usize,
+    back_buf: &[u32],
+    screen_w: usize,
+    screen_h: usize,
+    cx: usize,
+    cy: usize,
+) {
+    if vram.is_null() {
+        return;
+    }
+    for y in 0..16.min(screen_h.saturating_sub(cy)) {
+        for x in 0..16.min(screen_w.saturating_sub(cx)) {
+            let bg = back_buf[(cy + y) * screen_w + (cx + x)];
+            unsafe {
+                *vram.add((cy + y) * pitch + (cx + x)) = bg;
+            }
+        }
+    }
+}
+
 fn open_keyboard() -> i32 {
     let fd = unsafe {
         raw_sys::syscall3(
             raw_sys::SYS_OPEN,
             KBD_PATH.as_ptr() as usize,
-            0, // O_RDONLY
+            0x80000, // VFS_O_CLOEXEC
             0,
         )
     };
@@ -472,7 +550,7 @@ fn open_keyboard() -> i32 {
         raw_sys::syscall3(
             raw_sys::SYS_OPEN,
             KBD_FALLBACK.as_ptr() as usize,
-            0,
+            0x80000, // VFS_O_CLOEXEC
             0,
         )
     };
@@ -480,6 +558,33 @@ fn open_keyboard() -> i32 {
         fd as i32
     } else {
         0 // fallback to stdin
+    }
+}
+
+fn open_mouse() -> i32 {
+    let fd = unsafe {
+        raw_sys::syscall3(
+            raw_sys::SYS_OPEN,
+            MOUSE_PATH.as_ptr() as usize,
+            0x80000, // VFS_O_CLOEXEC
+            0,
+        )
+    };
+    if fd >= 0 {
+        return fd as i32;
+    }
+    let fd = unsafe {
+        raw_sys::syscall3(
+            raw_sys::SYS_OPEN,
+            MOUSE_FALLBACK.as_ptr() as usize,
+            0x80000, // VFS_O_CLOEXEC
+            0,
+        )
+    };
+    if fd >= 0 {
+        fd as i32
+    } else {
+        -1
     }
 }
 
@@ -764,6 +869,49 @@ fn launch_user_session(_username: &str) -> i32 {
     0
 }
 
+fn execute_action(action: Action, state: &mut GreeterState) -> Option<i32> {
+    match action {
+        Action::AttemptLogin => {
+            let u = state.username.as_str();
+            let p = state.password.as_str();
+
+            if authenticate(u, p) {
+                state.error = None;
+                state.password.clear();
+                if launch_user_session(u) == 3 {
+                    raw_sys::write(1, b"\x1b[2J\x1b[H");
+                    raw_sys::fb_release();
+                    return Some(3);
+                }
+            } else {
+                state.error = Some("Authentication failed");
+                state.password.clear();
+                raw_sys::sleep_ms(500);
+            }
+        }
+        Action::Restart => {
+            log_greeter_msg("[greeter] reboot requested by user\n");
+            unsafe {
+                raw_sys::syscall1(raw_sys::SYS_REBOOT, 1); // REBOOT_CMD_RESTART
+            }
+        }
+        Action::Shutdown => {
+            log_greeter_msg("[greeter] poweroff requested by user\n");
+            unsafe {
+                raw_sys::syscall1(raw_sys::SYS_REBOOT, 2); // REBOOT_CMD_POWEROFF
+            }
+        }
+        Action::Console => {
+            log_greeter_msg("[greeter] console mode requested by user\n");
+            raw_sys::write(1, b"\x1b[2J\x1b[H");
+            raw_sys::fb_release();
+            return Some(3);
+        }
+        Action::None | Action::Redraw => {}
+    }
+    None
+}
+
 fn main(_args: Args) -> i32 {
     log_greeter_msg("[greeter] starting graphical login manager\n");
 
@@ -792,6 +940,11 @@ fn main(_args: Args) -> i32 {
         return 1;
     }
 
+    run_greeter(screen_w, screen_h, pitch, vram)
+}
+
+#[inline(never)]
+fn run_greeter(screen_w: usize, screen_h: usize, pitch: usize, vram: *mut u32) -> i32 {
     // 2. Double-buffer surface in heap
     let mut back_buf = Vec::new();
     if back_buf.try_reserve_exact(screen_w * screen_h).is_err() {
@@ -801,7 +954,14 @@ fn main(_args: Args) -> i32 {
     back_buf.resize(screen_w * screen_h, 0);
 
     let kbd_fd = open_keyboard();
+    let mouse_fd = open_mouse();
     let mut state = GreeterState::new(screen_w, screen_h);
+
+    let mut cursor_x = screen_w / 2;
+    let mut cursor_y = screen_h / 2;
+    let mut last_cursor_x = cursor_x;
+    let mut last_cursor_y = cursor_y;
+    let mut old_buttons = 0u8;
 
     let present = |buf: &[u32]| {
         for y in 0..screen_h {
@@ -816,13 +976,22 @@ fn main(_args: Args) -> i32 {
     if let Some(mut p) = Painter::new(&mut back_buf, screen_w, screen_h, screen_w) {
         render_greeter(&mut p, &state, screen_w, screen_h);
         present(&back_buf);
+        blit_cursor(vram, pitch, &back_buf, screen_w, screen_h, cursor_x, cursor_y);
     }
 
-    let mut poll_fds = [PollFd {
-        fd: kbd_fd,
-        events: POLLIN,
-        revents: 0,
-    }];
+    let mut poll_fds = [
+        PollFd {
+            fd: kbd_fd,
+            events: POLLIN,
+            revents: 0,
+        },
+        PollFd {
+            fd: mouse_fd,
+            events: if mouse_fd >= 0 { POLLIN } else { 0 },
+            revents: 0,
+        },
+    ];
+    let poll_count = if mouse_fd >= 0 { 2 } else { 1 };
 
     let mut last_minute = -1i64;
 
@@ -835,6 +1004,9 @@ fn main(_args: Args) -> i32 {
                 if let Some(mut p) = Painter::new(&mut back_buf, screen_w, screen_h, screen_w) {
                     render_greeter(&mut p, &state, screen_w, screen_h);
                     present(&back_buf);
+                    blit_cursor(vram, pitch, &back_buf, screen_w, screen_h, cursor_x, cursor_y);
+                    last_cursor_x = cursor_x;
+                    last_cursor_y = cursor_y;
                 }
             }
         }
@@ -843,74 +1015,121 @@ fn main(_args: Args) -> i32 {
             raw_sys::syscall3(
                 raw_sys::SYS_POLL,
                 poll_fds.as_mut_ptr() as usize,
-                1,
-                100, // 100ms timeout
+                poll_count,
+                50, // 50ms timeout
             )
         };
 
+        let mut needs_redraw = false;
+
+        // 1. Check Keyboard Events
         if poll_res > 0 && (poll_fds[0].revents & POLLIN != 0) {
             let mut kbuf = [0u8; 8 * 8]; // up to 8 key events
             let kn = raw_sys::read(kbd_fd, &mut kbuf);
             if kn > 0 {
                 let valid_bytes = (kn as usize) & !7;
-                let mut needs_redraw = false;
-
                 for chunk in kbuf[..valid_bytes].chunks_exact(8) {
                     let raw: &[u8; 8] = chunk.try_into().unwrap();
                     let ev = KeyEvent::from_bytes(raw);
-
-                    match state.handle_key(ev) {
+                    let act = state.handle_key(ev);
+                    match act {
                         Action::Redraw => {
                             needs_redraw = true;
                         }
-                        Action::AttemptLogin => {
-                            let u = state.username.as_str();
-                            let p = state.password.as_str();
-
-                            if authenticate(u, p) {
-                                state.error = None;
-                                state.password.clear();
-                                if launch_user_session(u) == 3 {
-                                    raw_sys::write(1, b"\x1b[2J\x1b[H");
-                                    raw_sys::fb_release();
-                                    return 3;
-                                }
-                                needs_redraw = true;
-                            } else {
-                                state.error = Some("Authentication failed");
-                                state.password.clear();
-                                raw_sys::sleep_ms(500);
-                                needs_redraw = true;
-                            }
-                        }
-                        Action::Restart => {
-                            log_greeter_msg("[greeter] reboot requested by user\n");
-                            unsafe {
-                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 1); // REBOOT_CMD_RESTART
-                            }
-                        }
-                        Action::Shutdown => {
-                            log_greeter_msg("[greeter] poweroff requested by user\n");
-                            unsafe {
-                                raw_sys::syscall1(raw_sys::SYS_REBOOT, 2); // REBOOT_CMD_POWEROFF
-                            }
-                        }
-                        Action::Console => {
-                            log_greeter_msg("[greeter] console mode requested by user\n");
-                            raw_sys::write(1, b"\x1b[2J\x1b[H");
-                            raw_sys::fb_release();
-                            return 3;
-                        }
                         Action::None => {}
+                        _ => {
+                            if let Some(code) = execute_action(act, &mut state) {
+                                return code;
+                            }
+                            needs_redraw = true;
+                        }
                     }
+                }
+            }
+        }
+
+        // 2. Check Mouse Events
+        if poll_res > 0 && mouse_fd >= 0 && (poll_fds[1].revents & POLLIN != 0) {
+            let mut packet = [0u8; 4];
+            let n = raw_sys::read(mouse_fd, &mut packet);
+            if n >= 3 {
+                let buttons = packet[0];
+                let mut dx_total = packet[1] as i8 as i32;
+                let mut dy_total = packet[2] as i8 as i32;
+
+                // Coalesce rapid packets
+                let mut extra = [0u8; 4];
+                for _ in 0..16 {
+                    if raw_sys::read(mouse_fd, &mut extra) < 3 {
+                        break;
+                    }
+                    if extra[0] != buttons {
+                        dx_total += extra[1] as i8 as i32;
+                        dy_total += extra[2] as i8 as i32;
+                        break;
+                    }
+                    dx_total += extra[1] as i8 as i32;
+                    dy_total += extra[2] as i8 as i32;
                 }
 
-                if needs_redraw {
-                    if let Some(mut p) = Painter::new(&mut back_buf, screen_w, screen_h, screen_w) {
-                        render_greeter(&mut p, &state, screen_w, screen_h);
-                        present(&back_buf);
+                cursor_x = (cursor_x as i64 + dx_total as i64).clamp(0, screen_w.saturating_sub(1) as i64) as usize;
+                cursor_y = (cursor_y as i64 + dy_total as i64).clamp(0, screen_h.saturating_sub(1) as i64) as usize;
+
+                let mut click_action = Action::None;
+
+                // Left click detection (rising edge)
+                if (buttons & 1 != 0) && (old_buttons & 1 == 0) {
+                    if state.user_rect.contains(cursor_x, cursor_y) {
+                        if state.focus != 0 {
+                            state.focus = 0;
+                            needs_redraw = true;
+                        }
+                    } else if state.pass_rect.contains(cursor_x, cursor_y) {
+                        if state.focus != 1 {
+                            state.focus = 1;
+                            needs_redraw = true;
+                        }
+                    } else if state.login_btn_rect.contains(cursor_x, cursor_y) {
+                        state.focus = 2;
+                        needs_redraw = true;
+                        click_action = Action::AttemptLogin;
+                    } else if state.restart_btn_rect.contains(cursor_x, cursor_y) {
+                        state.focus = 3;
+                        needs_redraw = true;
+                        click_action = Action::Restart;
+                    } else if state.shutdown_btn_rect.contains(cursor_x, cursor_y) {
+                        state.focus = 4;
+                        needs_redraw = true;
+                        click_action = Action::Shutdown;
+                    } else if state.console_btn_rect.contains(cursor_x, cursor_y) {
+                        state.focus = 5;
+                        needs_redraw = true;
+                        click_action = Action::Console;
                     }
                 }
+                old_buttons = buttons;
+
+                if !matches!(click_action, Action::None) {
+                    if let Some(code) = execute_action(click_action, &mut state) {
+                        return code;
+                    }
+                    needs_redraw = true;
+                } else if !needs_redraw && (cursor_x != last_cursor_x || cursor_y != last_cursor_y) {
+                    restore_cursor_bg(vram, pitch, &back_buf, screen_w, screen_h, last_cursor_x, last_cursor_y);
+                    blit_cursor(vram, pitch, &back_buf, screen_w, screen_h, cursor_x, cursor_y);
+                    last_cursor_x = cursor_x;
+                    last_cursor_y = cursor_y;
+                }
+            }
+        }
+
+        if needs_redraw {
+            if let Some(mut p) = Painter::new(&mut back_buf, screen_w, screen_h, screen_w) {
+                render_greeter(&mut p, &state, screen_w, screen_h);
+                present(&back_buf);
+                blit_cursor(vram, pitch, &back_buf, screen_w, screen_h, cursor_x, cursor_y);
+                last_cursor_x = cursor_x;
+                last_cursor_y = cursor_y;
             }
         }
     }

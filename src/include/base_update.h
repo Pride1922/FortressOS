@@ -1,6 +1,7 @@
 #ifndef FORTRESS_BASE_UPDATE_H
 #define FORTRESS_BASE_UPDATE_H
 #include "kernel_update.h"
+#include "boot_timing.h"
 #include "../../user/pkg/base.h"
 #define BASE_ESP_BYTES INSTALL_FAT_BYTES
 #define BASE_STATE_CONFIRMED 1u
@@ -28,6 +29,7 @@ int base_update_seed(void *,size_t,base_update_work *,uint64_t,uint64_t,const ui
 /* All buffers are private and disjoint; caller serializes writes and pins disk.
  * Only enumerated ESP extents are written. No root/GPT/FAT/directory writes. */
 int base_update_prepare(const kernel_update_io_t *,void *,base_update_work *,const uint8_t [512]);
+int base_update_prepare_timed(const kernel_update_io_t *,void *,base_update_work *,const uint8_t [512],boot_timing_t *);
 int base_update_apply(const kernel_update_io_t *,void *,base_update_work *,const base_artifact *,const base_state *,const void *,size_t);
 int base_update_select(const kernel_update_io_t *,void *,base_update_work *,bool);
 #endif
