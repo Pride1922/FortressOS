@@ -64,14 +64,16 @@ static int e4_mount_journal_admitted_impl(block_dev_t *dev,const char *path,
     r=e4_journal_source(bootstrap,&guard,&map,&source);
     if (!r) { e4_mount_stage(stage,"journal-analyze",timing);r=jbd2_analyze(dev,&source,&plan,NULL); }
     kfree(map);map=NULL;e4_discard(bootstrap);bootstrap=NULL;if (r) goto fail;
-    block_dev_t preview={.sector_size=dev->sector_size,.sector_count=dev->sector_count,
-        .read_sector=e4_preview_sector,.write_sector=e4_preview_write,.flush=e4_preview_flush,.priv=plan,
-        .read_sectors=e4_preview_sectors,.max_run_bytes=4096};
     e4_mount_stage(stage,"recovery-preview",timing);
-    r=e4_open_journal_orphans_owned(&preview,true,&engine,true,true);if (r) goto fail;
-    /* Constructor checks complete allocation/reference ownership and orphans.
-     * Neither preview adapter nor any preflight is permitted to write. */
-    e4_engine_dispose(engine);engine=NULL;
+    if (!jbd2_log_empty(plan)) {
+        block_dev_t preview={.sector_size=dev->sector_size,.sector_count=dev->sector_count,
+            .read_sector=e4_preview_sector,.write_sector=e4_preview_write,.flush=e4_preview_flush,.priv=plan,
+            .read_sectors=e4_preview_sectors,.max_run_bytes=4096};
+        r=e4_open_journal_orphans_owned(&preview,true,&engine,true,true);if (r) goto fail;
+        /* Validate allocation/reference ownership and orphans before replay
+         * writes. With an empty log the real-device open does this once. */
+        e4_engine_dispose(engine);engine=NULL;
+    }
     e4_mount_stage(stage,"journal-replay",timing);
     r=jbd2_replay(plan,true);if (r) goto fail;
     jbd2_release(plan);plan=NULL;

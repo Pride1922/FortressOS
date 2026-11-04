@@ -38,6 +38,9 @@ typedef struct {
  * derives these from disk). No VFS publication or implicit mount recovery. */
 int jbd2_analyze(block_dev_t *partition,const jbd2_source_t *source,
                  jbd2_plan_t **out,jbd2_report_t *report);
+/* The validated on-disk journal has no active log. A nonempty log with
+ * zero committed images still requires recovery and journal clearing. */
+bool jbd2_log_empty(const jbd2_plan_t *plan);
 /* Explicit writable admission only. Checkpoints committed, unrevoked images,
  * flushes home blocks, then empties the journal and flushes its superblock.
  * Failure poisons this plan; retry requires fresh analysis after restart.

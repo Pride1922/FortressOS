@@ -216,11 +216,14 @@ int jbd2_test_arm_recovery_pause(block_dev_t *partition,void (*pause)(void)) {
     j_pause_partition=partition;j_pause_callback=pause;return 0;
 }
 #endif
+bool jbd2_log_empty(const jbd2_plan_t *p) {
+    return p && !p->poisoned && !j_be(p->super+28);
+}
 int jbd2_replay(jbd2_plan_t *p,bool admitted) {
     spin_debug_assert_unheld();if (!p) return -VFS_EINVAL;
     if (!admitted || !p->dev->write_sector || !p->dev->flush) return -VFS_EROFS;
     if (p->poisoned) return -VFS_EIO;
-    if (p->applied || !j_be(p->super+28)) return 0;
+    if (p->applied || jbd2_log_empty(p)) return 0;
     for (unsigned i=0;i<p->images;i++) {
         if (!j_revoked(p,i) && !j_io(p,p->image[i].block,p->image[i].bytes,true)) goto fail;
 #ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST

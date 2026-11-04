@@ -3,6 +3,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "apic.h"
+#include "boot_timing.h"
 #include "spinlock.h"
 #include "serial.h"
 #include "string.h"
@@ -313,7 +314,12 @@ static bool init_port(hba_t *h, unsigned port) {
         __asm__ volatile("pause" ::: "memory");
     }
     uint32_t signature;
-    if (!classify_link(&probe,&signature)) return false;
+    boot_timing_t timing;
+    boot_timing_begin(&timing,NULL);
+    bool classified=classify_link(&probe,&signature);
+    boot_timing_mark(&timing,NULL);
+    boot_timing_emit(&timing,"AHCI-LINK");
+    if (!classified) return false;
     if (!signature) {
         serial_puts("[AHCI] Offline port has no link after initialization; no ATA commands issued\n");
         return true;
