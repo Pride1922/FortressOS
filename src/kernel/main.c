@@ -196,15 +196,19 @@ static bool verbose_boot = false;
 static bool boot_selftests;
 
 /* Display boot status update on splash ticker and log to serial */
-static void boot_status(const char *msg) {
-    if (!msg) return;
-    boot_timing_mark(&boot_profile,msg);
+static void boot_progress(const char *msg) {
     if (console_is_quiet()) {
         logo_update_status(msg);
     }
     serial_puts("[BOOT] ");
     serial_puts(msg);
     serial_puts("\n");
+}
+
+static void boot_status(const char *msg) {
+    if (!msg) return;
+    boot_timing_mark(&boot_profile,msg);
+    boot_progress(msg);
 }
 
 static void acpi_parser_selftest(void) {
@@ -4940,18 +4944,22 @@ static void boot_peripherals(void *context) {
     const boot_info_t *info=boot->info;
     boot->started=true;
     boot_status("Initializing input & USB controllers...");
+    boot_progress("Input: preparing interrupt state...");
     boot_timing_t timing;
     boot_timing_begin(&timing,"legacy-input");
     __asm__ volatile("cli" ::: "memory");
     sched_disable_preemption();
+    boot_progress("Input: starting legacy keyboard...");
     if (!input_init(boot->madt)) {
         serial_puts("[FAIL] No keyboard or serial input available.\n");
         hcf();
     }
     /* Keep discovery visible near the shell on hardware without COM1. */
     boot_timing_mark(&timing,"pci-report");
+    boot_progress("USB: reading PCI controller report...");
     pci_report_xhci();
     boot_timing_mark(&timing,"xhci");
+    boot_progress("USB: entering controller probe...");
     bool wireless_probed=xhci_boot_probe(info,g_installed_boot && !boot_selftests ? boot_probe_pci_wireless : NULL);
     boot_timing_mark(&timing,NULL);
     boot_timing_emit(&timing,"INPUT-USB");
