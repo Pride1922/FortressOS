@@ -43,9 +43,12 @@ typedef struct {
     uint8_t rate_bits;
     uint8_t volt_offset;
     uint8_t volt_bits;
+    uint8_t design_cap_offset;
+    uint8_t design_cap_bits;
     bool found_state;
     bool found_rem;
     bool found_full;
+    bool found_design;
     bool found_rate;
     bool found_volt;
 } acpi_ec_battery_map_t;
@@ -67,6 +70,7 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
 /* EC Interface & Test Mock Hooks */
 typedef int (*acpi_ec_read_fn_t)(uint8_t addr, uint8_t *val);
 int  acpi_ec_read(uint8_t addr, uint8_t *val);
+int  acpi_ec_write(uint8_t addr, uint8_t val);
 void acpi_battery_set_ec_reader(acpi_ec_read_fn_t reader);
 void acpi_thermal_set_mock(int32_t temp_c);
 void acpi_ac_adapter_set_mock(uint32_t online);

@@ -126,12 +126,12 @@ int acpi_ec_read(uint8_t addr, uint8_t *val) {
     }
 
     /* 1. Wait for IBF == 0 */
-    for (uint32_t i = 0; i < 50000; i++) {
+    for (uint32_t i = 0; i < 200000; i++) {
         status = inb(cmd_port);
         if (status == 0xFF) return -1;
         if ((status & ACPI_EC_FLAG_IBF) == 0) break;
         io_wait();
-        if (i == 49999) {
+        if (i == 199999) {
             serial_puts("[BATTERY] acpi_ec_read step 1 (IBF=0) timeout, status=");
             serial_print_hex(status);
             serial_puts("\n");
@@ -143,12 +143,12 @@ int acpi_ec_read(uint8_t addr, uint8_t *val) {
     outb(cmd_port, ACPI_EC_CMD_RD);
 
     /* 3. Wait for IBF == 0 */
-    for (uint32_t i = 0; i < 50000; i++) {
+    for (uint32_t i = 0; i < 200000; i++) {
         status = inb(cmd_port);
         if (status == 0xFF) return -1;
         if ((status & ACPI_EC_FLAG_IBF) == 0) break;
         io_wait();
-        if (i == 49999) {
+        if (i == 199999) {
             serial_puts("[BATTERY] acpi_ec_read step 3 (IBF=0) timeout, status=");
             serial_print_hex(status);
             serial_puts("\n");
@@ -159,15 +159,25 @@ int acpi_ec_read(uint8_t addr, uint8_t *val) {
     /* 4. Send EC register address */
     outb(data_port, addr);
 
+    /* 4.5 Wait for IBF == 0 after sending address */
+    for (uint32_t i = 0; i < 200000; i++) {
+        status = inb(cmd_port);
+        if (status == 0xFF) return -1;
+        if ((status & ACPI_EC_FLAG_IBF) == 0) break;
+        io_wait();
+    }
+
     /* 5. Wait for OBF == 1 */
-    for (uint32_t i = 0; i < 50000; i++) {
+    for (uint32_t i = 0; i < 200000; i++) {
         status = inb(cmd_port);
         if (status == 0xFF) return -1;
         if ((status & ACPI_EC_FLAG_OBF) != 0) break;
         io_wait();
-        if (i == 49999) {
+        if (i == 199999) {
             serial_puts("[BATTERY] acpi_ec_read step 5 (OBF=1) timeout, status=");
             serial_print_hex(status);
+            serial_puts(" data=0x");
+            serial_print_hex(inb(data_port));
             serial_puts("\n");
             return -1;
         }
@@ -179,6 +189,71 @@ int acpi_ec_read(uint8_t addr, uint8_t *val) {
 #else
     (void)addr;
     return -1;
+#endif
+}
+
+int acpi_ec_write(uint8_t addr, uint8_t val) {
+    if (g_ec_reader) return 0;
+#ifndef HOST_TEST
+    uint16_t cmd_port = g_ec_cmd_port ? g_ec_cmd_port : ACPI_EC_CMD_PORT;
+    uint16_t data_port = g_ec_data_port ? g_ec_data_port : ACPI_EC_DATA_PORT;
+
+    uint8_t status = inb(cmd_port);
+    if (status == 0xFF) return -1;
+
+    if ((status & ACPI_EC_FLAG_OBF) != 0) {
+        (void)inb(data_port);
+    }
+
+    /* 1. Wait for IBF == 0 */
+    for (uint32_t i = 0; i < 200000; i++) {
+        status = inb(cmd_port);
+        if (status == 0xFF) return -1;
+        if ((status & ACPI_EC_FLAG_IBF) == 0) break;
+        io_wait();
+        if (i == 199999) return -1;
+    }
+
+    /* 2. Send WR_EC command (0x81) */
+    outb(cmd_port, 0x81);
+
+    /* 3. Wait for IBF == 0 */
+    for (uint32_t i = 0; i < 200000; i++) {
+        status = inb(cmd_port);
+        if (status == 0xFF) return -1;
+        if ((status & ACPI_EC_FLAG_IBF) == 0) break;
+        io_wait();
+        if (i == 199999) return -1;
+    }
+
+    /* 4. Send register address */
+    outb(data_port, addr);
+
+    /* 5. Wait for IBF == 0 */
+    for (uint32_t i = 0; i < 200000; i++) {
+        status = inb(cmd_port);
+        if (status == 0xFF) return -1;
+        if ((status & ACPI_EC_FLAG_IBF) == 0) break;
+        io_wait();
+        if (i == 199999) return -1;
+    }
+
+    /* 6. Send data value */
+    outb(data_port, val);
+
+    /* 7. Wait for IBF == 0 */
+    for (uint32_t i = 0; i < 200000; i++) {
+        status = inb(cmd_port);
+        if (status == 0xFF) return -1;
+        if ((status & ACPI_EC_FLAG_IBF) == 0) break;
+        io_wait();
+        if (i == 199999) return -1;
+    }
+
+    return 0;
+#else
+    (void)addr; (void)val;
+    return 0;
 #endif
 }
 
@@ -559,8 +634,9 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
     if (!aml || len < 8 || !map) return false;
 
     for (size_t i = 0; i + 6 <= len; i++) {
-        /* Look for FieldOp: 0x5B, 0x81 */
-        if (aml[i] == 0x5B && aml[i + 1] == 0x81) {
+        /* Look for FieldOp: 0x5B, 0x81 or IndexFieldOp: 0x5B, 0x86 */
+        if (aml[i] == 0x5B && (aml[i + 1] == 0x81 || aml[i + 1] == 0x86)) {
+            bool is_index = (aml[i + 1] == 0x86);
             const uint8_t *ptr = aml + i + 2;
             const uint8_t *end = aml + len;
             size_t consumed = 0;
@@ -570,9 +646,24 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
             if (field_end > end) field_end = end;
             ptr += consumed;
 
-            /* Skip region NameString */
+            const uint8_t *rname = ptr;
+            /* Skip region NameString (IndexField has two NameStrings) */
             ptr = skip_aml_namestring(ptr, field_end);
+            if (is_index) {
+                ptr = skip_aml_namestring(ptr, field_end);
+            }
             if (ptr >= field_end) continue;
+
+            /* Check if RegionName contains "EC" or "ERAM" */
+            bool is_ec_region = false;
+            for (const uint8_t *p = rname; p + 2 <= ptr; p++) {
+                if ((p[0] == 'E' && p[1] == 'C') ||
+                    (p + 4 <= ptr && memcmp(p, "ERAM", 4) == 0)) {
+                    is_ec_region = true;
+                    break;
+                }
+            }
+            if (!is_ec_region) continue;
 
             /* Skip FieldFlags (1 byte) */
             ptr++;
@@ -595,7 +686,7 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                     if (ptr + 4 <= field_end) ptr += 4;
                 } else if (op == 0x03) { /* ExtendedAccessField */
                     ptr += 4;
-                } else if ((op >= 'A' && op <= 'Z') || (op >= '0' && op <= '9') || op == '_') {
+                } else if ((op >= 'A' && op <= 'Z') || op == '_') {
                     /* NamedField */
                     if (ptr + 4 > field_end) break;
                     char name[5];
@@ -610,6 +701,16 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
 
                     size_t byte_off = current_bit_offset / 8;
 
+#ifndef HOST_TEST
+                    serial_puts("[BATTERY] EC field: ");
+                    serial_puts(name);
+                    serial_puts(" bits=");
+                    serial_print_dec(bit_len);
+                    serial_puts(" off=0x");
+                    serial_print_hex(byte_off);
+                    serial_puts("\n");
+#endif
+
                     /* Match field names against known battery field patterns (standard, Dell, Smart Battery) */
                     if (!map->found_state && (
                         memcmp(name, "B1ST", 4) == 0 || memcmp(name, "B0ST", 4) == 0 ||
@@ -619,7 +720,9 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                         memcmp(name, "ST00", 4) == 0 || memcmp(name, "SBBS", 4) == 0 ||
                         memcmp(name, "SBST", 4) == 0 || memcmp(name, "MBST", 4) == 0 ||
                         memcmp(name, "PBST", 4) == 0 || memcmp(name, "BST_", 4) == 0 ||
-                        memcmp(name, "BSTP", 4) == 0)) {
+                        memcmp(name, "BSTP", 4) == 0 || memcmp(name, "BSTA", 4) == 0 ||
+                        memcmp(name, "BSTB", 4) == 0 || memcmp(name, "B1S0", 4) == 0 ||
+                        memcmp(name, "B0S0", 4) == 0)) {
                         map->state_offset = (uint8_t)byte_off;
                         map->state_bits = (uint8_t)bit_len;
                         map->found_state = true;
@@ -632,7 +735,9 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                         memcmp(name, "SBRC", 4) == 0 || memcmp(name, "RC01", 4) == 0 ||
                         memcmp(name, "MBRM", 4) == 0 || memcmp(name, "BPRC", 4) == 0 ||
                         memcmp(name, "PBRC", 4) == 0 || memcmp(name, "BRMC", 4) == 0 ||
-                        memcmp(name, "RC00", 4) == 0 || memcmp(name, "REMC", 4) == 0)) {
+                        memcmp(name, "RC00", 4) == 0 || memcmp(name, "REMC", 4) == 0 ||
+                        memcmp(name, "B1RM", 4) == 0 || memcmp(name, "B0RM", 4) == 0 ||
+                        memcmp(name, "RMCP", 4) == 0 || memcmp(name, "BATM", 4) == 0)) {
                         map->rem_cap_offset = (uint8_t)byte_off;
                         map->rem_cap_bits = (uint8_t)bit_len;
                         map->found_rem = true;
@@ -640,18 +745,30 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                         memcmp(name, "B1FC", 4) == 0 || memcmp(name, "B0FC", 4) == 0 ||
                         memcmp(name, "BFC0", 4) == 0 || memcmp(name, "BFC1", 4) == 0 ||
                         memcmp(name, "FCAP", 4) == 0 || memcmp(name, "BAFC", 4) == 0 ||
-                        memcmp(name, "B1DC", 4) == 0 || memcmp(name, "B0DC", 4) == 0 ||
-                        memcmp(name, "BDC1", 4) == 0 || memcmp(name, "BDC0", 4) == 0 ||
                         memcmp(name, "FC01", 4) == 0 || memcmp(name, "FCP0", 4) == 0 ||
-                        memcmp(name, "FCP1", 4) == 0 || memcmp(name, "DCP0", 4) == 0 ||
-                        memcmp(name, "DCP1", 4) == 0 || memcmp(name, "SBFC", 4) == 0 ||
-                        memcmp(name, "SBDC", 4) == 0 || memcmp(name, "MBFC", 4) == 0 ||
-                        memcmp(name, "BMAX", 4) == 0 || memcmp(name, "PBFC", 4) == 0 ||
-                        memcmp(name, "BFCC", 4) == 0 || memcmp(name, "FC00", 4) == 0 ||
-                        memcmp(name, "FULC", 4) == 0)) {
+                        memcmp(name, "FCP1", 4) == 0 || memcmp(name, "SBFC", 4) == 0 ||
+                        memcmp(name, "MBFC", 4) == 0 || memcmp(name, "BMAX", 4) == 0 ||
+                        memcmp(name, "PBFC", 4) == 0 || memcmp(name, "BFCC", 4) == 0 ||
+                        memcmp(name, "FC00", 4) == 0 || memcmp(name, "FULC", 4) == 0 ||
+                        memcmp(name, "BFC_", 4) == 0 || memcmp(name, "FCB0", 4) == 0 ||
+                        memcmp(name, "FCB1", 4) == 0)) {
                         map->full_cap_offset = (uint8_t)byte_off;
                         map->full_cap_bits = (uint8_t)bit_len;
                         map->found_full = true;
+                    } else if (!map->found_design && (
+                        memcmp(name, "B1DC", 4) == 0 || memcmp(name, "B0DC", 4) == 0 ||
+                        memcmp(name, "BDC1", 4) == 0 || memcmp(name, "BDC0", 4) == 0 ||
+                        memcmp(name, "DCP0", 4) == 0 || memcmp(name, "DCP1", 4) == 0 ||
+                        memcmp(name, "SBDC", 4) == 0 || memcmp(name, "DC00", 4) == 0 ||
+                        memcmp(name, "DC01", 4) == 0 || memcmp(name, "BDC_", 4) == 0)) {
+                        map->design_cap_offset = (uint8_t)byte_off;
+                        map->design_cap_bits = (uint8_t)bit_len;
+                        map->found_design = true;
+                        if (!map->found_full) {
+                            map->full_cap_offset = (uint8_t)byte_off;
+                            map->full_cap_bits = (uint8_t)bit_len;
+                            map->found_full = true;
+                        }
                     } else if (!map->found_rate && (
                         memcmp(name, "B1PR", 4) == 0 || memcmp(name, "B0PR", 4) == 0 ||
                         memcmp(name, "BPR0", 4) == 0 || memcmp(name, "BPR1", 4) == 0 ||
@@ -661,7 +778,8 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                         memcmp(name, "BAC1", 4) == 0 || memcmp(name, "SBAC", 4) == 0 ||
                         memcmp(name, "MBPR", 4) == 0 || memcmp(name, "MBCR", 4) == 0 ||
                         memcmp(name, "PBPR", 4) == 0 || memcmp(name, "PBCR", 4) == 0 ||
-                        memcmp(name, "CR00", 4) == 0 || memcmp(name, "PR00", 4) == 0)) {
+                        memcmp(name, "CR00", 4) == 0 || memcmp(name, "PR00", 4) == 0 ||
+                        memcmp(name, "AC00", 4) == 0 || memcmp(name, "AC01", 4) == 0)) {
                         map->rate_offset = (uint8_t)byte_off;
                         map->rate_bits = (uint8_t)bit_len;
                         map->found_rate = true;
@@ -673,7 +791,9 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
                         memcmp(name, "VOT1", 4) == 0 || memcmp(name, "VL00", 4) == 0 ||
                         memcmp(name, "VL01", 4) == 0 || memcmp(name, "SBVO", 4) == 0 ||
                         memcmp(name, "MBVO", 4) == 0 || memcmp(name, "PBVO", 4) == 0 ||
-                        memcmp(name, "PV00", 4) == 0 || memcmp(name, "VOL0", 4) == 0)) {
+                        memcmp(name, "PV00", 4) == 0 || memcmp(name, "VOL0", 4) == 0 ||
+                        memcmp(name, "DV00", 4) == 0 || memcmp(name, "DV01", 4) == 0 ||
+                        memcmp(name, "DVT0", 4) == 0 || memcmp(name, "DVT1", 4) == 0)) {
                         map->volt_offset = (uint8_t)byte_off;
                         map->volt_bits = (uint8_t)bit_len;
                         map->found_volt = true;
@@ -681,18 +801,19 @@ bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t 
 
                     current_bit_offset += bit_len;
                 } else {
-                    ptr++;
+                    /* Unhandled element opcode: break to avoid alignment corruption */
+                    break;
                 }
             }
         }
     }
-    return (map->found_rem && map->found_full);
+    return (map->found_rem && (map->found_full || map->found_design));
 }
 
 /* Read live battery status from Embedded Controller using discovered mapping */
 bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *out) {
     if (!map || !out) return false;
-    if (!map->found_rem || !map->found_full) return false;
+    if (!map->found_rem) return false;
 
     uint32_t state = 0, rate = 0, rem_cap = 0, full_cap = 0, volt = 0;
 
@@ -708,16 +829,37 @@ bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *ou
         rem_cap = (uint32_t)lo | ((uint32_t)hi << 8);
     }
 
-    /* Read Full Capacity */
-    if (map->full_cap_bits == 8) {
-        uint8_t b = 0;
-        if (acpi_ec_read(map->full_cap_offset, &b) != 0) return false;
-        full_cap = b;
-    } else {
-        uint8_t lo = 0, hi = 0;
-        if (acpi_ec_read(map->full_cap_offset, &lo) != 0) return false;
-        if (acpi_ec_read(map->full_cap_offset + 1, &hi) != 0) return false;
-        full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+    /* Read Full Capacity if available */
+    if (map->found_full && map->full_cap_bits > 0) {
+        if (map->full_cap_bits == 8) {
+            uint8_t b = 0;
+            if (acpi_ec_read(map->full_cap_offset, &b) == 0) full_cap = b;
+        } else {
+            uint8_t lo = 0, hi = 0;
+            if (acpi_ec_read(map->full_cap_offset, &lo) == 0 &&
+                acpi_ec_read(map->full_cap_offset + 1, &hi) == 0) {
+                full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+            }
+        }
+    }
+
+    /* Fallback to Design Capacity if full_cap read 0 */
+    if (full_cap == 0 && map->found_design && map->design_cap_bits > 0) {
+        if (map->design_cap_bits == 8) {
+            uint8_t b = 0;
+            if (acpi_ec_read(map->design_cap_offset, &b) == 0) full_cap = b;
+        } else {
+            uint8_t lo = 0, hi = 0;
+            if (acpi_ec_read(map->design_cap_offset, &lo) == 0 &&
+                acpi_ec_read(map->design_cap_offset + 1, &hi) == 0) {
+                full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+            }
+        }
+    }
+
+    /* Fallback: if remaining capacity is percentage scale (<=100) */
+    if (full_cap == 0 && rem_cap <= 100) {
+        full_cap = 100;
     }
 
     if (full_cap == 0) return false;
@@ -815,15 +957,17 @@ static bool poll_hardware_battery(battery_status_t *out) {
     if (!g_ec_map_discovered) {
         memset(&g_ec_map, 0, sizeof(g_ec_map));
         for (size_t t = 0; t < num_tables; t++) {
-            if (acpi_parse_ec_fields((const uint8_t *)tables[t], tables[t]->length, &g_ec_map)) {
-                g_ec_map_discovered = true;
-                serial_puts("[BATTERY] EC map discovered: rem_off=");
-                serial_print_dec(g_ec_map.rem_cap_offset);
-                serial_puts(" full_off=");
-                serial_print_dec(g_ec_map.full_cap_offset);
-                serial_puts("\n");
-                break;
-            }
+            (void)acpi_parse_ec_fields((const uint8_t *)tables[t], tables[t]->length, &g_ec_map);
+        }
+        g_ec_map_discovered = true;
+        if (g_ec_map.found_rem) {
+            serial_puts("[BATTERY] EC map discovered: rem_off=0x");
+            serial_print_hex(g_ec_map.rem_cap_offset);
+            serial_puts(" full_off=0x");
+            serial_print_hex(g_ec_map.full_cap_offset);
+            serial_puts(" state_off=0x");
+            serial_print_hex(g_ec_map.state_offset);
+            serial_puts("\n");
         }
     }
 
@@ -841,7 +985,7 @@ static bool poll_hardware_battery(battery_status_t *out) {
     }
 
     /* 1. Try reading live registers from Embedded Controller via discovered map */
-    if (g_ec_map.found_rem && g_ec_map.found_full) {
+    if (g_ec_map.found_rem) {
         if (acpi_read_ec_battery(&g_ec_map, out)) {
             if (ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
             if (has_temp) out->temperature_c = tc;
@@ -882,7 +1026,7 @@ static bool poll_hardware_battery(battery_status_t *out) {
     return false;
 #else
     /* HOST_TEST path */
-    if (g_ec_map.found_rem && g_ec_map.found_full) {
+    if (g_ec_map.found_rem && (g_ec_map.found_full || g_ec_map.found_design)) {
         if (acpi_read_ec_battery(&g_ec_map, out)) {
             if (g_mock_ac_online != AC_POWER_UNKNOWN) out->ac_online = g_mock_ac_online;
             out->temperature_c = g_mock_temp_c;
