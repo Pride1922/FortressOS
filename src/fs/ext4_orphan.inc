@@ -89,7 +89,9 @@ static int e4_orphan_validate(ext4_engine_t *e) {
             if (e4_u16(fs->gd[g].raw+14)!=fs->ipg || e4_u16(fs->gd[g].raw+16)) { r=-VFS_EIO;goto done; }
             continue;
         }
-        if (!e4_bitmap(fs,g,true)) { r=-VFS_EIO;goto done; }
+        if (!e4_bitmap(fs,g,true) || e4_bitmap_free_count(fs->scratch,fs->ipg)!=e4_u16(fs->gd[g].raw+14)) {
+            r=-VFS_EIO;goto done;
+        }
         /* One heap-owned scratch bitmap; traversal reuses fs->scratch. */
         memcpy(e->write_run,fs->scratch,fs->bs);
         unsigned group_dirs=0;

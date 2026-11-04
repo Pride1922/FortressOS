@@ -148,6 +148,9 @@ static int e4_open_journal_files_owned(block_dev_t *dev,bool admitted,bool orpha
     uint64_t blocks=0,inodes=0;
     for (uint32_t g=0;g<fs->groups;g++) {
         blocks+=e4_u16(fs->gd[g].raw+12);inodes+=e4_u16(fs->gd[g].raw+14);
+        /* The orphan-aware constructor validates these same bitmaps as part
+         * of its full ownership scan before admitting the engine. */
+        if (orphans) continue;
         for (unsigned kind=0;kind<2;kind++) if (!(e4_u16(fs->gd[g].raw+18)&(kind ? 1u : 2u))) {
             if (!e4_bitmap(fs,g,kind!=0)) { r=-VFS_EIO;goto fail; }
             uint32_t start=fs->first+g*fs->bpg,count=kind ? fs->ipg : fs->blocks-start;
@@ -164,7 +167,7 @@ static int e4_open_journal_files_owned(block_dev_t *dev,bool admitted,bool orpha
     if (blocks!=e4_u32(sb+12) || inodes!=e4_u32(sb+16)) { r=-VFS_EIO;goto fail; }
     if (!e4_bitmap(fs,(fs->journal_ino-1)/fs->ipg,true) ||
         !e4_bit(fs->scratch,(fs->journal_ino-1)%fs->ipg)) { r=-VFS_EIO;goto fail; }
-    for (unsigned i=0;i<fs->journal_ranges;i++) for (uint32_t k=0;k<fs->journal_reserved[i].len;k++) {
+    for (unsigned i=0;!orphans && i<fs->journal_ranges;i++) for (uint32_t k=0;k<fs->journal_reserved[i].len;k++) {
         uint32_t block=fs->journal_reserved[i].lo+k,g=(block-fs->first)/fs->bpg;
         /* Cache the validated bitmap for a whole journal range's group. */
         if (!k || g!=(block-1-fs->first)/fs->bpg) {

@@ -176,6 +176,22 @@ static void admission(block_dev_t *dev,const uint8_t *initial,const uint8_t *bad
     assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage)<0 && !fs && !d->events && !vfs_lookup("/mnt"));
     assert(!strcmp(stage,"recovery-preview"));
     assert(!e4_engine_busy);teardown();
+    reset(d,initial);
+    /* A valid bitmap checksum cannot hide an incorrect free-inode count.
+     * Inode 1 is reserved and is not visited by the ownership traversal. */
+    uint8_t *sb=d->stable+1024;
+    uint32_t bs=1024u<<e4_u32(sb+24),first=e4_u32(sb+20),ipg=e4_u32(sb+40);
+    uint8_t *descriptor=d->stable+(first+1)*bs;
+    uint8_t *bitmap=d->stable+e4_u32(descriptor+4)*bs;
+    assert(e4_bit(bitmap,0));bitmap[0]&=~1u;
+    uint32_t seed=e4_crc(UINT32_MAX,sb+104,16);
+    e4_p16(descriptor+26,(uint16_t)e4_crc(seed,bitmap,ipg/8));
+    uint8_t group[4]={0};e4_p16(descriptor+30,0);
+    e4_p16(descriptor+30,(uint16_t)e4_crc(e4_crc(seed,group,4),descriptor,32));
+    ext4_fault_restart(d);
+    assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage)==-VFS_EIO);
+    assert(!strcmp(stage,"reopened-state") && !fs && !d->events && !e4_engine_busy);
+    teardown();
     reset(d,initial);fail_read=0;
     assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage)==-VFS_EIO);
     assert(!strcmp(stage,"journal-source") && !fs && !d->events && !e4_engine_busy && !vfs_lookup("/mnt"));
