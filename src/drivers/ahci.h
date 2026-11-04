@@ -9,6 +9,9 @@
  * Published disks live for the boot. Uncertain DMA ownership is terminal and
  * retains all descriptor/bounce frames. No hotplug or automatic retry. */
 size_t ahci_inventory_boot(void);
+/* BSP only. Runs independent boot work at most once during a pending link
+ * deadline, with no driver lock held. The callback must not use storage. */
+size_t ahci_inventory_boot_overlap(void (*work)(void *),void *context);
 bool ahci_inventory_valid(void);
 block_dev_t *ahci_get_disk(unsigned index);
 /* Fresh IDENTIFY + pinned BDF/BAR/link/geometry validation. Port+1 is the

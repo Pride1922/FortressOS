@@ -4,6 +4,8 @@
 #include "root_boot.h"
 /* BSP boot supervisor only, before any user process publication. */
 bool installed_root_requested(const boot_info_t *);
+/* Read-only readiness check for this boot's immutable module snapshot. */
+bool installed_root_preflight(const boot_info_t *);
 bool installed_root_boot(const boot_info_t *);
 const char *installed_root_recovery_hash(void);
 void installed_root_recovery_notice(void);

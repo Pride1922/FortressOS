@@ -143,6 +143,18 @@ static void reset(void) {
     identify_words[49]=0x300;identify_words[83]=0x6400;identify_words[100]=32;
     identify_words[10]=0x5331;identify_words[27]=0x5341;
 }
+static void overlap_empty_wait(void *context) {
+    unsigned *calls=context;
+    assert(!lock_depth && !issued && resets==1 && !ahci_inventory_valid());
+    assert((registers[(0x100+CMD)/4]&(CMD_ST|CMD_FRE))==CMD_FRE);
+    ++*calls;
+    clock_value+=2000000;
+}
+static void during_link_wait(void *context) {
+    overlap_empty_wait(context);
+    registers[(0x100+SSTS)/4]=0x103;
+    registers[(0x100+SIG)/4]=0x101;
+}
 int main(void) {
     reset();ahci_geometry_t g;
     assert(ahci_decode_identify(identify_words,&g) && g.sectors==32 && g.sector_size==512 && g.flush_ext);
@@ -216,6 +228,16 @@ int main(void) {
     registers[(0x180+SIG)/4]=0x101;reset_link_status=0;reset_signature=UINT32_MAX;
     assert(ahci_inventory_boot()==1 && ahci_inventory_valid() && issued==1 && resets==1);
     assert(ahci_identity(0,&id) && id.nsid==2);
+    reset();registers[PI/4]=1;registers[(0x100+SSTS)/4]=4;
+    registers[(0x100+SIG)/4]=UINT32_MAX;reset_link_status=4;reset_signature=UINT32_MAX;
+    unsigned overlaps=0;
+    assert(ahci_inventory_boot_overlap(during_link_wait,&overlaps)==1 && overlaps==1);
+    assert(ahci_inventory_valid() && issued==1 && ahci_inventory_boot()==1);
+    reset();registers[PI/4]=1;registers[(0x100+SSTS)/4]=4;
+    registers[(0x100+SIG)/4]=UINT32_MAX;reset_link_status=4;reset_signature=UINT32_MAX;
+    overlaps=0;
+    assert(!ahci_inventory_boot_overlap(overlap_empty_wait,&overlaps) && overlaps==1);
+    assert(ahci_inventory_valid() && !issued && clock_value>=3000000 && clock_value<3100000);
     /* Do not simply skip DET=4: an attached SATA disk may need link reset. */
     reset();registers[PI/4]=1;registers[(0x100+SSTS)/4]=4;
     registers[(0x100+SIG)/4]=UINT32_MAX;reset_link_status=0x103;

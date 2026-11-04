@@ -35,6 +35,7 @@
 #include "pci.h"
 #include "nvme.h"
 #include "storage.h"
+#include "ahci.h"
 #include "xhci.h"
 #include "block.h"
 #include "crc32.h"
@@ -4917,6 +4918,45 @@ static void test_pipe_kernel_lifecycle(void) {
 }
 #undef PIPE_REQUIRE
 
+typedef struct {
+    const boot_info_t *info;
+    const acpi_madt_info_t *madt;
+    bool started;
+} boot_peripherals_t;
+
+static void boot_peripherals(void *context) {
+    boot_peripherals_t *boot=context;
+    const boot_info_t *info=boot->info;
+    boot->started=true;
+    boot_status("Initializing input & USB controllers...");
+    __asm__ volatile("cli" ::: "memory");
+    sched_disable_preemption();
+    if (!input_init(boot->madt)) {
+        serial_puts("[FAIL] No keyboard or serial input available.\n");
+        hcf();
+    }
+    /* Keep discovery visible near the shell on hardware without COM1. */
+    pci_report_xhci();
+    xhci_boot_probe(info);
+    boot_timing_mark(&boot_profile,"Network controllers");
+    net_boot_probe();
+    if (iwlwifi_probe()) {
+        iwlwifi_map_mmio();
+        iwlwifi_init_hw();
+        serial_puts("[IWL] Intel wireless adapter detected & MMIO mapped\n");
+    }
+    if (rtw88_probe()) {
+        serial_puts("[RTW88] PCIe wireless adapter detected\n");
+    }
+    e1000_raw_selftest(info->cmdline);
+    net_start(info->cmdline, sizeof(info->cmdline));
+}
+
+static void boot_peripherals_during_sata(void *context) {
+    boot_peripherals(context);
+    boot_timing_mark(&boot_profile,"Finishing SATA discovery");
+}
+
 void kmain(void) {
     uint64_t kernel_entry_ticks=apic_poll_clock_read();
     boot_timing_begin_raw(&early_boot_profile,"console-and-boot-metadata",kernel_entry_ticks);
@@ -6653,28 +6693,15 @@ pf_boot_guard_done:
     if (qemu_fw_cfg_has_key("opt/fortress/pipe_test")) {
         test_pipe_kernel_lifecycle();
     }
-    boot_status("Initializing input & USB controllers...");
-    __asm__ volatile("cli" ::: "memory");
-    sched_disable_preemption();
-    if (!input_init(&madt_info)) {
-        serial_puts("[FAIL] No keyboard or serial input available.\n");
-        hcf();
+    boot_peripherals_t peripherals={.info=&boot_info,.madt=&madt_info};
+    if (g_installed_boot && !boot_selftests && !ext4_physical_requested()) {
+        boot_timing_mark(&boot_profile,"Installed root preflight");
+        if (installed_root_preflight(&boot_info)) {
+            boot_timing_mark(&boot_profile,"Starting SATA discovery");
+            (void)ahci_inventory_boot_overlap(boot_peripherals_during_sata,&peripherals);
+        }
     }
-    /* Keep discovery visible near the shell on hardware without COM1. */
-    pci_report_xhci();
-    xhci_boot_probe(&boot_info);
-    boot_timing_mark(&boot_profile,"Network controllers");
-    net_boot_probe();
-    if (iwlwifi_probe()) {
-        iwlwifi_map_mmio();
-        iwlwifi_init_hw();
-        serial_puts("[IWL] Intel wireless adapter detected & MMIO mapped\n");
-    }
-    if (rtw88_probe()) {
-        serial_puts("[RTW88] PCIe wireless adapter detected\n");
-    }
-    e1000_raw_selftest(boot_info.cmdline);
-    net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
+    if (!peripherals.started) boot_peripherals(&peripherals);
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
     else if (!g_installed_boot && !g_installer_boot) usb_mount_production_storage(&boot_info);

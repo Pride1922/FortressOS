@@ -237,7 +237,7 @@ static bool flush_disk(block_dev_t *d) {
 /* Boot classification with a private receive-only FIS page and ST kept clear.
  * Firmware need not have enumerated a live link. No ATA/ATAPI command is issued;
  * COMRESET, if necessary, requests its signature, never retries failed I/O. */
-static bool classify_link(port_t *p,uint32_t *signature) {
+static bool classify_link(port_t *p,uint32_t *signature,void (**work)(void *),void *context) {
     bool offline=(rd(p->regs+SSTS)&0xf0f)==4;
     *signature=rd(p->regs+SIG);
     if (!offline && *signature && *signature!=UINT32_MAX) return true;
@@ -284,12 +284,17 @@ static bool classify_link(port_t *p,uint32_t *signature) {
             else ok=false;
             break;
         }
+        if (*work) {
+            void (*run)(void *)=*work;
+            *work=NULL;
+            run(context);
+        }
         __asm__ volatile("pause" ::: "memory");
     }
     wr(p->regs+CMD,rd(p->regs+CMD)&~CMD_FRE);
     return wait_clear(p->regs+CMD,CMD_FR,500) && ok;
 }
-static bool init_port(hba_t *h, unsigned port) {
+static bool init_port(hba_t *h,unsigned port,void (**work)(void *),void *context) {
     port_t probe = {.hba=h, .port=port, .regs=h->mmio+0x100+port*0x80};
     uint32_t original = rd(probe.regs+CMD);
     if (!stop(&probe)) return false;
@@ -316,7 +321,7 @@ static bool init_port(hba_t *h, unsigned port) {
     uint32_t signature;
     boot_timing_t timing;
     boot_timing_begin(&timing,NULL);
-    bool classified=classify_link(&probe,&signature);
+    bool classified=classify_link(&probe,&signature,work,context);
     boot_timing_mark(&timing,NULL);
     boot_timing_emit(&timing,"AHCI-LINK");
     if (!classified) return false;
@@ -359,7 +364,7 @@ static bool init_port(hba_t *h, unsigned port) {
     return true;
 }
 
-size_t ahci_inventory_boot(void) {
+size_t ahci_inventory_boot_overlap(void (*work)(void *),void *context) {
     if (scanned) return ahci_inventory_valid() ? disk_count : 0;
     scanned=true;coherent=false;
     pci_device_t devices[MAX_HBAS+1];
@@ -391,7 +396,7 @@ size_t ahci_inventory_boot(void) {
         uint32_t implemented=rd(h->mmio+PI);
         if ((h->cap&31)!=31 && (implemented>>((h->cap&31)+1))) return 0;
         for (unsigned port=0;port<32;port++)
-            if ((implemented&(1u<<port)) && !init_port(h,port)) {
+            if ((implemented&(1u<<port)) && !init_port(h,port,&work,context)) {
                 serial_puts("[AHCI] Port initialization rejected: ");serial_print_dec(port);
                 if (pinned(h)) {
                     uintptr_t r=h->mmio+0x100+port*0x80;
@@ -405,6 +410,9 @@ size_t ahci_inventory_boot(void) {
     }
     coherent=true;
     return ahci_inventory_valid() ? disk_count : 0;
+}
+size_t ahci_inventory_boot(void) {
+    return ahci_inventory_boot_overlap(NULL,NULL);
 }
 bool ahci_inventory_valid(void) {
     if (!scanned || !coherent || !pci_inventory_complete()) return false;

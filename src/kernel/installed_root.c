@@ -139,7 +139,11 @@ static bool validate_tree(ext4_mount_t *mount) {
     db_wipe(&database,sizeof(database));
     return ok && executable(root,"/bin/login",false) && executable(root,"/bin/shell",false) && executable(root,"/bin/sudo",true);
 }
-static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timing) {
+static const boot_info_t *preflight_info;
+static root_readiness_digests_t preflight_digests;
+static bool preflight_ok;
+
+static bool verify_boot_credentials(const boot_info_t *info,root_readiness_digests_t *loaded) {
     root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
     size_t n;char record[512];
     creds_t actor;creds_init_root(&actor);int error;
@@ -160,9 +164,24 @@ static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timi
     if (!gpt_str_to_guid(recovery.partuuid,&expected) || !gpt_guid_equal(&expected,&c.partuuid)) {recovery_valid=false;return false;}
     if (c.mode==ROOT_BOOT_RECOVERY) {reason="explicit recovery mode (no root writes)";return false;}
     reason="invalid or incomplete boot readiness";
+    return info->installed_modules_valid && root_readiness_validate_digests((void *)info->readiness_vaddr,info->readiness_size,&recovery,
+        (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size,loaded);
+}
+bool installed_root_preflight(const boot_info_t *info) {
+    boot_timing_t timing;boot_timing_begin(&timing,NULL);
+    preflight_ok=verify_boot_credentials(info,&preflight_digests);
+    preflight_info=info;
+    boot_timing_mark(&timing,NULL);boot_timing_emit(&timing,"ROOT-PREFLIGHT");
+    return preflight_ok;
+}
+static bool installed_root_boot_impl(const boot_info_t *info,boot_timing_t *timing) {
     root_readiness_digests_t loaded;
-    if (!info->installed_modules_valid || !root_readiness_validate_digests((void *)info->readiness_vaddr,info->readiness_size,&recovery,
-        (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size,&loaded)) return false;
+    if (preflight_info==info) {
+        preflight_info=NULL;
+        if (!preflight_ok) return false;
+        loaded=preflight_digests;
+    } else if (!verify_boot_credentials(info,&loaded)) return false;
+    root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
     boot_timing_mark(timing,"bootstrap-cli");
     /* Keep a current package CLI available on installations predating /bin/pkg. */
     int tool=pkg_boot_cli_publish(info);
