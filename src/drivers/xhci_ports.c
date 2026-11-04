@@ -119,7 +119,7 @@ static bool reset_usb2_ports(const xhci_rings_io_t *io, uint32_t op,
 
 bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                                    const xhci_dma_buffers_t *dma,
-                                   xhci_port_report_t *report,unsigned settled_ms) {
+                                   xhci_port_report_t *report,unsigned settled_ms,bool trace_attachment) {
     if (!report) return false;
     memset(report, 0, sizeof(*report));
 
@@ -172,10 +172,25 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
      * again before the one-shot boot scan. This is bounded PIT polling, not
      * runtime hot-plug; no DMA/event-ring ownership is changed here. */
     uint64_t settle_start = BOOT_TIMING_READ();
-    for (unsigned ms = settled_ms; ms < 1000; ++ms) {
+    for (unsigned ms = settled_ms;; ++ms) {
+        if (trace_attachment && (ms == settled_ms || ms % 10 == 0 || ms >= 1000)) {
+            /* Sample only. The final scan still decides which ports to reset. */
+            uint64_t sample_ticks = elapsed_ticks(settle_start);
+            for (uint32_t i = 0; i < max_ports; ++i) {
+                uint32_t off = op + 0x400 + i * 0x10;
+                if (!fits(io, off, 4)) break;
+                xhci_port_info_t *info = &report->ports[i];
+                if (info->attachment_seen) continue;
+                uint32_t raw = io->read32(io->mmio_ctx, off);
+                if (raw != UINT32_MAX && (raw & XHCI_PORTSC_CCS)) {
+                    info->attachment_seen = true;
+                    info->attachment_ticks = sample_ticks;
+                }
+            }
+        }
+        if (ms >= 1000) break;
         if (!io->delay_ms(io->mmio_ctx)) return false;
     }
-
     report->settle_ticks = elapsed_ticks(settle_start);
 
     /* 2. Inspect each root port */

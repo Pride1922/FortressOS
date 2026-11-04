@@ -115,7 +115,7 @@ int main(void) {
     };
 
     xhci_port_report_t report;
-    bool ok = xhci_discover_and_reset_ports(&io, NULL, &report, 0);
+    bool ok = xhci_discover_and_reset_ports(&io, NULL, &report, 0, false);
     assert(ok);
 
     /* Verify port protocol mappings */
@@ -131,6 +131,7 @@ int main(void) {
 
     /* Verify connections */
     assert(report.connected_count == 2);
+    assert(!report.ports[1].attachment_seen);
 
     /* Port 1 was disconnected */
     assert(!report.ports[0].connected);
@@ -151,14 +152,14 @@ int main(void) {
     setup_mock(&m);
     m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
     m.connect_at_ms = 750;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0, false));
     assert(report.ports[1].connected && report.ports[1].enabled);
     assert(m.elapsed_ms == 1020);
 
     setup_mock(&m);
     m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
     m.regs[0x480 / 4] &= ~XHCI_PORTSC_CCS;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0, false));
     assert(report.connected_count == 0 && m.reset_count == 0);
     assert(m.elapsed_ms == 1000);
 
@@ -166,12 +167,13 @@ int main(void) {
     m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
     m.elapsed_ms = 600;
     m.connect_at_ms = 750;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 600));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 600, true));
     assert(report.ports[1].connected && report.ports[1].enabled && m.elapsed_ms == 1020);
+    assert(report.ports[1].attachment_seen && !report.ports[0].attachment_seen);
 
     setup_mock(&m);
     m.fail_at_ms = 50;
-    assert(!xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(!xhci_discover_and_reset_ports(&io, NULL, &report, 0, false));
     assert(m.elapsed_ms == 50 && m.reset_count == 0);
 
     setup_mock(&m);
@@ -180,7 +182,7 @@ int main(void) {
     m.reset_delay_ms[1] = 58;
     m.reset_delay_ms[2] = 57;
     m.reset_delay_ms[3] = 58;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0, false));
     assert(m.reset_at_ms[1] == 1020 && m.reset_at_ms[2] == 1020 && m.reset_at_ms[3] == 1020);
     assert(m.elapsed_ms == 1098);
     assert(report.ports[1].enabled && report.ports[2].enabled && report.ports[3].enabled);
@@ -189,7 +191,7 @@ int main(void) {
     m.regs[0x460 / 4] = m.regs[0x450 / 4] | XHCI_PORTSC_PED;
     m.reset_delay_ms[1] = 58;
     m.reset_delay_ms[2] = 200;
-    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0, false));
     assert(report.ports[1].enabled && !report.ports[2].enabled);
     assert(m.elapsed_ms == 1121 && m.rw1c_cleared == 2);
 

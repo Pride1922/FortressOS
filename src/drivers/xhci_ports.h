@@ -41,6 +41,8 @@ typedef struct {
     bool enabled;
     uint8_t speed;          /* XHCI_SPEED_* */
     uint32_t raw_portsc;
+    bool attachment_seen;
+    uint64_t attachment_ticks;
     uint64_t power_ticks, reset_ticks, recovery_ticks;
 } xhci_port_info_t;
 
@@ -57,9 +59,9 @@ typedef struct {
  * window after crediting independently measured elapsed time,
  * using the caller's polling delay (failure aborts), inspects all root ports, performs bounded reset
  * on attached USB 2.0 ports, drains port status events from Event Ring,
- * and populates report. */
+ * and populates report. Optional trace samples attachment during settling. */
 bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                                    const xhci_dma_buffers_t *dma,
-                                   xhci_port_report_t *report,unsigned settled_ms);
+                                   xhci_port_report_t *report,unsigned settled_ms,bool trace_attachment);
 
 #endif
