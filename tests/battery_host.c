@@ -528,6 +528,72 @@ static void test_dell_cap0_fcp0_fields(void) {
     puts("       [PASS] Dell Latitude CAP0/FCP0/CRT0/VOT0/BST0 and state fallback verified");
 }
 
+static void test_dell_5590_ec_protocol(void) {
+    puts("[TEST 10] Dell Latitude 5590 DSDT EC Port Discovery & Indexed Battery Protocol...");
+
+    /* 1. Test DSDT EC Port Parser with Dell Latitude 5590 ECDV snippet */
+    uint8_t dell_dsdt_aml[] = {
+        'E', 'C', 'D', 'V',                         /* Device Name */
+        0x08, '_', 'H', 'I', 'D',                   /* NameOp _HID */
+        0x0C, 0x41, 0xD0, 0x0C, 0x09,               /* EisaId("PNP0C09") */
+        0x08, '_', 'C', 'R', 'S',                   /* NameOp _CRS */
+        0x11, 0x15, 0x0A, 0x12,                     /* Buffer */
+        0x0B, 0x30, 0x09,                           /* WordPrefix 0x0930 (Data Port) */
+        0x0B, 0x34, 0x09                            /* WordPrefix 0x0934 (Cmd Port) */
+    };
+
+    uint16_t cmd_port = 0, data_port = 0;
+    assert(acpi_parse_dsdt_ec_ports(dell_dsdt_aml, sizeof(dell_dsdt_aml), &cmd_port, &data_port));
+    assert(cmd_port == 0x0934);
+    assert(data_port == 0x0930);
+
+    /* 2. Test Dell Indexed EC Battery Protocol with exact Dell 5590 physical registers */
+    memset(s_mock_ec_regs, 0, sizeof(s_mock_ec_regs));
+    /* Reg 0x06: 0x03 (Bit 0 = AC Online, Bit 1 = Battery 0 Present) */
+    s_mock_ec_regs[0x06] = 0x03;
+    /* Reg 0x10: 0x00 (Idle / Full) */
+    s_mock_ec_regs[0x10] = 0x00;
+    /* Reg 0x12: Present Rate = 1000 mA (0x03E8) */
+    s_mock_ec_regs[0x12] = 0xE8; s_mock_ec_regs[0x13] = 0x03;
+    /* Reg 0x14: Present Voltage = 8279 mV (0x2057) */
+    s_mock_ec_regs[0x14] = 0x57; s_mock_ec_regs[0x15] = 0x20;
+    /* Reg 0x16: Remaining Capacity = 4661 mAh (0x1235) */
+    s_mock_ec_regs[0x16] = 0x35; s_mock_ec_regs[0x17] = 0x12;
+    /* Reg 0x1E: Full Charge Capacity = 4661 mAh (0x1235) -> 100% */
+    s_mock_ec_regs[0x1E] = 0x35; s_mock_ec_regs[0x1F] = 0x12;
+    /* Reg 0x20: Design Capacity = 8947 mAh (0x22F3) */
+    s_mock_ec_regs[0x20] = 0xF3; s_mock_ec_regs[0x21] = 0x22;
+
+    acpi_battery_set_ec_reader(mock_ec_reader);
+    battery_status_t st;
+    memset(&st, 0, sizeof(st));
+
+    assert(acpi_read_dell_ec_battery(&st));
+    assert(st.capacity_percent == 100); /* 4661 / 4661 = 100% */
+    assert(st.state == BATTERY_STATE_FULL);
+    assert(st.ac_online == AC_POWER_ONLINE);
+    assert(st.voltage_mv == 8279);
+    assert(st.time_remaining_mins == 0);
+
+    /* Test discharging on Dell EC: Reg 0x06 Bit 0 cleared (AC offline), Reg 0x10 = 0x01 */
+    s_mock_ec_regs[0x06] = 0x02; /* Battery present, AC offline */
+    s_mock_ec_regs[0x10] = 0x01; /* Discharging */
+    s_mock_ec_regs[0x16] = 0x9A; s_mock_ec_regs[0x17] = 0x09; /* 2458 mAh (~52%) */
+    s_mock_ec_regs[0x12] = 0xDC; s_mock_ec_regs[0x13] = 0x05; /* Rate = 1500 mA */
+
+    assert(acpi_read_dell_ec_battery(&st));
+    assert(st.capacity_percent == 52); /* 2458 / 4661 = 52% */
+    assert(st.state == BATTERY_STATE_DISCHARGING);
+    assert(st.ac_online == AC_POWER_OFFLINE);
+    assert(st.time_remaining_mins == 98); /* (2458 * 60) / 1500 = 98 mins */
+
+    /* Test absent battery: Reg 0x06 Bit 1 cleared */
+    s_mock_ec_regs[0x06] = 0x01; /* AC online, Battery absent */
+    assert(!acpi_read_dell_ec_battery(&st));
+
+    puts("       [PASS] Dell Latitude 5590 ports 0x0930/0x0934 and indexed battery protocol verified");
+}
+
 int main(void) {
     puts("=== Running FortressOS ACPI Battery Verification Suite ===");
     test_percentage_calculation();
@@ -540,6 +606,7 @@ int main(void) {
     test_ec_field_parsing_and_status();
     test_dell_ec_field_parsing_and_ecdt();
     test_dell_cap0_fcp0_fields();
+    test_dell_5590_ec_protocol();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;
 }

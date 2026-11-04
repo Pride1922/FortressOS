@@ -102,6 +102,17 @@ int battery_main(int argc, char **argv) {
         print_str("Power: On Battery\n");
     }
 
+    if (st.voltage_mv > 0) {
+        print_str("Voltage: ");
+        print_u32(st.voltage_mv / 1000);
+        print_str(".");
+        uint32_t mv_rem = st.voltage_mv % 1000;
+        if (mv_rem < 100) print_str("0");
+        if (mv_rem < 10) print_str("0");
+        print_u32(mv_rem);
+        print_str(" V\n");
+    }
+
     if (st.temperature_c > 0) {
         print_str("Thermal: ");
         print_u32((uint32_t)st.temperature_c);

@@ -107,6 +107,56 @@ bool acpi_parse_ecdt(const uint8_t *table, size_t len, uint16_t *cmd_port, uint1
     return false;
 }
 
+/* Parse DSDT/SSDT for Embedded Controller Device (PNP0C09 / ECDV / H_EC) resources */
+bool acpi_parse_dsdt_ec_ports(const uint8_t *aml, size_t len, uint16_t *cmd_port, uint16_t *data_port) {
+    if (!aml || len < 16) return false;
+
+    for (size_t i = 0; i + 8 <= len; i++) {
+        bool match = false;
+        /* Look for EISA ID PNP0C09: 0x41, 0xD0, 0x0C, 0x09 */
+        if ((aml[i] == 0x41 && aml[i+1] == 0xD0 && aml[i+2] == 0x0C && aml[i+3] == 0x09) ||
+            (aml[i] == 0xD0 && aml[i+1] == 0x41 && aml[i+2] == 0x0C && aml[i+3] == 0x09)) {
+            match = true;
+        }
+        /* Look for device name ECDV */
+        if (!match && i + 4 <= len && memcmp(aml + i, "ECDV", 4) == 0) {
+            match = true;
+        }
+
+        if (match) {
+            /* Scan neighboring AML window for I/O port assignments */
+            size_t window_end = (i + 512 <= len) ? (i + 512) : len;
+            size_t start = (i > 64) ? (i - 64) : 0;
+            uint16_t found_data = 0, found_cmd = 0;
+
+            for (size_t k = start; k + 3 <= window_end; k++) {
+                if (aml[k] == 0x0B) { /* WordPrefix */
+                    uint16_t val = (uint16_t)aml[k+1] | ((uint16_t)aml[k+2] << 8);
+                    if (val == 0x0930 || val == 0x0920 || val == 0x0062) {
+                        found_data = val;
+                    } else if (val == 0x0934 || val == 0x0924 || val == 0x0066) {
+                        found_cmd = val;
+                    }
+                }
+            }
+
+            if (found_data && found_cmd) {
+                if (cmd_port) *cmd_port = found_cmd;
+                if (data_port) *data_port = found_data;
+                return true;
+            }
+
+            /* Dell ECDV default port fallback */
+            if (i + 4 <= len && memcmp(aml + i, "ECDV", 4) == 0) {
+                if (cmd_port) *cmd_port = DELL_EC_CMD_PORT;
+                if (data_port) *data_port = DELL_EC_DATA_PORT;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /* Standard EC Bus I/O with bounded polling timeouts (~1-2ms) */
 int acpi_ec_read(uint8_t addr, uint8_t *val) {
     if (!val) return -1;
@@ -897,6 +947,55 @@ bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *ou
     return true;
 }
 
+/* Read live battery status using Dell Latitude / Precision / XPS Indexed EC Protocol */
+bool acpi_read_dell_ec_battery(battery_status_t *out) {
+    if (!out) return false;
+
+    /* Write battery selector: index 1 for BAT0 */
+    (void)acpi_ec_write(0x03, 0x01);
+
+    /* Read register 0x06: AC presence (bit 0) and Battery 0 presence (bit 1) */
+    uint8_t reg06 = 0;
+    if (acpi_ec_read(0x06, &reg06) != 0) return false;
+
+    /* If bit 1 (0x02) is NOT set, battery 0 is not installed */
+    if ((reg06 & 0x02) == 0) {
+        return false;
+    }
+
+    uint32_t ac_online = (reg06 & 0x01) ? AC_POWER_ONLINE : AC_POWER_OFFLINE;
+
+    /* Read register 0x10: Battery state */
+    uint8_t reg10 = 0;
+    if (acpi_ec_read(0x10, &reg10) != 0) return false;
+
+    /* Read 16-bit registers: rate (0x12), volt (0x14), rem (0x16), full (0x1E), design (0x20) */
+    uint8_t lo = 0, hi = 0;
+    uint32_t rate = 0, volt = 0, rem_cap = 0, full_cap = 0, design_cap = 0;
+
+    if (acpi_ec_read(0x12, &lo) == 0 && acpi_ec_read(0x13, &hi) == 0) rate = (uint32_t)lo | ((uint32_t)hi << 8);
+    if (acpi_ec_read(0x14, &lo) == 0 && acpi_ec_read(0x15, &hi) == 0) volt = (uint32_t)lo | ((uint32_t)hi << 8);
+    if (acpi_ec_read(0x16, &lo) == 0 && acpi_ec_read(0x17, &hi) == 0) rem_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+    if (acpi_ec_read(0x1E, &lo) == 0 && acpi_ec_read(0x1F, &hi) == 0) full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+    if (acpi_ec_read(0x20, &lo) == 0 && acpi_ec_read(0x21, &hi) == 0) design_cap = (uint32_t)lo | ((uint32_t)hi << 8);
+
+    if (full_cap == 0) full_cap = design_cap;
+    if (full_cap == 0) return false;
+
+    acpi_battery_compute_status((uint32_t)reg10, rate, rem_cap, volt, full_cap, out);
+    out->ac_online = ac_online;
+
+    /* State fallback if state was 0 / idle */
+    if (out->state == BATTERY_STATE_UNKNOWN) {
+        if (ac_online == AC_POWER_ONLINE) {
+            out->state = (out->capacity_percent >= 98) ? BATTERY_STATE_FULL : BATTERY_STATE_CHARGING;
+        } else {
+            out->state = BATTERY_STATE_DISCHARGING;
+        }
+    }
+    return true;
+}
+
 static bool poll_hardware_battery(battery_status_t *out) {
     if (!out) return false;
 
@@ -923,12 +1022,14 @@ static bool poll_hardware_battery(battery_status_t *out) {
         return false;
     }
 
-    /* Check for ECDT to retrieve dynamic EC ports */
+    /* Check for ECDT or DSDT to retrieve dynamic EC ports */
+    bool ec_ports_found = false;
     for (size_t t = 0; t < num_tables; t++) {
         uint16_t c_port = 0, d_port = 0;
         if (acpi_parse_ecdt((const uint8_t *)tables[t], tables[t]->length, &c_port, &d_port)) {
             g_ec_cmd_port = c_port;
             g_ec_data_port = d_port;
+            ec_ports_found = true;
             serial_puts("[BATTERY] ECDT active: cmd=0x");
             serial_print_hex(c_port);
             serial_puts(" data=0x");
@@ -937,6 +1038,38 @@ static bool poll_hardware_battery(battery_status_t *out) {
             break;
         }
     }
+
+    if (!ec_ports_found) {
+        for (size_t t = 0; t < num_tables; t++) {
+            uint16_t c_port = 0, d_port = 0;
+            if (acpi_parse_dsdt_ec_ports((const uint8_t *)tables[t], tables[t]->length, &c_port, &d_port)) {
+                g_ec_cmd_port = c_port;
+                g_ec_data_port = d_port;
+                ec_ports_found = true;
+                serial_puts("[BATTERY] DSDT EC ports active: cmd=0x");
+                serial_print_hex(c_port);
+                serial_puts(" data=0x");
+                serial_print_hex(d_port);
+                serial_puts("\n");
+                break;
+            }
+        }
+    }
+
+#ifndef HOST_TEST
+    /* Hardware fallback probe: if default port 0x66 is floating (0xFF), try Dell port 0x0934 */
+    if (!ec_ports_found && !g_ec_reader) {
+        uint8_t st_def = inb(g_ec_cmd_port ? g_ec_cmd_port : ACPI_EC_CMD_PORT);
+        if (st_def == 0xFF) {
+            uint8_t st_dell = inb(DELL_EC_CMD_PORT);
+            if (st_dell != 0xFF) {
+                g_ec_cmd_port = DELL_EC_CMD_PORT;
+                g_ec_data_port = DELL_EC_DATA_PORT;
+                serial_puts("[BATTERY] Probed live Dell EC ports: cmd=0x934 data=0x930\n");
+            }
+        }
+    }
+#endif
 
     /* Check if battery device is present in ACPI tables */
     bool bat_found = false;
@@ -1000,6 +1133,13 @@ static bool poll_hardware_battery(battery_status_t *out) {
         }
     }
 
+    /* 1b. Try Dell EC Indexed Protocol */
+    if (acpi_read_dell_ec_battery(out)) {
+        if (ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
+        if (has_temp) out->temperature_c = tc;
+        return true;
+    }
+
     /* 2. Try static AML packages (_BST and _BIX/_BIF) */
     uint32_t bst_state = 0, rate = 0, rem_cap = 0, volt = 0, full_cap = 0;
     bool has_bst = false, has_full = false;
@@ -1039,6 +1179,13 @@ static bool poll_hardware_battery(battery_status_t *out) {
             }
             return true;
         }
+    }
+
+    /* 1b. Try Dell EC Indexed Protocol */
+    if (acpi_read_dell_ec_battery(out)) {
+        if (g_mock_ac_online != AC_POWER_UNKNOWN) out->ac_online = g_mock_ac_online;
+        out->temperature_c = g_mock_temp_c;
+        return true;
     }
     if (g_ec_reader) {
         uint8_t ec_state = 0, cap_lo = 0, cap_hi = 0, rate_lo = 0, rate_hi = 0, full_lo = 0, full_hi = 0, volt_lo = 0, volt_hi = 0;

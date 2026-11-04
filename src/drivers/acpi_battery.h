@@ -9,6 +9,11 @@
 #define ACPI_EC_CMD_PORT        0x66
 #define ACPI_EC_STATUS_PORT     0x66
 
+/* Dell Latitude / Precision / XPS Embedded Controller Ports */
+#define DELL_EC_DATA_PORT       0x0930
+#define DELL_EC_CMD_PORT        0x0934
+#define DELL_EC_STATUS_PORT     0x0934
+
 /* EC Status Register Bits */
 #define ACPI_EC_FLAG_OBF        0x01 /* Output Buffer Full (data ready to read) */
 #define ACPI_EC_FLAG_IBF        0x02 /* Input Buffer Full (EC busy processing input) */
@@ -56,6 +61,8 @@ typedef struct {
 bool acpi_parse_ec_fields(const uint8_t *aml, size_t len, acpi_ec_battery_map_t *map);
 bool acpi_read_ec_battery(const acpi_ec_battery_map_t *map, battery_status_t *out);
 bool acpi_parse_ecdt(const uint8_t *table, size_t len, uint16_t *cmd_port, uint16_t *data_port);
+bool acpi_parse_dsdt_ec_ports(const uint8_t *aml, size_t len, uint16_t *cmd_port, uint16_t *data_port);
+bool acpi_read_dell_ec_battery(battery_status_t *out);
 
 /* ACPI AML Parser and Evaluation Primitives */
 bool acpi_battery_locate(const uint8_t *aml, size_t len, size_t *out_offset);

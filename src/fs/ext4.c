@@ -345,7 +345,8 @@ static bool e4_bitmap(ext4_mount_t *fs,uint32_t group,bool inode) {
     if (e4_u16(d+18)&flag) return false;
     uint32_t block=e4_u32(d+(inode ? 4 : 0));
     size_t size=(inode ? fs->ipg : fs->bpg)/8;
-    return e4_bytes(fs,(uint64_t)block*fs->bs,fs->scratch,fs->bs) &&
+    return !fs->quiesced &&
+           e4_bytes_kind(fs,(uint64_t)block*fs->bs,fs->scratch,fs->bs,E4_PR_BITMAP) &&
            (uint16_t)e4_crc(fs->seed,fs->scratch,size)==e4_u16(d+(inode ? 26 : 24));
 }
 static uint32_t e4_inode_seed(ext4_mount_t *fs,uint32_t ino,uint32_t generation) {
@@ -363,7 +364,8 @@ static int e4_inode(ext4_mount_t *fs,uint32_t ino,e4_inode_t *out) {
     } else if (!e4_bitmap(fs,g,true) ||
                !e4_bit(fs->scratch,index)) return -VFS_EIO;
     uint8_t raw[256];
-    if (!e4_bytes(fs,(uint64_t)e4_u32(gd+8)*fs->bs+(uint64_t)index*256,raw,256)) return -VFS_EIO;
+    if (fs->quiesced ||
+        !e4_bytes_kind(fs,(uint64_t)e4_u32(gd+8)*fs->bs+(uint64_t)index*256,raw,256,E4_PR_INODE)) return -VFS_EIO;
     uint16_t extra=e4_u16(raw+128);
     if (extra<4 || extra>128 || extra%4) return -VFS_EIO;
     uint32_t generation=e4_u32(raw+100);
