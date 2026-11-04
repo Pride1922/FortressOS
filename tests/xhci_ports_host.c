@@ -10,6 +10,8 @@ typedef struct {
     unsigned elapsed_ms;
     unsigned connect_at_ms;
     unsigned fail_at_ms;
+    unsigned reset_delay_ms[8];
+    unsigned reset_at_ms[8];
 } mock_ports_hw_t;
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
@@ -25,12 +27,19 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
     /* Operational port registers start at 0x400 + 0x400 = 0x800 (for cap=0x40) */
     if (off >= 0x440 && off < 0x640) {
         uint32_t old = m->regs[off / 4];
+        unsigned port = (off - 0x440) / 0x10;
+        assert(port < 8);
         /* Check write safety: PED (bit 1) should not be written as 1 */
         assert(!(val & XHCI_PORTSC_PED));
 
         /* If Port Reset written */
         if (val & XHCI_PORTSC_PR) {
             ++m->reset_count;
+            m->reset_at_ms[port] = m->elapsed_ms;
+            if (m->reset_delay_ms[port]) {
+                m->regs[off / 4] = (old & ~XHCI_PORTSC_PED) | XHCI_PORTSC_PR;
+                return;
+            }
             /* Reset completes: clear PR, set PED=1, set PRC=1 */
             m->regs[off / 4] = (old & ~XHCI_PORTSC_PR) | XHCI_PORTSC_PED | XHCI_PORTSC_PRC;
             return;
@@ -38,6 +47,8 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
 
         /* If acknowledging PRC or CSC (RW1C) */
         if (val & (XHCI_PORTSC_PRC | XHCI_PORTSC_CSC)) {
+            if (m->reset_delay_ms[port])
+                assert(m->elapsed_ms >= m->reset_at_ms[port] + m->reset_delay_ms[port] + 20);
             ++m->rw1c_cleared;
             m->regs[off / 4] = old & ~(val & XHCI_PORTSC_RW1C_MASK);
             return;
@@ -55,6 +66,11 @@ static bool mock_delay_ms(void *ctx) {
     if (m->fail_at_ms && m->elapsed_ms == m->fail_at_ms) return false;
     if (m->connect_at_ms && m->elapsed_ms == m->connect_at_ms)
         m->regs[0x450 / 4] |= XHCI_PORTSC_CCS;
+    for (unsigned port = 0; port < 8; ++port) {
+        uint32_t *reg = &m->regs[(0x440 + port * 0x10) / 4];
+        if ((*reg & XHCI_PORTSC_PR) && m->elapsed_ms - m->reset_at_ms[port] >= m->reset_delay_ms[port])
+            *reg = (*reg & ~XHCI_PORTSC_PR) | XHCI_PORTSC_PED | XHCI_PORTSC_PRC;
+    }
     return true;
 }
 
@@ -158,6 +174,25 @@ int main(void) {
     assert(!xhci_discover_and_reset_ports(&io, NULL, &report, 0));
     assert(m.elapsed_ms == 50 && m.reset_count == 0);
 
-    puts("PASS xHCI ports: protocols, USB2/USB3 resets, delayed attachment, absent device bound, failed timer, write safety");
+    setup_mock(&m);
+    m.regs[0x460 / 4] = m.regs[0x450 / 4] & ~XHCI_PORTSC_PP;
+    m.regs[0x470 / 4] = m.regs[0x450 / 4];
+    m.reset_delay_ms[1] = 58;
+    m.reset_delay_ms[2] = 57;
+    m.reset_delay_ms[3] = 58;
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(m.reset_at_ms[1] == 1020 && m.reset_at_ms[2] == 1020 && m.reset_at_ms[3] == 1020);
+    assert(m.elapsed_ms == 1098);
+    assert(report.ports[1].enabled && report.ports[2].enabled && report.ports[3].enabled);
+
+    setup_mock(&m);
+    m.regs[0x460 / 4] = m.regs[0x450 / 4] | XHCI_PORTSC_PED;
+    m.reset_delay_ms[1] = 58;
+    m.reset_delay_ms[2] = 200;
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report, 0));
+    assert(report.ports[1].enabled && !report.ports[2].enabled);
+    assert(m.elapsed_ms == 1121 && m.rw1c_cleared == 2);
+
+    puts("PASS xHCI ports: overlapping USB2 resets and recovery, timeout isolation, USB3, attachment and write safety");
     return 0;
 }
