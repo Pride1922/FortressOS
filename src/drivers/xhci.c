@@ -16,6 +16,8 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "dmesg.h"
+#include "console.h"
+#include "logo.h"
 #include "root_boot.h"
 #include "install_log.h"
 #include <string.h>
@@ -28,6 +30,12 @@ static const boot_info_t *s_probe_boot_info;
 static bool s_usb_storage_ready = false;
 static bool s_flush_error_pending;
 static uint64_t s_profile_tsc_hz_estimate;
+
+static void xhci_boot_status(const char *message) {
+    if (console_is_quiet()) logo_update_status(message);
+    serial_puts(message);
+    serial_puts("\n");
+}
 
 /* Dedicated boot-only UC/NX window, separate from LAPIC/IOAPIC and heap. */
 #define XHCI_PROBE_VIRT 0xffffffffe1000000ULL
@@ -264,6 +272,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                           mmio_read, mmio_write, delay_ms};
     xhci_reset_result_t result;
     boot_timing_mark(timing,"ownership-and-reset");
+    xhci_boot_status("USB: resetting controller...");
     bool ok = xhci_reset_controller(&io, &result);
     print_snapshot(&result);
     if (!ok) {
@@ -420,6 +429,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     }
 
     /* Verify rings (starts controller and verifies No-Op command) */
+    xhci_boot_status("USB: starting controller...");
     bool rings_ok = xhci_verify_rings(&ctl->rings_io, &ctl->dma, &ctl->dump_record);
 
     if (rings_ok) {
@@ -443,8 +453,10 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
             }
         }
         boot_timing_mark(timing,"root-ports");
+        xhci_boot_status("USB: checking root ports...");
         if (xhci_discover_and_reset_ports(&ctl->rings_io, &ctl->dma, &port_report,settled_ms)) {
             boot_timing_mark(timing,"device-enumeration");
+            xhci_boot_status("USB: enumerating devices...");
             if (timing->hz && timing->valid)
                 boot_timing_line(timing, "XHCI", "attachment-settle", port_report.settle_ticks);
             serial_puts("[USB 9G.1d] Root ports: total=");
@@ -459,14 +471,12 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
             for (uint32_t p = 1; p <= port_report.total_ports; ++p) {
                 const xhci_port_info_t *pi = &port_report.ports[p - 1];
-                char scope[] = "XHCI port 00";
-                scope[10] += p / 10;
-                scope[11] += p % 10;
-                if (pi->attachment_seen && timing->hz && timing->valid)
-                    boot_timing_line(timing, scope, "first-seen-in-settle", pi->attachment_ticks);
                 if (!pi->connected) continue;
                 if (timing->hz && timing->valid &&
                     (pi->protocol_major == 2 || pi->protocol_major == 3)) {
+                    char scope[] = "XHCI port 00";
+                    scope[10] += p / 10;
+                    scope[11] += p % 10;
                     boot_timing_line(timing, scope, "power", pi->power_ticks);
                     boot_timing_line(timing, scope, "reset", pi->reset_ticks);
                     boot_timing_line(timing, scope, pi->protocol_major == 3 ? "link-to-U0" : "recovery",
@@ -802,6 +812,7 @@ bool xhci_boot_probe(const boot_info_t *boot_info,void (*settle_work)(void)) {
     if (attempted) return false;
     attempted = true;
     spin_debug_assert_unheld();
+    xhci_boot_status("USB: finding controllers...");
     pci_device_t devices[XHCI_MAX_CONTROLLERS];
     size_t count = pci_find_all_devices(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB,
                                         PCI_PROGIF_USB_XHCI, devices, XHCI_MAX_CONTROLLERS);
