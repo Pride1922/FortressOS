@@ -587,6 +587,12 @@ static void test_dell_5590_ec_protocol(void) {
     assert(st.ac_online == AC_POWER_OFFLINE);
     assert(st.time_remaining_mins == 98); /* (2458 * 60) / 1500 = 98 mins */
 
+    /* Test discharging on Dell EC with negative 16-bit rate (-1500 mA = 0xFA24) */
+    s_mock_ec_regs[0x12] = 0x24; s_mock_ec_regs[0x13] = 0xFA;
+    assert(acpi_read_dell_ec_battery(&st));
+    assert(st.time_remaining_mins == 98); /* absolute value 1500 mA gives 98 mins */
+    assert(st.ac_online == AC_POWER_OFFLINE);
+
     /* Test absent battery: Reg 0x06 Bit 1 cleared */
     s_mock_ec_regs[0x06] = 0x01; /* AC online, Battery absent */
     assert(!acpi_read_dell_ec_battery(&st));

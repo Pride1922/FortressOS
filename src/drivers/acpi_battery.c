@@ -600,6 +600,12 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
      * If PresentRate is non-zero and state is Discharging, (RemainingCapacity * 60) / PresentRate.
      * Clamp to 9999 minutes. */
     if (out->state == BATTERY_STATE_DISCHARGING && present_rate > 0) {
+        /* Guard against signed negative 16-bit or 32-bit rate values (e.g. Dell EC two's complement) */
+        if ((present_rate & 0x8000) != 0 && present_rate <= 0xFFFF) {
+            present_rate = (uint32_t)(uint16_t)(0 - (uint16_t)present_rate);
+        } else if ((int32_t)present_rate < 0) {
+            present_rate = (uint32_t)(-(int32_t)present_rate);
+        }
         uint64_t mins = ((uint64_t)rem_cap * 60) / present_rate;
         if (mins > 9999) mins = 9999;
         out->time_remaining_mins = (uint32_t)mins;
@@ -979,6 +985,11 @@ bool acpi_read_dell_ec_battery(battery_status_t *out) {
     if (acpi_ec_read(0x1E, &lo) == 0 && acpi_ec_read(0x1F, &hi) == 0) full_cap = (uint32_t)lo | ((uint32_t)hi << 8);
     if (acpi_ec_read(0x20, &lo) == 0 && acpi_ec_read(0x21, &hi) == 0) design_cap = (uint32_t)lo | ((uint32_t)hi << 8);
 
+    /* Dell EC reports discharging rate as signed 16-bit negative value (two's complement) */
+    if ((rate & 0x8000) != 0) {
+        rate = (uint32_t)(uint16_t)(0 - (uint16_t)rate);
+    }
+
     if (full_cap == 0) full_cap = design_cap;
     if (full_cap == 0) return false;
 
@@ -1135,7 +1146,7 @@ static bool poll_hardware_battery(battery_status_t *out) {
 
     /* 1b. Try Dell EC Indexed Protocol */
     if (acpi_read_dell_ec_battery(out)) {
-        if (ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
+        if (out->ac_online == AC_POWER_UNKNOWN && ac_on != AC_POWER_UNKNOWN) out->ac_online = ac_on;
         if (has_temp) out->temperature_c = tc;
         return true;
     }
@@ -1183,7 +1194,7 @@ static bool poll_hardware_battery(battery_status_t *out) {
 
     /* 1b. Try Dell EC Indexed Protocol */
     if (acpi_read_dell_ec_battery(out)) {
-        if (g_mock_ac_online != AC_POWER_UNKNOWN) out->ac_online = g_mock_ac_online;
+        if (out->ac_online == AC_POWER_UNKNOWN && g_mock_ac_online != AC_POWER_UNKNOWN) out->ac_online = g_mock_ac_online;
         out->temperature_c = g_mock_temp_c;
         return true;
     }
