@@ -79,9 +79,10 @@ static bool base_matches(uint8_t *b,base_update_work *w,unsigned i){
     base_state *s=w->states+i;uint8_t sum[32];root_recovery_t r={0};
     if(s->phase==BASE_STATE_PREPARING)return false;
     identity(b+w->disk.readiness[i],&r);
-    if(!root_readiness_validate(b+w->disk.readiness[i],512,&r,b+w->disk.kernel[i],BASE_BANK_BYTES,b+w->bootstrap[i],BASE_BANK_BYTES))return false;
-    (void)bsha(b+w->disk.kernel[i],BASE_BANK_BYTES,sum);if(memcmp(sum,s->kernel_hash,32))return false;
-    (void)bsha(b+w->bootstrap[i],BASE_BANK_BYTES,sum);if(memcmp(sum,s->bootstrap_hash,32))return false;
+    root_readiness_digests_t digests;
+    if(!root_readiness_validate_digests(b+w->disk.readiness[i],512,&r,b+w->disk.kernel[i],
+                                       BASE_BANK_BYTES,b+w->bootstrap[i],BASE_BANK_BYTES,&digests)||
+       memcmp(digests.kernel,s->kernel_hash,32)||memcmp(digests.bootstrap,s->bootstrap_hash,32))return false;
     (void)bsha(b+w->disk.readiness[i],512,sum);return !memcmp(sum,s->readiness_hash,32);
 }
 int base_update_prepare_timed(const kernel_update_io_t *io,void *bytes,base_update_work *w,const uint8_t running[512],boot_timing_t *timing){

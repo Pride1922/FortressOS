@@ -88,8 +88,8 @@ static bool same_identity(const root_recovery_t *a,const root_recovery_t *b) {
     return !strcmp(a->install_id,b->install_id) && !strcmp(a->partuuid,b->partuuid) &&
         !strcmp(a->filesystem_uuid,b->filesystem_uuid);
 }
-static bool hash_matches(const void *bytes,size_t n,const char *hex) {
-    digest_t d;uint8_t raw[32];char text[65];static const char alphabet[]="0123456789abcdef";
+static bool hash_matches(const void *bytes,size_t n,const char *hex,uint8_t raw[32]) {
+    digest_t d;char text[65];static const char alphabet[]="0123456789abcdef";
     digest_init(&d,DIGEST_SHA256);if (!digest_update(&d,bytes,n)) return false;
     digest_final(&d,raw);
     for (unsigned i=0;i<32;i++) {text[i*2]=alphabet[raw[i]>>4];text[i*2+1]=alphabet[raw[i]&15];}
@@ -101,8 +101,9 @@ bool root_manifest_validate(const void *bytes,size_t n,const root_recovery_t *r)
     return magic(bytes,n,&p,"FORTRESS-INSTALL-1\n") && identity(bytes,n,&p,&next) &&
         field(bytes,n,&p,"payload_version=",version,sizeof(version),1) && version[0]=='1' && p==n && same_identity(r,&next);
 }
-bool root_readiness_validate(const void *bytes,size_t n,const root_recovery_t *r,
-                             const void *kernel,size_t kn,const void *bootstrap,size_t bn) {
+bool root_readiness_validate_digests(const void *bytes,size_t n,const root_recovery_t *r,
+                                     const void *kernel,size_t kn,const void *bootstrap,size_t bn,
+                                     root_readiness_digests_t *out) {
     if (!bytes || n!=512 || !r || !kernel || !kn || kn>32u*1024*1024 || !bootstrap || !bn || bn>8u*1024*1024) return false;
     size_t p=0;root_recovery_t next={0};char version[2],kh[65],bh[65],checksum[65];
     if (!magic(bytes,n,&p,"FORTRESS-READY-1\n") || !identity(bytes,n,&p,&next) || !same_identity(r,&next) ||
@@ -112,5 +113,15 @@ bool root_readiness_validate(const void *bytes,size_t n,const root_recovery_t *r
     size_t covered=p;
     if (!field(bytes,n,&p,"checksum=",checksum,sizeof(checksum),64) || !lowerhex(checksum,64)) return false;
     for (size_t i=p;i<n;i++) if (((const char *)bytes)[i]) return false;
-    return hash_matches(bytes,covered,checksum) && hash_matches(kernel,kn,kh) && hash_matches(bootstrap,bn,bh);
+    uint8_t record_hash[32];
+    root_readiness_digests_t digests;
+    if (!hash_matches(bytes,covered,checksum,record_hash) ||
+        !hash_matches(kernel,kn,kh,digests.kernel) ||
+        !hash_matches(bootstrap,bn,bh,digests.bootstrap)) return false;
+    if (out) *out=digests;
+    return true;
+}
+bool root_readiness_validate(const void *bytes,size_t n,const root_recovery_t *r,
+                             const void *kernel,size_t kn,const void *bootstrap,size_t bn) {
+    return root_readiness_validate_digests(bytes,n,r,kernel,kn,bootstrap,bn,NULL);
 }

@@ -808,7 +808,84 @@ fn render_greeter(
     p.button(state.console_btn_rect, "Console", false, state.focus == 5);
 }
 
-fn launch_user_session(_username: &str) -> i32 {
+struct UserAccount {
+    uid: u32,
+    gid: u32,
+    home: Vec<u8>,
+}
+
+#[inline(never)]
+fn lookup_user_account(username: &str) -> UserAccount {
+    let mut account = UserAccount {
+        uid: 1000,
+        gid: 1000,
+        home: Vec::from(b"/run/user/1000" as &[u8]),
+    };
+    if username == "root" {
+        account.uid = 0;
+        account.gid = 0;
+        account.home = Vec::from(b"/root" as &[u8]);
+        return account;
+    }
+
+    let fd = unsafe {
+        raw_sys::syscall2(
+            raw_sys::SYS_OPEN,
+            b"/etc/passwd\0".as_ptr() as usize,
+            0, // VFS_O_RDONLY
+        )
+    };
+    if fd < 0 {
+        return account;
+    }
+    let fd_i32 = fd as i32;
+    let mut buf = alloc::vec![0u8; 4096];
+    let n = raw_sys::read(fd_i32, &mut buf);
+    raw_sys::close(fd_i32);
+    if n <= 0 {
+        return account;
+    }
+
+    let slice = &buf[..(n as usize).min(buf.len())];
+    for line in slice.split(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        let mut parts = line.split(|&b| b == b':');
+        let Some(name) = parts.next() else { continue; };
+        if name != username.as_bytes() { continue; }
+        let Some(_pw) = parts.next() else { break; };
+        let Some(uid_bytes) = parts.next() else { break; };
+        let Some(gid_bytes) = parts.next() else { break; };
+        let Some(_gecos) = parts.next() else { break; };
+        let Some(home_bytes) = parts.next() else { break; };
+
+        let mut uid = 0u32;
+        let mut valid_uid = false;
+        for &b in uid_bytes {
+            if b >= b'0' && b <= b'9' {
+                uid = uid.saturating_mul(10).saturating_add((b - b'0') as u32);
+                valid_uid = true;
+            } else { break; }
+        }
+        let mut gid = 0u32;
+        let mut valid_gid = false;
+        for &b in gid_bytes {
+            if b >= b'0' && b <= b'9' {
+                gid = gid.saturating_mul(10).saturating_add((b - b'0') as u32);
+                valid_gid = true;
+            } else { break; }
+        }
+        if valid_uid && valid_gid {
+            account.uid = uid;
+            account.gid = gid;
+            account.home = Vec::from(home_bytes);
+            return account;
+        }
+    }
+    account
+}
+
+#[inline(never)]
+fn launch_user_session(username: &str) -> i32 {
     log_greeter_msg("[greeter] clearing console and releasing display lease for user session\n");
     // Clear text console buffer so session startup doesn't flash old boot/shell text
     raw_sys::write(1, b"\x1b[2J\x1b[H");
@@ -816,16 +893,56 @@ fn launch_user_session(_username: &str) -> i32 {
     // Release framebuffer so the compositor user session can acquire it
     raw_sys::fb_release();
 
+    let account = lookup_user_account(username);
+
+    use alloc::format;
+    let mut env_strings: Vec<Vec<u8>> = Vec::new();
+    env_strings.push(Vec::from(b"PATH=/bin:/sbin:/usr/bin\0" as &[u8]));
+    env_strings.push(Vec::from(b"SHELL=/bin/shell\0" as &[u8]));
+    env_strings.push(Vec::from(b"TERM=fortress\0" as &[u8]));
+    env_strings.push(Vec::from(b"SUDO_DESKTOP_SESSION=1\0" as &[u8]));
+
+    let user_env = format!("USER={}\0", username).into_bytes();
+    let logname_env = format!("LOGNAME={}\0", username).into_bytes();
+    let sudo_user_env = format!("SUDO_USER={}\0", username).into_bytes();
+    let sudo_uid_env = format!("SUDO_UID={}\0", account.uid).into_bytes();
+    let sudo_gid_env = format!("SUDO_GID={}\0", account.gid).into_bytes();
+    let sudo_groups_env = format!("SUDO_GROUPS={}\0", account.gid).into_bytes();
+
+    let mut home_env = Vec::from(b"HOME=" as &[u8]);
+    home_env.extend_from_slice(&account.home);
+    home_env.push(0);
+
+    env_strings.push(user_env);
+    env_strings.push(logname_env);
+    env_strings.push(sudo_user_env);
+    env_strings.push(sudo_uid_env);
+    env_strings.push(sudo_gid_env);
+    env_strings.push(sudo_groups_env);
+    env_strings.push(home_env);
+
+    let mut envp_ptrs: Vec<*const u8> = env_strings.iter().map(|s| s.as_ptr()).collect();
+    envp_ptrs.push(core::ptr::null());
+
     let args: [*const u8; 2] = [
         DESKTOP_BIN.as_ptr(),
         core::ptr::null(),
     ];
 
+    let opts = SpawnOpts {
+        size: core::mem::size_of::<SpawnOpts>() as u32,
+        version: 1,
+        argv: args.as_ptr() as u64,
+        envp: envp_ptrs.as_ptr() as u64,
+        ..Default::default()
+    };
+
     let mut pid = unsafe {
-        raw_sys::syscall2(
-            raw_sys::SYS_SPAWN,
+        raw_sys::syscall3(
+            raw_sys::SYS_SPAWN_EXT,
             DESKTOP_BIN.as_ptr() as usize,
-            args.as_ptr() as usize,
+            &opts as *const _ as usize,
+            opts.size as usize,
         )
     };
 
@@ -835,11 +952,19 @@ fn launch_user_session(_username: &str) -> i32 {
             COMPOSITOR_BIN.as_ptr(),
             core::ptr::null(),
         ];
+        let c_opts = SpawnOpts {
+            size: core::mem::size_of::<SpawnOpts>() as u32,
+            version: 1,
+            argv: c_args.as_ptr() as u64,
+            envp: envp_ptrs.as_ptr() as u64,
+            ..Default::default()
+        };
         pid = unsafe {
-            raw_sys::syscall2(
-                raw_sys::SYS_SPAWN,
+            raw_sys::syscall3(
+                raw_sys::SYS_SPAWN_EXT,
                 COMPOSITOR_BIN.as_ptr() as usize,
-                c_args.as_ptr() as usize,
+                &c_opts as *const _ as usize,
+                c_opts.size as usize,
             )
         };
     }

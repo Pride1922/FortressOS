@@ -73,6 +73,17 @@ int main(int argc,char **argv){
     kernel_update_io_t io={.sectors=disk_size/512,.read=rd,.write=wr,.flush=flush};
     assert(!base_update_prepare(&io,prefix,&work,ready));assert(!work.mixed&&!work.invalid&&work.running==0);saved=work;
     memcpy(initial,disk_bytes+4096*512,BASE_ESP_BYTES);
+    /* A valid readiness record cannot substitute for either bank-state digest. */
+    for(unsigned payload=0;payload<2;payload++){
+        for(unsigned slot=0;slot<2;slot++){
+            base_state state=saved.states[slot];
+            uint8_t *hash=payload ? state.bootstrap_hash : state.kernel_hash;
+            hash[0]^=1;
+            base_state_encode(&state,disk_bytes+4096*512+saved.state_offset[slot]);
+        }
+        assert(base_update_prepare(&io,prefix,&work,ready));
+        restore();
+    }
     base_state release={.build=a.build,.abi=a.abi,.catalog=5,.root=1};memcpy(release.platform,a.platform,32);
     assert(!crypto_sha256(artifact,an,release.artifact));memset(release.catalog_hash,0x11,32);memset(release.root_hash,0x22,32);
     base_artifact wrong=a;wrong.predecessor_min=2;events=0;

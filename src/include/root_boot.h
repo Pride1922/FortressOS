@@ -14,6 +14,11 @@ typedef struct {
 root_boot_config_t root_boot_parse(const char *,size_t,bool truncated);
 typedef struct { char install_id[33],partuuid[37],filesystem_uuid[37],hash[96]; } root_recovery_t;
 bool root_recovery_parse(const void *,size_t,root_recovery_t *);
+typedef struct { uint8_t kernel[32],bootstrap[32]; } root_readiness_digests_t;
+/* Returns digests of the supplied payload bytes after readiness validation. */
+bool root_readiness_validate_digests(const void *,size_t,const root_recovery_t *,
+                                     const void *kernel,size_t,const void *bootstrap,size_t,
+                                     root_readiness_digests_t *);
 bool root_readiness_validate(const void *,size_t,const root_recovery_t *,
                              const void *kernel,size_t,const void *bootstrap,size_t);
 bool root_manifest_validate(const void *,size_t,const root_recovery_t *);

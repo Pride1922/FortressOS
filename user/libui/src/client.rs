@@ -75,28 +75,15 @@ pub mod raw_sys {
     pub struct StatExtV1 {
         pub size: u32,
         pub version: u32,
-        pub dev: u64,
-        pub ino: u64,
+        pub file_size: u64,
+        pub file_type: u32,
         pub mode: u32,
-        pub nlink: u32,
         pub uid: u32,
         pub gid: u32,
-        pub rdev: u64,
-        pub file_size: u64,
-        pub blksize: u32,
-        pub file_type: u32,
-        pub blocks: u64,
-        pub atime_sec: i64,
-        pub atime_nsec: i64,
-        pub mtime_sec: i64,
-        pub mtime_nsec: i64,
-        pub ctime_sec: i64,
-        pub ctime_nsec: i64,
-        pub btime_sec: i64,
-        pub btime_nsec: i64,
-        pub attributes: u64,
-        pub reserved: [u64; 4],
+        pub mnt_flags: u32,
+        pub reserved: u32,
     }
+    const _: () = assert!(core::mem::size_of::<StatExtV1>() == 40);
 
     #[inline(always)]
     pub unsafe fn syscall0(nr: usize) -> isize {
