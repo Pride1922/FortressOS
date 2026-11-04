@@ -21,7 +21,7 @@ Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the s
 | USB / storage | [docs/subsystems/usb.md](docs/subsystems/usb.md) / [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Shell / jobs / signals | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Multi-core / SMP | [docs/subsystems/smp.md](docs/subsystems/smp.md) |
-| Platform / power / ACPI | [docs/subsystems/platform.md](docs/subsystems/platform.md) |
+| Platform / power / ACPI | [docs/subsystems/platform.md](docs/subsystems/platform.md), [acpi_battery.h](src/drivers/acpi_battery.h), [power.h](src/drivers/power.h) |
 | Tools & Compression | [docs/subsystems/tools.md](docs/subsystems/tools.md) |
 | Wireless / Wi-Fi | [docs/subsystems/wifi.md](docs/subsystems/wifi.md), [wlan_mgr.h](src/net/wlan/wlan_mgr.h), [iwlwifi.h](src/drivers/iwlwifi.h) |
 
@@ -661,6 +661,7 @@ Physical bare-metal acceptance observations are detailed in their respective ann
   - Permissions Phase 5 (login, passwordless operator, sudo and DAC acceptance): [docs/roadmap/permissions-phase5-dell.md](docs/roadmap/permissions-phase5-dell.md)
   - Installer Interface Preview (synthetic target preview): [docs/installer-preview.md](docs/installer-preview.md)
   - ACPI S5 Power & Reset: [docs/subsystems/platform.md](docs/subsystems/platform.md#3-physical-hardware-acceptance)
+  - ACPI Battery & Power Telemetry (Dell EC ports 0x0930/0x0934, indexed register protocol, live AC presence, signed discharge rate, 100% full to discharging transition): [docs/subsystems/platform.md](docs/subsystems/platform.md#3-physical-hardware-acceptance)
 - **Dell Latitude 5500:**
   - 8-CPU bring-up, 8 GiB DRAM, `ps`, `sysinfo`: [docs/subsystems/shell.md](docs/subsystems/shell.md#dell-latitude-5500-physical-acceptance-2026-09-30) and [docs/subsystems/smp.md](docs/subsystems/smp.md#3-physical-hardware-acceptance)
 

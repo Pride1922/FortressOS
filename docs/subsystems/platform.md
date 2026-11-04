@@ -27,6 +27,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 ### Dell Latitude 5590 physical acceptance (Power & Platform)
 
 - **Power:** ACPI S5 shutdown and multi-tier reset confirmed functional on Dell Latitude 5590.
+- **Battery & Power Telemetry:** Probed Dell EC ports `0x0930`/`0x0934` via DSDT `_CRS`, indexed register protocol, live AC presence detection and two's-complement signed rate. Physical acceptance user-confirmed on Dell Latitude 5590 (live transition from 100% Full / AC Connected / 8.278 V to 99% Discharging / On Battery / 2h 20m / 7.860 V).
 - **Visuals:** Limine splash wallpaper and kernel boot logo / emblem verified.
 - **Early Diagnostics:** COM1 and cached framebuffer diagnostics operational before PMM/heap initialization.
 
@@ -37,7 +38,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Target | Scope / evidence |
 | --- | --- |
 | `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see H7), not by this target |
-| `make test-battery-host` | Limited offline parser/math/mock-cache tests plus production-build EOPNOTSUPP/output-preservation tests; these do not establish AML execution or real hardware telemetry |
+| `make test-battery-host` | 10/10 host tests passing: AML parsers, 5-second cache, math/clamping, and Dell 5590 indexed EC protocol validation |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
 | `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
 
