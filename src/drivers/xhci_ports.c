@@ -1,5 +1,6 @@
 #include "xhci_ports.h"
 #include "boot_timing.h"
+#include <string.h>
 
 static uint64_t elapsed_ticks(uint64_t start) {
     uint64_t end = BOOT_TIMING_READ();
@@ -120,7 +121,7 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                                    const xhci_dma_buffers_t *dma,
                                    xhci_port_report_t *report,unsigned settled_ms) {
     if (!report) return false;
-    *report = (xhci_port_report_t){0};
+    memset(report, 0, sizeof(*report));
 
     if (!fits(io, 0, 0x20)) return false;
     uint32_t cap = io->read32(io->mmio_ctx, 0);

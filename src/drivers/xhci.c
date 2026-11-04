@@ -426,7 +426,9 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         serial_puts("[USB 9G.1c] PASS: No-Op command completed; Command Completion Event received\n");
 
         /* Phase 9G.1d: Root Port Discovery & Reset */
-        xhci_port_report_t port_report;
+        /* The one-shot BSP probe visits controllers serially. Reuse scratch
+         * storage here so the report never consumes the guarded boot stack. */
+        static xhci_port_report_t port_report;
         unsigned settled_ms=0;
         if (*settle_work) {
             void (*work)(void)=*settle_work;
