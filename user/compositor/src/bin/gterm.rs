@@ -407,7 +407,7 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
     // local is reserved in the entry prologue, before heap initialization.
     let mut buf = alloc::vec![0u8; 16384];
 
-    loop {
+    'main_loop: loop {
         // Build PollFd array: FD_EVENTS (0) + active master fds
         let mut poll_fds = [sys::PollFd::default(); MAX_TABS + 1];
         poll_fds[0] = sys::PollFd {
@@ -438,47 +438,47 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
         }
 
         // 1. Process desktop UI events
-        if poll_fds[0].revents != 0 {
-            let ev = app.next_event();
-            match ev {
-                Event::Configure => {
-                    let (cols, rows) = GTermApp::grid_for_window(app.width, app.height);
-                    for tab in &mut gterm.tabs {
-                        sys::set_winsize(tab.master, &winsize(cols, rows));
-                        tab.term.set_dimensions(cols, rows);
-                    }
-                    if let Some(tab) = gterm.active() {
-                        tab.term.render(&mut app.canvas(), TAB_BAR_HEIGHT);
-                    }
-                    gterm.render_tab_bar(&mut app.canvas());
-                    gterm.render_scrollbar(&mut app.canvas());
-                    app.damage_all();
-                }
-                // Ctrl+Shift+T: New Tab (ASCII 20)
-                Event::Key(20) => {
-                    if gterm.add_tab(app.width, app.height, None) {
+        if poll_fds[0].revents & (sys::POLLIN | sys::POLLHUP | sys::POLLERR) != 0 {
+            while let Some(ev) = app.next_event_timeout(0) {
+                match ev {
+                    Event::Configure => {
                         let (cols, rows) = GTermApp::grid_for_window(app.width, app.height);
-                        if let Some(tab) = gterm.active() {
+                        for tab in &mut gterm.tabs {
                             sys::set_winsize(tab.master, &winsize(cols, rows));
+                            tab.term.set_dimensions(cols, rows);
+                        }
+                        if let Some(tab) = gterm.active() {
                             tab.term.render(&mut app.canvas(), TAB_BAR_HEIGHT);
                         }
                         gterm.render_tab_bar(&mut app.canvas());
                         gterm.render_scrollbar(&mut app.canvas());
                         app.damage_all();
                     }
-                }
-                // Ctrl+Shift+W: Close Tab (ASCII 23)
-                Event::Key(23) => {
-                    if !gterm.close_tab(gterm.active_tab) {
-                        break;
+                    // Ctrl+Shift+T: New Tab (ASCII 20)
+                    Event::Key(20) => {
+                        if gterm.add_tab(app.width, app.height, None) {
+                            let (cols, rows) = GTermApp::grid_for_window(app.width, app.height);
+                            if let Some(tab) = gterm.active() {
+                                sys::set_winsize(tab.master, &winsize(cols, rows));
+                                tab.term.render(&mut app.canvas(), TAB_BAR_HEIGHT);
+                            }
+                            gterm.render_tab_bar(&mut app.canvas());
+                            gterm.render_scrollbar(&mut app.canvas());
+                            app.damage_all();
+                        }
                     }
-                    if let Some(tab) = gterm.active() {
-                        tab.term.render(&mut app.canvas(), TAB_BAR_HEIGHT);
+                    // Ctrl+Shift+W: Close Tab (ASCII 23)
+                    Event::Key(23) => {
+                        if !gterm.close_tab(gterm.active_tab) {
+                            break 'main_loop;
+                        }
+                        if let Some(tab) = gterm.active() {
+                            tab.term.render(&mut app.canvas(), TAB_BAR_HEIGHT);
+                        }
+                        gterm.render_tab_bar(&mut app.canvas());
+                        gterm.render_scrollbar(&mut app.canvas());
+                        app.damage_all();
                     }
-                    gterm.render_tab_bar(&mut app.canvas());
-                    gterm.render_scrollbar(&mut app.canvas());
-                    app.damage_all();
-                }
                 // Ctrl+Shift+F: Toggle Search (ASCII 6)
                 Event::Key(6) => {
                     gterm.search_open = !gterm.search_open;
@@ -587,7 +587,7 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
                                 // Check close button
                                 if x >= tx + tab_w - 18 {
                                     if !gterm.close_tab(i) {
-                                        break;
+                                        break 'main_loop;
                                     }
                                 } else {
                                     gterm.active_tab = i;
@@ -661,9 +661,13 @@ pub extern "C" fn rust_main(_argc: usize, _argv: *const *const u8) -> i32 {
                         }
                     }
                 }
-                Event::Close => break,
+                Event::Close => break 'main_loop,
             }
         }
+        if poll_fds[0].revents & (sys::POLLHUP | sys::POLLERR) != 0 {
+            break 'main_loop;
+        }
+    }
 
         // 2. Read output from PTY masters
         let mut closed_indices = Vec::new();

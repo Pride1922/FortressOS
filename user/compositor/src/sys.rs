@@ -482,7 +482,7 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8], mode: usize) -> R
         return Err(if closed < 0 { closed } else { sync });
     }
     let mut renamed = path_call(84, temporary, Some(path), 0);
-    if renamed == -5 {
+    if renamed < 0 {
         renamed = path_call(13, temporary, Some(path), 0);
     }
     if renamed < 0 {

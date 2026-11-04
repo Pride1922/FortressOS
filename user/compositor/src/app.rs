@@ -141,6 +141,35 @@ impl App {
         }
     }
 
+    /// Polls for the next event with a timeout in milliseconds.
+    /// Returns None on timeout or error.
+    pub fn next_event_timeout(&mut self, timeout_ms: i64) -> Option<Event> {
+        loop {
+            if self.pending_pos < self.pending_len {
+                let b = self.pending_keys[self.pending_pos as usize];
+                self.pending_pos += 1;
+                return Some(Event::Key(b));
+            }
+            let mut fds = [
+                sys::PollFd {
+                    fd: FD_EVENTS,
+                    events: sys::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let n = sys::poll(&mut fds, timeout_ms);
+            if n == sys::EINTR {
+                continue;
+            }
+            if n <= 0 {
+                return None;
+            }
+            if let Some(ev) = self.read_one_event() {
+                return Some(ev);
+            }
+        }
+    }
+
     /// Waits for a desktop event or for `extra` (e.g. a PTY master) to have
     /// input. Desktop events win when both are pending, so a close request
     /// is never starved by a busy `extra`.
