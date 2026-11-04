@@ -1041,11 +1041,6 @@ static bool poll_hardware_battery(battery_status_t *out) {
             g_ec_cmd_port = c_port;
             g_ec_data_port = d_port;
             ec_ports_found = true;
-            serial_puts("[BATTERY] ECDT active: cmd=0x");
-            serial_print_hex(c_port);
-            serial_puts(" data=0x");
-            serial_print_hex(d_port);
-            serial_puts("\n");
             break;
         }
     }
@@ -1057,11 +1052,6 @@ static bool poll_hardware_battery(battery_status_t *out) {
                 g_ec_cmd_port = c_port;
                 g_ec_data_port = d_port;
                 ec_ports_found = true;
-                serial_puts("[BATTERY] DSDT EC ports active: cmd=0x");
-                serial_print_hex(c_port);
-                serial_puts(" data=0x");
-                serial_print_hex(d_port);
-                serial_puts("\n");
                 break;
             }
         }
