@@ -3513,3 +3513,65 @@ fn gterm_formatted_clipboard_export() {
     assert!(fmt.contains("\x1b[31m"));
     assert!(fmt.contains("Error"));
 }
+
+#[test]
+fn user_profile_parsing_and_role_detection() {
+    use desktop::UserProfile;
+
+    let sample_passwd = b"\
+root:x:0:0:Super User:/root:/bin/shell\n\
+daemon:x:1:1::/run:/bin/false\n\
+operator:x:999:999:System Operator,Room 101,555-1234,:/home/operator:/bin/shell\n\
+fabio:x:1000:1000::/home/fabio:/bin/shell\n\
+alice:x:1001:1001:Alice Smith:/home/alice:/bin/shell\n\
+";
+
+    // 1. Parse root (uid 0)
+    let (name, gid, gecos) = UserProfile::parse_passwd(sample_passwd, 0).expect("root must parse");
+    assert_eq!(name.as_str(), "root");
+    assert_eq!(gid, 0);
+    assert_eq!(gecos.as_str(), "Super User");
+    let (disp, init) = UserProfile::format_name(name.as_str(), gecos.as_str());
+    assert_eq!(disp.as_str(), "Super User");
+    assert_eq!(init.as_str(), "S");
+    let role = UserProfile::determine_role(0, gid, false);
+    assert_eq!(role.as_str(), "Administrator");
+
+    // 2. Parse fabio (uid 1000, empty gecos -> capitalized username)
+    let (name, gid, gecos) = UserProfile::parse_passwd(sample_passwd, 1000).expect("fabio must parse");
+    assert_eq!(name.as_str(), "fabio");
+    assert_eq!(gid, 1000);
+    assert_eq!(gecos.as_str(), "");
+    let (disp, init) = UserProfile::format_name(name.as_str(), gecos.as_str());
+    assert_eq!(disp.as_str(), "Fabio");
+    assert_eq!(init.as_str(), "F");
+
+    // 3. Group membership & role for fabio
+    let sample_group = b"\
+root:x:0:\n\
+bin:x:1:\n\
+wheel:x:10:root,fabio\n\
+users:x:100:fabio,alice\n\
+";
+    let is_wheel = UserProfile::check_group_membership(sample_group, "fabio", &["wheel", "root"]);
+    assert!(is_wheel);
+    let role = UserProfile::determine_role(1000, gid, is_wheel);
+    assert_eq!(role.as_str(), "Administrator");
+
+    // 4. Parse alice (standard user not in wheel)
+    let (name, gid, gecos) = UserProfile::parse_passwd(sample_passwd, 1001).expect("alice must parse");
+    assert_eq!(name.as_str(), "alice");
+    let (disp, init) = UserProfile::format_name(name.as_str(), gecos.as_str());
+    assert_eq!(disp.as_str(), "Alice Smith");
+    assert_eq!(init.as_str(), "A");
+    let is_wheel_alice = UserProfile::check_group_membership(sample_group, "alice", &["wheel", "root"]);
+    assert!(!is_wheel_alice);
+    let role = UserProfile::determine_role(1001, gid, is_wheel_alice);
+    assert_eq!(role.as_str(), "Standard User");
+
+    // 5. Default fallback
+    let def = UserProfile::default();
+    assert_eq!(def.name.as_str(), "Operator");
+    assert_eq!(def.initial.as_str(), "O");
+    assert_eq!(def.role.as_str(), "Administrator");
+}

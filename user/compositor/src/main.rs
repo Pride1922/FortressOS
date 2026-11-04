@@ -254,6 +254,7 @@ fn run(
                 "Dropped root; desktop runs as uid",
                 Some(id.uid as isize),
             );
+            desktop.refresh_user();
         }
         privilege::Launch::StayRoot => privilege::report(
             1,

@@ -167,10 +167,178 @@ pub fn parse_scan(bytes: &[u8]) -> Option<Vec<AccessPoint>> {
     Some(points)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserProfile {
+    pub name: Text<32>,
+    pub initial: Text<4>,
+    pub role: Text<32>,
+}
+
+impl Default for UserProfile {
+    fn default() -> Self {
+        Self {
+            name: Text::from_str("Operator"),
+            initial: Text::from_str("O"),
+            role: Text::from_str("Administrator"),
+        }
+    }
+}
+
+impl UserProfile {
+    pub fn parse_passwd(passwd_data: &[u8], target_uid: u32) -> Option<(Text<32>, u32, Text<32>)> {
+        for line in passwd_data.split(|&b| b == b'\n') {
+            let line = if let Some(stripped) = line.strip_suffix(b"\r") {
+                stripped
+            } else {
+                line
+            };
+            if line.is_empty() || line.starts_with(b"#") {
+                continue;
+            }
+            let mut parts = line.split(|&b| b == b':');
+            let Some(name_bytes) = parts.next() else { continue; };
+            let Some(_pw) = parts.next() else { continue; };
+            let Some(uid_bytes) = parts.next() else { continue; };
+            let Some(gid_bytes) = parts.next() else { continue; };
+            let gecos_bytes = parts.next().unwrap_or(b"");
+
+            let Ok(uid_str) = core::str::from_utf8(uid_bytes) else { continue; };
+            let Ok(uid) = uid_str.trim().parse::<u32>() else { continue; };
+            if uid != target_uid {
+                continue;
+            }
+
+            let gid = core::str::from_utf8(gid_bytes)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(u32::MAX);
+
+            let uname_str = core::str::from_utf8(name_bytes).unwrap_or("");
+            let gecos_str = core::str::from_utf8(gecos_bytes).unwrap_or("");
+
+            return Some((
+                Text::from_str(uname_str),
+                gid,
+                Text::from_str(gecos_str),
+            ));
+        }
+        None
+    }
+
+    pub fn check_group_membership(group_data: &[u8], username: &str, target_groups: &[&str]) -> bool {
+        let uname_bytes = username.as_bytes();
+        for line in group_data.split(|&b| b == b'\n') {
+            let line = if let Some(stripped) = line.strip_suffix(b"\r") {
+                stripped
+            } else {
+                line
+            };
+            if line.is_empty() || line.starts_with(b"#") {
+                continue;
+            }
+            let mut parts = line.split(|&b| b == b':');
+            let Some(grp_bytes) = parts.next() else { continue; };
+            let Some(_pw) = parts.next() else { continue; };
+            let Some(_gid_bytes) = parts.next() else { continue; };
+            let Some(members_bytes) = parts.next() else { continue; };
+
+            let grp_name = core::str::from_utf8(grp_bytes).unwrap_or("");
+            if !target_groups.iter().any(|&tg| tg == grp_name) {
+                continue;
+            }
+
+            for member in members_bytes.split(|&b| b == b',') {
+                let m = core::str::from_utf8(member).unwrap_or("").trim();
+                if m.as_bytes() == uname_bytes {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn format_name(uname: &str, gecos: &str) -> (Text<32>, Text<4>) {
+        let display = if !gecos.is_empty() {
+            let first_field = gecos.split(',').next().unwrap_or("").trim();
+            if !first_field.is_empty() {
+                first_field
+            } else {
+                uname.trim()
+            }
+        } else {
+            uname.trim()
+        };
+
+        let mut name = Text::default();
+        let mut initial = Text::default();
+
+        if display.is_empty() {
+            let _ = name.write_str("Operator");
+            let _ = initial.write_str("O");
+            return (name, initial);
+        }
+
+        let mut chars = display.chars();
+        if let Some(first) = chars.next() {
+            for uc in first.to_uppercase() {
+                let _ = name.write_char(uc);
+                let _ = initial.write_char(uc);
+            }
+            for c in chars {
+                let _ = name.write_char(c);
+            }
+        }
+
+        (name, initial)
+    }
+
+    pub fn determine_role(uid: u32, gid: u32, in_admin_group: bool) -> Text<32> {
+        let is_admin = uid == 0 || gid == 0 || gid == 10 || in_admin_group;
+        if is_admin {
+            Text::from_str("Administrator")
+        } else {
+            Text::from_str("Standard User")
+        }
+    }
+
+    pub fn detect() -> Self {
+        let target_uid = match sys::getres(false) {
+            Some((r, _, _)) => r,
+            None => return Self::default(),
+        };
+
+        let mut passwd_buf = alloc::vec![0u8; 1024];
+        let n = match sys::read_file("/etc/passwd", &mut passwd_buf) {
+            Ok(bytes) => bytes,
+            Err(_) => return Self::default(),
+        };
+
+        let Some((uname, gid, gecos)) = Self::parse_passwd(&passwd_buf[..n], target_uid) else {
+            return Self::default();
+        };
+
+        let mut group_buf = alloc::vec![0u8; 1024];
+        let in_admin_group = match sys::read_file("/etc/group", &mut group_buf) {
+            Ok(gn) => Self::check_group_membership(
+                &group_buf[..gn],
+                uname.as_str(),
+                &["wheel", "root", "admin", "sudo"],
+            ),
+            Err(_) => false,
+        };
+
+        let (name, initial) = Self::format_name(uname.as_str(), gecos.as_str());
+        let role = Self::determine_role(target_uid, gid, in_admin_group);
+
+        Self { name, initial, role }
+    }
+}
+
 pub struct AppHost {
     pub preferences: Preferences,
     pub draft: Preferences,
     pub apps: [Builtin; 4],
+    pub user: UserProfile,
     pub status: Text<112>,
     messages: [Text<112>; 4],
     message_page: usize,
@@ -389,7 +557,11 @@ impl AppHost {
             battery: None,
             show_power_menu: false,
             power_profile: 0,
+            user: UserProfile::default(),
         }
+    }
+    pub fn refresh_user(&mut self) {
+        self.user = UserProfile::detect();
     }
     #[inline(never)]
     pub fn load(is_test: bool) -> Option<Box<Self>> {
@@ -411,6 +583,7 @@ impl AppHost {
             host.message("Invalid desktop.conf; defaults active. Save to replace it.");
         }
         if !is_test {
+            host.refresh_user();
             let mut text = [0u8; 97];
             if let Ok(n) = sys::read_file("/etc/timezone", &mut text) {
                 if let Ok(zone) = core::str::from_utf8(&text[..n]) {
@@ -448,6 +621,8 @@ impl AppHost {
         let Some(index) = ui::APPS.iter().position(|a| a.id == id) else {
             return;
         };
+        #[cfg(not(test))]
+        self.refresh_user();
         // If any built-in settings window (7, 8, or 9) is already open,
         // reuse the open window and switch its page in-place!
         if let Some(open_id) = [7, 8, 9, 10].iter().copied().find(|&oid| wm.windows.iter().any(|w| w.id == oid)) {
@@ -1271,14 +1446,14 @@ impl AppHost {
 
         c.badge_on(
             Rect { x: 14, y: 11, w: 30, h: 30 },
-            "O",
+            self.user.initial.as_str(),
             0xffffffff,
             0xff1e385b,
             theme::ACCENT,
             0xff111620,
         );
-        c.label_bold(52, 9, 120, 18, "Operator", 0xffffffff, 0xff111620);
-        c.label_h(52, 26, 120, 18, "Administrator", theme::SUBTEXT, 0xff111620);
+        c.label_bold(52, 9, 120, 18, self.user.name.as_str(), 0xffffffff, 0xff111620);
+        c.label_h(52, 26, 120, 18, self.user.role.as_str(), theme::SUBTEXT, 0xff111620);
 
         c.fill_rect(Rect { x: 14, y: 48, w: 152, h: 1 }, 0xff222d3d);
 

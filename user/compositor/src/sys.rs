@@ -756,17 +756,25 @@ pub fn pipe(fds: &mut [i32; 2], flags: i32) -> isize {
 
 /// (real, effective, saved) user or group ids.
 pub fn getres(group: bool) -> Option<(u32, u32, u32)> {
-    let (mut r, mut e, mut s) = (u32::MAX, u32::MAX, u32::MAX);
-    let nr = if group { SYS_GETRESGID } else { SYS_GETRESUID };
-    let rc = unsafe {
-        syscall3(
-            nr,
-            &mut r as *mut u32 as usize,
-            &mut e as *mut u32 as usize,
-            &mut s as *mut u32 as usize,
-        )
-    };
-    (rc == 0).then_some((r, e, s))
+    #[cfg(not(test))]
+    {
+        let (mut r, mut e, mut s) = (u32::MAX, u32::MAX, u32::MAX);
+        let nr = if group { SYS_GETRESGID } else { SYS_GETRESUID };
+        let rc = unsafe {
+            syscall3(
+                nr,
+                &mut r as *mut u32 as usize,
+                &mut e as *mut u32 as usize,
+                &mut s as *mut u32 as usize,
+            )
+        };
+        (rc == 0).then_some((r, e, s))
+    }
+    #[cfg(test)]
+    {
+        let _ = group;
+        None
+    }
 }
 
 /// Sets real, effective and saved ids to `id` (no keep flags).
