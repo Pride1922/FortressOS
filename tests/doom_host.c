@@ -37,6 +37,8 @@ typedef struct {
 
 extern uint64_t fortress_doom_get_frame_count(void);
 extern uint32_t fortress_doom_get_last_pixel(void);
+extern bool fortress_doom_has_focus(void);
+extern bool fortress_doom_is_key_down(unsigned char key);
 extern void fortress_desktop_get_stats(fortress_desktop_stats_t *out);
 extern void fortress_desktop_set_target_frames(int frames);
 extern void fortress_desktop_set_mock(int req_fd, int ev_fd, uint32_t *pixels, uint64_t size, uint32_t stride);
@@ -308,6 +310,345 @@ static void test_desktop_input_and_close(void) {
     printf("  -> PASS: Key events and close/pipe termination verified.\n");
 }
 
+static void test_stage3_keyboard_mappings(void) {
+    printf("[TEST] Testing Stage 3 keyboard mappings (arrows, fire, use, strafe, run, controls, digits, F-keys)...\n");
+    fortress_desktop_reset();
+
+    int req_pipe[2], ev_pipe[2];
+    assert(pipe(req_pipe) == 0 && pipe(ev_pipe) == 0);
+    uint32_t dummy[16];
+    fortress_desktop_set_mock(req_pipe[1], ev_pipe[0], dummy, sizeof(dummy), 4);
+
+    struct {
+        uint32_t keycode;
+        uint32_t ascii;
+        unsigned char expected_doom_key;
+        const char *name;
+    } mapping_cases[] = {
+        /* Standard arrows */
+        { 103, 0, KEY_UPARROW, "Up Arrow" },
+        { 108, 0, KEY_DOWNARROW, "Down Arrow" },
+        { 105, 0, KEY_LEFTARROW, "Left Arrow" },
+        { 106, 0, KEY_RIGHTARROW, "Right Arrow" },
+        /* Keypad arrows */
+        { 72, 0, KEY_UPARROW, "Keypad Up" },
+        { 80, 0, KEY_DOWNARROW, "Keypad Down" },
+        { 75, 0, KEY_LEFTARROW, "Keypad Left" },
+        { 77, 0, KEY_RIGHTARROW, "Keypad Right" },
+        /* Action buttons */
+        { 29, 0, KEY_FIRE, "Left Ctrl (Fire)" },
+        { 97, 0, KEY_FIRE, "Right Ctrl (Fire)" },
+        { 57, ' ', KEY_USE, "Space (Use)" },
+        { 42, 0, KEY_RSHIFT, "Left Shift (Run)" },
+        { 54, 0, KEY_RSHIFT, "Right Shift (Run)" },
+        { 56, 0, KEY_RALT, "Left Alt (Strafe)" },
+        { 100, 0, KEY_RALT, "Right Alt (Strafe)" },
+        { 51, ',', KEY_STRAFE_L, "Comma (Strafe Left)" },
+        { 52, '.', KEY_STRAFE_R, "Dot (Strafe Right)" },
+        /* Controls */
+        { 28, '\n', KEY_ENTER, "Enter" },
+        { 1, 27, KEY_ESCAPE, "Escape" },
+        { 15, '\t', KEY_TAB, "Tab (Map)" },
+        { 14, '\b', KEY_BACKSPACE, "Backspace" },
+        { 119, 0, KEY_PAUSE, "Pause" },
+        /* Digits */
+        { 2, '1', '1', "Weapon 1" },
+        { 3, '2', '2', "Weapon 2" },
+        { 8, '7', '7', "Weapon 7" },
+        { 11, '0', '0', "Slot 0" },
+        /* Function keys */
+        { 59, 0, KEY_F1, "F1" },
+        { 60, 0, KEY_F2, "F2 (Save)" },
+        { 61, 0, KEY_F3, "F3 (Load)" },
+        { 63, 0, KEY_F5, "F5" },
+        { 68, 0, KEY_F10, "F10" },
+        { 88, 0, KEY_F12, "F12" },
+    };
+
+    for (size_t i = 0; i < sizeof(mapping_cases)/sizeof(mapping_cases[0]); i++) {
+        uint32_t kc = mapping_cases[i].keycode;
+        uint32_t ascii = mapping_cases[i].ascii;
+        unsigned char expected = mapping_cases[i].expected_doom_key;
+
+        /* Press event */
+        desktop_msg_t press_msg = {
+            .kind = DESKTOP_EV_KEY,
+            .a = ascii,
+            .b = kc,
+            .c = 0,
+            .d = DESKTOP_KEY_PRESS
+        };
+        write(ev_pipe[1], &press_msg, sizeof(press_msg));
+        assert(fortress_desktop_poll_events());
+
+        int pressed = -1;
+        unsigned char k = 0;
+        assert(DG_GetKey(&pressed, &k) == 1);
+        assert(pressed == 1);
+        assert(k == expected);
+        assert(fortress_doom_is_key_down(expected) == true);
+
+        /* Release event (desktop passes ascii=0 on release) */
+        desktop_msg_t rel_msg = {
+            .kind = DESKTOP_EV_KEY,
+            .a = 0,
+            .b = kc,
+            .c = 0,
+            .d = DESKTOP_KEY_RELEASE
+        };
+        write(ev_pipe[1], &rel_msg, sizeof(rel_msg));
+        assert(fortress_desktop_poll_events());
+
+        assert(DG_GetKey(&pressed, &k) == 1);
+        assert(pressed == 0);
+        assert(k == expected);
+        assert(fortress_doom_is_key_down(expected) == false);
+    }
+
+    close(req_pipe[0]); close(req_pipe[1]);
+    close(ev_pipe[0]); close(ev_pipe[1]);
+    fortress_desktop_reset();
+    printf("  -> PASS: All primary keyboard mappings, presses, and releases verified.\n");
+}
+
+static void test_stage3_azerty_and_us_parity(void) {
+    printf("[TEST] Testing US vs AZERTY layout parity and release tracking...\n");
+    fortress_desktop_reset();
+
+    int req_pipe[2], ev_pipe[2];
+    assert(pipe(req_pipe) == 0 && pipe(ev_pipe) == 0);
+    uint32_t dummy[16];
+    fortress_desktop_set_mock(req_pipe[1], ev_pipe[0], dummy, sizeof(dummy), 4);
+
+    /*
+     * Keycode 17:
+     * - On US layout: emits 'w' (119)
+     * - On AZERTY layout: emits 'z' (122)
+     */
+    /* Test US 'W' */
+    desktop_msg_t us_w_press = {
+        .kind = DESKTOP_EV_KEY,
+        .a = 'w',
+        .b = 17,
+        .c = 0,
+        .d = DESKTOP_KEY_PRESS
+    };
+    write(ev_pipe[1], &us_w_press, sizeof(us_w_press));
+    assert(fortress_desktop_poll_events());
+
+    int pressed = 0;
+    unsigned char k = 0;
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == 'w');
+    assert(fortress_doom_is_key_down('w') == true);
+
+    /* Release US 'W' (release has ascii=0) */
+    desktop_msg_t us_w_rel = {
+        .kind = DESKTOP_EV_KEY,
+        .a = 0,
+        .b = 17,
+        .c = 0,
+        .d = DESKTOP_KEY_RELEASE
+    };
+    write(ev_pipe[1], &us_w_rel, sizeof(us_w_rel));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == 'w');
+    assert(fortress_doom_is_key_down('w') == false);
+
+    /* Test AZERTY 'Z' on same keycode 17 */
+    desktop_msg_t az_z_press = {
+        .kind = DESKTOP_EV_KEY,
+        .a = 'z',
+        .b = 17,
+        .c = 0,
+        .d = DESKTOP_KEY_PRESS
+    };
+    write(ev_pipe[1], &az_z_press, sizeof(az_z_press));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == 'z');
+    assert(fortress_doom_is_key_down('z') == true);
+
+    /* Release AZERTY 'Z' (release has ascii=0) */
+    desktop_msg_t az_z_rel = {
+        .kind = DESKTOP_EV_KEY,
+        .a = 0,
+        .b = 17,
+        .c = 0,
+        .d = DESKTOP_KEY_RELEASE
+    };
+    write(ev_pipe[1], &az_z_rel, sizeof(az_z_rel));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == 'z');
+    assert(fortress_doom_is_key_down('z') == false);
+
+    /*
+     * Keycode 16:
+     * - On US layout: emits 'q'
+     * - On AZERTY layout: emits 'a'
+     */
+    /* Test US 'Q' */
+    desktop_msg_t us_q_press = { .kind = DESKTOP_EV_KEY, .a = 'q', .b = 16, .d = DESKTOP_KEY_PRESS };
+    write(ev_pipe[1], &us_q_press, sizeof(us_q_press));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == 'q');
+    desktop_msg_t us_q_rel = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 16, .d = DESKTOP_KEY_RELEASE };
+    write(ev_pipe[1], &us_q_rel, sizeof(us_q_rel));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == 'q');
+
+    /* Test AZERTY 'A' on same keycode 16 */
+    desktop_msg_t az_a_press = { .kind = DESKTOP_EV_KEY, .a = 'a', .b = 16, .d = DESKTOP_KEY_PRESS };
+    write(ev_pipe[1], &az_a_press, sizeof(az_a_press));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == 'a');
+    desktop_msg_t az_a_rel = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 16, .d = DESKTOP_KEY_RELEASE };
+    write(ev_pipe[1], &az_a_rel, sizeof(az_a_rel));
+    assert(fortress_desktop_poll_events());
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == 'a');
+
+    close(req_pipe[0]); close(req_pipe[1]);
+    close(ev_pipe[0]); close(ev_pipe[1]);
+    fortress_desktop_reset();
+    printf("  -> PASS: Complete US and AZERTY layout parity with symmetrical release verified.\n");
+}
+
+static void test_stage3_simultaneous_keys(void) {
+    printf("[TEST] Testing simultaneous key presses and partial release...\n");
+    fortress_desktop_reset();
+
+    int req_pipe[2], ev_pipe[2];
+    assert(pipe(req_pipe) == 0 && pipe(ev_pipe) == 0);
+    uint32_t dummy[16];
+    fortress_desktop_set_mock(req_pipe[1], ev_pipe[0], dummy, sizeof(dummy), 4);
+
+    /* Press 4 keys simultaneously: Up Arrow (103), Right Arrow (106), Fire/Ctrl (29), Speed/Shift (42) */
+    desktop_msg_t p1 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 103, .d = DESKTOP_KEY_PRESS };
+    desktop_msg_t p2 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 106, .d = DESKTOP_KEY_PRESS };
+    desktop_msg_t p3 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 29,  .d = DESKTOP_KEY_PRESS };
+    desktop_msg_t p4 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 42,  .d = DESKTOP_KEY_PRESS };
+    write(ev_pipe[1], &p1, sizeof(p1));
+    write(ev_pipe[1], &p2, sizeof(p2));
+    write(ev_pipe[1], &p3, sizeof(p3));
+    write(ev_pipe[1], &p4, sizeof(p4));
+
+    assert(fortress_desktop_poll_events());
+
+    int pressed = 0; unsigned char k = 0;
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == KEY_UPARROW);
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == KEY_RIGHTARROW);
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == KEY_FIRE);
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 1 && k == KEY_RSHIFT);
+
+    assert(fortress_doom_is_key_down(KEY_UPARROW) == true);
+    assert(fortress_doom_is_key_down(KEY_RIGHTARROW) == true);
+    assert(fortress_doom_is_key_down(KEY_FIRE) == true);
+    assert(fortress_doom_is_key_down(KEY_RSHIFT) == true);
+
+    /* Release Right Arrow and Fire */
+    desktop_msg_t r2 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 106, .d = DESKTOP_KEY_RELEASE };
+    desktop_msg_t r3 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 29,  .d = DESKTOP_KEY_RELEASE };
+    write(ev_pipe[1], &r2, sizeof(r2));
+    write(ev_pipe[1], &r3, sizeof(r3));
+    assert(fortress_desktop_poll_events());
+
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == KEY_RIGHTARROW);
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == KEY_FIRE);
+
+    /* Up Arrow and Speed must still be held down */
+    assert(fortress_doom_is_key_down(KEY_UPARROW) == true);
+    assert(fortress_doom_is_key_down(KEY_RSHIFT) == true);
+    assert(fortress_doom_is_key_down(KEY_RIGHTARROW) == false);
+    assert(fortress_doom_is_key_down(KEY_FIRE) == false);
+
+    /* Release remaining keys */
+    desktop_msg_t r1 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 103, .d = DESKTOP_KEY_RELEASE };
+    desktop_msg_t r4 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 42,  .d = DESKTOP_KEY_RELEASE };
+    write(ev_pipe[1], &r1, sizeof(r1));
+    write(ev_pipe[1], &r4, sizeof(r4));
+    assert(fortress_desktop_poll_events());
+
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == KEY_UPARROW);
+    assert(DG_GetKey(&pressed, &k) == 1 && pressed == 0 && k == KEY_RSHIFT);
+    assert(fortress_doom_is_key_down(KEY_UPARROW) == false);
+    assert(fortress_doom_is_key_down(KEY_RSHIFT) == false);
+
+    close(req_pipe[0]); close(req_pipe[1]);
+    close(ev_pipe[0]); close(ev_pipe[1]);
+    fortress_desktop_reset();
+    printf("  -> PASS: Multi-key combinations and partial release tracking verified.\n");
+}
+
+static void test_stage3_focus_loss_and_stuck_key_prevention(void) {
+    printf("[TEST] Testing focus loss handling and stuck key prevention...\n");
+    fortress_desktop_reset();
+
+    int req_pipe[2], ev_pipe[2];
+    assert(pipe(req_pipe) == 0 && pipe(ev_pipe) == 0);
+    uint32_t dummy[16];
+    fortress_desktop_set_mock(req_pipe[1], ev_pipe[0], dummy, sizeof(dummy), 4);
+
+    assert(fortress_doom_has_focus() == true);
+
+    /* Hold down 3 keys: Up Arrow (103), Fire (29), Run (42) */
+    desktop_msg_t p1 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 103, .d = DESKTOP_KEY_PRESS };
+    desktop_msg_t p2 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 29,  .d = DESKTOP_KEY_PRESS };
+    desktop_msg_t p3 = { .kind = DESKTOP_EV_KEY, .a = 0, .b = 42,  .d = DESKTOP_KEY_PRESS };
+    write(ev_pipe[1], &p1, sizeof(p1));
+    write(ev_pipe[1], &p2, sizeof(p2));
+    write(ev_pipe[1], &p3, sizeof(p3));
+    assert(fortress_desktop_poll_events());
+
+    int pressed = 0; unsigned char k = 0;
+    while (DG_GetKey(&pressed, &k)) {
+        assert(pressed == 1);
+    }
+    assert(fortress_doom_is_key_down(KEY_UPARROW) == true);
+    assert(fortress_doom_is_key_down(KEY_FIRE) == true);
+    assert(fortress_doom_is_key_down(KEY_RSHIFT) == true);
+
+    /*
+     * Simulate focus loss: Compositor sends DESKTOP_EV_FOCUS with a=0
+     * (e.g. user pressed Alt+Tab, Super, Super+L, or switched windows).
+     */
+    desktop_msg_t focus_lost = {
+        .kind = DESKTOP_EV_FOCUS,
+        .a = 0, /* unfocused */
+    };
+    write(ev_pipe[1], &focus_lost, sizeof(focus_lost));
+    assert(fortress_desktop_poll_events());
+
+    /* Focus state must be false */
+    assert(fortress_doom_has_focus() == false);
+
+    /* All held keys must be released immediately */
+    assert(fortress_doom_is_key_down(KEY_UPARROW) == false);
+    assert(fortress_doom_is_key_down(KEY_FIRE) == false);
+    assert(fortress_doom_is_key_down(KEY_RSHIFT) == false);
+
+    /* DG_GetKey must return release events (pressed == 0) for each held key */
+    int release_count = 0;
+    while (DG_GetKey(&pressed, &k)) {
+        assert(pressed == 0 && "All synthesized focus-loss events must be releases");
+        release_count++;
+    }
+    assert(release_count == 3 && "Exactly 3 release events generated for the 3 held keys");
+
+    /* Regain focus */
+    desktop_msg_t focus_gain = {
+        .kind = DESKTOP_EV_FOCUS,
+        .a = 1, /* focused */
+    };
+    write(ev_pipe[1], &focus_gain, sizeof(focus_gain));
+    assert(fortress_desktop_poll_events());
+
+    assert(fortress_doom_has_focus() == true);
+    assert(DG_GetKey(&pressed, &k) == 0 && "No stale keys upon regaining focus");
+
+    close(req_pipe[0]); close(req_pipe[1]);
+    close(ev_pipe[0]); close(ev_pipe[1]);
+    fortress_desktop_reset();
+    printf("  -> PASS: Focus loss cleanly releases all held keys with zero stuck keys.\n");
+}
+
 static void test_engine_init_and_frames(const char *wad_path) {
     printf("[TEST] Testing engine initialization & frame generation with %s...\n", wad_path);
     pid_t pid = fork();
@@ -408,14 +749,18 @@ static void test_corrupted_wad_handling(void) {
 
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
-    printf("==========================================================================\n");
-    printf("FortressOS Doom Desktop & Presentation Verification Suite (Stages 0, 1, 2)\n");
-    printf("==========================================================================\n");
+    printf("=============================================================================\n");
+    printf("FortressOS Doom Desktop, Input & Verification Suite (Stages 0, 1, 2, and 3)\n");
+    printf("=============================================================================\n");
 
     test_pinned_identities();
     test_desktop_protocol_abi();
     test_desktop_scaling_and_presentation();
     test_desktop_input_and_close();
+    test_stage3_keyboard_mappings();
+    test_stage3_azerty_and_us_parity();
+    test_stage3_simultaneous_keys();
+    test_stage3_focus_loss_and_stuck_key_prevention();
 
     const char *freedm_wad = "/tmp/doom-eval/freedm-0.13.0/freedm.wad";
     const char *freedoom1_wad = "/tmp/doom-eval/freedoom-0.13.0/freedoom1.wad";
@@ -435,6 +780,6 @@ int main(int argc, char **argv) {
     test_missing_wad_graceful_exit();
     test_corrupted_wad_handling();
 
-    printf("\n>>> ALL STAGE 0, 1 & 2 DOOM TESTS PASSED <<<\n");
+    printf("\n>>> ALL STAGE 0, 1, 2 & 3 DOOM TESTS PASSED <<<\n");
     return 0;
 }

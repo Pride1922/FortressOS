@@ -26,6 +26,7 @@
 #define DESKTOP_EV_KEY       102u
 #define DESKTOP_EV_CLOSE     103u /* window closed: save and exit */
 #define DESKTOP_EV_CLICK     104u /* a,b = x,y in content pixels (left press) */
+#define DESKTOP_EV_FOCUS     105u /* a = 1 (focused), 0 (unfocused) */
 
 #define DESKTOP_KEY_RELEASE  0u
 #define DESKTOP_KEY_PRESS    1u

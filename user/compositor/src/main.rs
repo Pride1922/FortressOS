@@ -675,6 +675,8 @@ fn dispatch_key_event(
     is_test: bool,
 ) -> bool {
     if windows.intercept_key(ev, scene) {
+        let focused_id = windows.focused_window_id();
+        clients.sync_focus(focused_id, windows, scene);
         if let Some(act) = windows.take_pending_action() {
             match act {
                 window::Action::SpawnTerminal => open_terminal(clients, scene),

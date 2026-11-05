@@ -31,6 +31,7 @@ pub const EV_CONFIGURE: u32 = 101; // a,b = content width/height, c = stride (pi
 pub const EV_KEY: u32 = 102;
 pub const EV_CLOSE: u32 = 103; // window closed: save state and exit
 pub const EV_CLICK: u32 = 104; // a,b = x,y in content pixels (left button press)
+pub const EV_FOCUS: u32 = 105; // a = 1 (focused), 0 (unfocused)
 
 // Key event state values (mirrors src/include/input_event.h).
 pub const KEY_STATE_RELEASE: u8 = 0;

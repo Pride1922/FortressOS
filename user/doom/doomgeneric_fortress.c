@@ -1,6 +1,12 @@
 /* FortressOS desktop and doomgeneric platform adapter
- * Implements Stage 1 & Stage 2: SHM desktop window client, presentation,
- * integer scaling, letterbox clipping, non-blocking event polling, and lifecycle.
+ * Implements Stage 1, Stage 2 & Stage 3:
+ * - SHM desktop window client with bounded damage presentation
+ * - Integer scaling and aspect-ratio letterboxing
+ * - Comprehensive keyboard input translation (arrows, fire, use, run, strafe, menu)
+ * - Symmetric press/release tracking across US and AZERTY keyboard layouts
+ * - Focus management (EV_FOCUS and synthesized releases upon focus loss)
+ * - Monotonic 35 Hz cadence and idle background sleep
+ * - Clean lifecycle teardown and resource release
  */
 
 #include "doom_runtime.h"
@@ -49,10 +55,12 @@ typedef struct {
     uint32_t win_stride;
     uint32_t scale;
     bool is_desktop;
+    bool has_focus;
 } fortress_desktop_stats_t;
 
 /* State variables */
 static bool s_is_desktop = false;
+static bool s_has_focus = true;
 static uint32_t *s_shm_pixels = NULL;
 static uint64_t s_shm_size = 0;
 static uint32_t s_win_width = 0;
@@ -71,6 +79,10 @@ static uint64_t s_start_time_ms = 0;
 static doom_key_ev_t s_key_queue[KEY_QUEUE_CAP];
 static unsigned s_key_head = 0;
 static unsigned s_key_tail = 0;
+
+/* Bounded held-key tracking (256 keycodes) */
+static unsigned char s_active_doom_key[256];
+static bool s_doom_key_down[256];
 
 #ifdef DOOM_HOST_TEST
 static int s_mock_req_fd = -1;
@@ -163,28 +175,110 @@ static bool desktop_receive_blocking(desktop_msg_t *out) {
     return true;
 }
 
-/* Key translation helper */
+/* Comprehensive physical & layout-aware key translation */
 static unsigned char translate_keycode(uint32_t keycode, uint32_t ascii) {
+    /* Layout-specific printable ASCII takes precedence (ensures US and AZERTY parity) */
+    if (ascii >= 'a' && ascii <= 'z') return (unsigned char)ascii;
+    if (ascii >= 'A' && ascii <= 'Z') return (unsigned char)(ascii + ('a' - 'A'));
+    if (ascii >= '0' && ascii <= '9') return (unsigned char)ascii;
+
+    /* Linux physical keycode mapping */
     switch (keycode) {
+    /* Movement & Directional */
     case 103: return KEY_UPARROW;
     case 108: return KEY_DOWNARROW;
     case 105: return KEY_LEFTARROW;
     case 106: return KEY_RIGHTARROW;
+
+    /* Keypad directional */
+    case 72:  return KEY_UPARROW;   /* KP 8 */
+    case 80:  return KEY_DOWNARROW; /* KP 2 */
+    case 75:  return KEY_LEFTARROW; /* KP 4 */
+    case 77:  return KEY_RIGHTARROW;/* KP 6 */
+
+    /* Core Actions */
+    case 29:  /* Left Ctrl */
+    case 97:  /* Right Ctrl */
+        return KEY_FIRE;
+    case 57:  /* Space */
+        return KEY_USE;
+    case 42:  /* Left Shift */
+    case 54:  /* Right Shift */
+        return KEY_RSHIFT;
+    case 56:  /* Left Alt */
+    case 100: /* Right Alt */
+        return KEY_RALT;
+    case 51:  /* Comma */
+        return KEY_STRAFE_L;
+    case 52:  /* Dot */
+        return KEY_STRAFE_R;
+
+    /* System & Navigation */
     case 1:   return KEY_ESCAPE;
-    case 28:  return KEY_ENTER;
-    case 57:  return ' ';
+    case 28:  /* Enter */
+    case 96:  /* Keypad Enter */
+        return KEY_ENTER;
     case 15:  return KEY_TAB;
     case 14:  return KEY_BACKSPACE;
-    case 29:
-    case 97:  return KEY_RCTRL;
-    case 42:
-    case 54:  return KEY_RSHIFT;
-    case 56:
-    case 100: return KEY_RALT;
+    case 119: return KEY_PAUSE;
+    case 12:  return KEY_MINUS;
+    case 13:  return KEY_EQUALS;
+
+    /* Function Keys */
+    case 59: return KEY_F1;
+    case 60: return KEY_F2;
+    case 61: return KEY_F3;
+    case 62: return KEY_F4;
+    case 63: return KEY_F5;
+    case 64: return KEY_F6;
+    case 65: return KEY_F7;
+    case 66: return KEY_F8;
+    case 67: return KEY_F9;
+    case 68: return KEY_F10;
+    case 87: return KEY_F11;
+    case 88: return KEY_F12;
+
+    /* Weapon Numbers */
+    case 2:  return '1';
+    case 3:  return '2';
+    case 4:  return '3';
+    case 5:  return '4';
+    case 6:  return '5';
+    case 7:  return '6';
+    case 8:  return '7';
+    case 9:  return '8';
+    case 10: return '9';
+    case 11: return '0';
+
+    /* Physical letters fallback when ascii == 0 (e.g. key release) */
+    case 16: return 'q';
+    case 17: return 'w';
+    case 18: return 'e';
+    case 19: return 'r';
+    case 20: return 't';
+    case 21: return 'y';
+    case 22: return 'u';
+    case 23: return 'i';
+    case 24: return 'o';
+    case 25: return 'p';
+    case 30: return 'a';
+    case 31: return 's';
+    case 32: return 'd';
+    case 33: return 'f';
+    case 34: return 'g';
+    case 35: return 'h';
+    case 36: return 'j';
+    case 37: return 'k';
+    case 38: return 'l';
+    case 44: return 'z';
+    case 45: return 'x';
+    case 46: return 'c';
+    case 47: return 'v';
+    case 48: return 'b';
+    case 49: return 'n';
+    case 50: return 'm';
+
     default:
-        if (ascii >= 'a' && ascii <= 'z') return (unsigned char)ascii;
-        if (ascii >= 'A' && ascii <= 'Z') return (unsigned char)(ascii + ('a' - 'A'));
-        if (ascii >= '0' && ascii <= '9') return (unsigned char)ascii;
         if (ascii != 0 && ascii < 128) return (unsigned char)ascii;
         return 0;
     }
@@ -232,9 +326,44 @@ static void handle_desktop_event(const desktop_msg_t *msg) {
         s_shutdown_requested = true;
         break;
     case DESKTOP_EV_KEY: {
-        int pressed = (msg->d != DESKTOP_KEY_RELEASE) ? 1 : 0;
-        unsigned char k = translate_keycode(msg->b, msg->a);
-        enqueue_key(pressed, k);
+        int state = msg->d;
+        uint32_t kc = msg->b;
+        if (state == DESKTOP_KEY_PRESS) {
+            unsigned char k = translate_keycode(kc, msg->a);
+            if (k != 0) {
+                if (kc < 256) s_active_doom_key[kc] = k;
+                s_doom_key_down[k] = true;
+                enqueue_key(1, k);
+            }
+        } else if (state == DESKTOP_KEY_RELEASE) {
+            unsigned char k = 0;
+            if (kc < 256 && s_active_doom_key[kc] != 0) {
+                k = s_active_doom_key[kc];
+                s_active_doom_key[kc] = 0;
+            } else {
+                k = translate_keycode(kc, msg->a);
+            }
+            if (k != 0) {
+                s_doom_key_down[k] = false;
+                enqueue_key(0, k);
+            }
+        }
+        break;
+    }
+    case DESKTOP_EV_FOCUS: {
+        if (msg->a == 1) {
+            s_has_focus = true;
+        } else if (msg->a == 0) {
+            s_has_focus = false;
+            /* Focus lost: release all active held keys immediately */
+            for (int k = 0; k < 256; k++) {
+                if (s_doom_key_down[k]) {
+                    s_doom_key_down[k] = false;
+                    enqueue_key(0, (unsigned char)k);
+                }
+            }
+            memset(s_active_doom_key, 0, sizeof(s_active_doom_key));
+        }
         break;
     }
     default:
@@ -316,6 +445,7 @@ bool fortress_desktop_init(void) {
 #ifdef DOOM_HOST_TEST
     if (s_mock_req_fd >= 0) {
         s_is_desktop = true;
+        s_has_focus = true;
         return true;
     }
 #endif
@@ -342,6 +472,7 @@ bool fortress_desktop_init(void) {
     s_shm_pixels = (uint32_t *)(uintptr_t)PIXELS_VA;
     s_shm_size = st.file_size;
     s_is_desktop = true;
+    s_has_focus = true;
 
     /* Request window creation */
     if (!desktop_send(DESKTOP_REQ_CREATE, DOOM_OUTER_W, DOOM_OUTER_H, 0, 0, "Doom")) {
@@ -372,6 +503,9 @@ void DG_Init(void) {
     s_frame_count = 0;
     s_damage_count = 0;
     s_damaged_pixels = 0;
+    memset(s_active_doom_key, 0, sizeof(s_active_doom_key));
+    memset(s_doom_key_down, 0, sizeof(s_doom_key_down));
+    s_has_focus = true;
     I_AtExit(fortress_desktop_teardown, false);
     printf("[FortressOS Doom] DG_Init: ScreenBuffer=%p, Res=%dx%d\n",
            DG_ScreenBuffer, DOOMGENERIC_RESX, DOOMGENERIC_RESY);
@@ -503,6 +637,14 @@ uint32_t fortress_doom_get_last_pixel(void) {
     return s_last_pixel;
 }
 
+bool fortress_doom_has_focus(void) {
+    return s_has_focus;
+}
+
+bool fortress_doom_is_key_down(unsigned char key) {
+    return s_doom_key_down[key];
+}
+
 void fortress_desktop_get_stats(fortress_desktop_stats_t *out) {
     if (!out) return;
     out->frame_count = s_frame_count;
@@ -513,6 +655,7 @@ void fortress_desktop_get_stats(fortress_desktop_stats_t *out) {
     out->win_stride = s_win_stride;
     out->scale = s_current_scale;
     out->is_desktop = s_is_desktop;
+    out->has_focus = s_has_focus;
 }
 
 void fortress_desktop_set_target_frames(int frames) {
@@ -527,11 +670,15 @@ void fortress_desktop_set_mock(int req_fd, int ev_fd, uint32_t *pixels, uint64_t
     s_shm_size = size;
     s_win_stride = stride;
     s_is_desktop = (req_fd >= 0 && ev_fd >= 0 && pixels != NULL);
+    s_has_focus = true;
     s_shutdown_requested = false;
+    memset(s_active_doom_key, 0, sizeof(s_active_doom_key));
+    memset(s_doom_key_down, 0, sizeof(s_doom_key_down));
 }
 
 void fortress_desktop_reset(void) {
     s_is_desktop = false;
+    s_has_focus = true;
     s_shm_pixels = NULL;
     s_shm_size = 0;
     s_win_width = 0;
@@ -547,6 +694,8 @@ void fortress_desktop_reset(void) {
     s_key_tail = 0;
     s_mock_req_fd = -1;
     s_mock_ev_fd = -1;
+    memset(s_active_doom_key, 0, sizeof(s_active_doom_key));
+    memset(s_doom_key_down, 0, sizeof(s_doom_key_down));
 }
 #endif
 
@@ -572,6 +721,9 @@ int doom_main(int argc, char **argv) {
         fortress_desktop_poll_events();
         if (s_shutdown_requested) break;
         doomgeneric_Tick();
+        if (!s_has_focus) {
+            DG_SleepMs(10); /* Relax CPU consumption when in background */
+        }
     }
 
     printf("[FortressOS Doom] Main loop finished (frames=%llu, damage_msgs=%llu).\n",

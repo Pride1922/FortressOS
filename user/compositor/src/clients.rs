@@ -66,6 +66,9 @@ struct Client {
     rx_len: usize,
     open: proto::OpenRequest,
     last_open_ns: Option<u64>,
+    held_keys: [u16; 16],
+    held_count: usize,
+    last_focused: bool,
 }
 
 /// A process whose window is gone, waiting to exit (or to be killed).
@@ -192,6 +195,9 @@ impl Clients {
             rx_len: 0,
             open: proto::OpenRequest::default(),
             last_open_ns: None,
+            held_keys: [0; 16],
+            held_count: 0,
+            last_focused: false,
         });
         Ok(pid)
     }
@@ -424,10 +430,66 @@ impl Clients {
         let Some(slot) = self.slot_of(window_id) else {
             return false;
         };
+        let client = self.slots[slot].as_mut().unwrap();
+        if event.state == proto::KEY_STATE_PRESS {
+            if !client.held_keys[..client.held_count].contains(&event.keycode) {
+                if client.held_count < client.held_keys.len() {
+                    client.held_keys[client.held_count] = event.keycode;
+                    client.held_count += 1;
+                }
+            }
+        } else if event.state == proto::KEY_STATE_RELEASE {
+            if let Some(pos) = client.held_keys[..client.held_count]
+                .iter()
+                .position(|&k| k == event.keycode)
+            {
+                client.held_count -= 1;
+                client.held_keys[pos] = client.held_keys[client.held_count];
+                client.held_keys[client.held_count] = 0;
+            }
+        }
         if !self.send(slot, &event.to_msg()) {
             self.drop_client(slot, windows, scene);
         }
         true
+    }
+
+    /// Synchronizes focus state across all clients, notifying them of focus gain/loss
+    /// and synthesizing key release events for any held keys when focus leaves a client.
+    pub fn sync_focus(
+        &mut self,
+        focused_window_id: Option<u32>,
+        windows: &mut WindowManager,
+        scene: &mut Surface,
+    ) {
+        for slot in 0..MAX_CLIENTS {
+            let (is_client, window_id, last_focused, held_count, held_keys) = match self.slots[slot].as_ref() {
+                Some(c) if c.created => (true, c.window_id, c.last_focused, c.held_count, c.held_keys),
+                _ => (false, 0, false, 0, [0; 16]),
+            };
+            if !is_client { continue; }
+            let is_focused = Some(window_id) == focused_window_id;
+            if last_focused != is_focused {
+                if let Some(c) = self.slots[slot].as_mut() {
+                    c.last_focused = is_focused;
+                }
+                let msg = Msg::new(proto::EV_FOCUS, if is_focused { 1 } else { 0 }, 0, 0, 0);
+                let _ = self.send(slot, &msg);
+            }
+            if !is_focused && held_count > 0 {
+                if let Some(c) = self.slots[slot].as_mut() {
+                    c.held_count = 0;
+                    c.held_keys.fill(0);
+                }
+                for &k in &held_keys[..held_count] {
+                    let rel_ev = proto::KeyEvent::new(k, 0, proto::KEY_STATE_RELEASE, 0);
+                    if !self.send(slot, &rel_ev.to_msg()) {
+                        self.drop_client(slot, windows, scene);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// A left-button press in an app window's content area.
@@ -509,6 +571,8 @@ impl Clients {
     /// Once per loop: end apps whose window was closed with [X], reap exited
     /// processes, and SIGKILL any that ignore EV_CLOSE past the grace period.
     pub fn maintain(&mut self, windows: &mut WindowManager, scene: &mut Surface) {
+        let focused_id = windows.focused_window_id();
+        self.sync_focus(focused_id, windows, scene);
         for slot in 0..MAX_CLIENTS {
             let gone = self.slots[slot]
                 .as_ref()
@@ -695,10 +759,65 @@ mod restart_tests {
         assert!(clients.restart_ready());
         clients.slots[0]=Some(Client{window_id:100,app_id:None,pid:42,requests:-1,events:-1,pixels:0,
             stride:0,rows:0,created:false,rx:[0;MSG_SIZE],rx_len:0,
-            open:proto::OpenRequest::default(),last_open_ns:None});
+            open:proto::OpenRequest::default(),last_open_ns:None,
+            held_keys:[0; 16],held_count:0,last_focused:false});
         assert!(!clients.restart_ready());
         clients.slots[0]=None;
         clients.exiting[0]=Some(Exiting{pid:42,since:0,killed:false});
         assert!(!clients.restart_ready());
+    }
+
+    #[test]
+    fn focus_loss_synthesizes_held_key_releases() {
+        let mut clients = Clients::default();
+        let (mut req, mut ev) = ([-1i32; 2], [-1i32; 2]);
+        assert_eq!(sys::pipe(&mut req, 0), 0);
+        assert_eq!(sys::pipe(&mut ev, 0), 0);
+        clients.slots[0] = Some(Client {
+            window_id: 100,
+            app_id: None,
+            pid: 42,
+            requests: req[0],
+            events: ev[1],
+            pixels: 0,
+            stride: 0,
+            rows: 0,
+            created: true,
+            rx: [0; MSG_SIZE],
+            rx_len: 0,
+            open: proto::OpenRequest::default(),
+            last_open_ns: None,
+            held_keys: [103, 29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            held_count: 2,
+            last_focused: true,
+        });
+
+        let mut windows = WindowManager::desktop();
+        let mut scene = Surface::new(800, 600).unwrap();
+
+        clients.sync_focus(Some(101), &mut windows, &mut scene);
+
+        let mut buf = [0u8; MSG_SIZE * 3];
+        let n = sys::read(ev[0], &mut buf);
+        assert!(n >= (MSG_SIZE * 3) as isize);
+
+        let msg0 = Msg::from_bytes(buf[0..MSG_SIZE].try_into().unwrap());
+        assert_eq!(msg0.kind, proto::EV_FOCUS);
+        assert_eq!(msg0.a, 0);
+
+        let msg1 = Msg::from_bytes(buf[MSG_SIZE..MSG_SIZE * 2].try_into().unwrap());
+        assert_eq!(msg1.kind, proto::EV_KEY);
+        assert_eq!(msg1.b, 103);
+        assert_eq!(msg1.d, proto::KEY_STATE_RELEASE as u32);
+
+        let msg2 = Msg::from_bytes(buf[MSG_SIZE * 2..MSG_SIZE * 3].try_into().unwrap());
+        assert_eq!(msg2.kind, proto::EV_KEY);
+        assert_eq!(msg2.b, 29);
+        assert_eq!(msg2.d, proto::KEY_STATE_RELEASE as u32);
+
+        assert_eq!(clients.slots[0].as_ref().unwrap().held_count, 0);
+
+        sys::close(req[0]); sys::close(req[1]);
+        sys::close(ev[0]); sys::close(ev[1]);
     }
 }

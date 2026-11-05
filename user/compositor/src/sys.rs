@@ -752,8 +752,16 @@ pub fn read_exact(fd: i32, buffer: &mut [u8]) -> bool {
     true
 }
 
+#[cfg(not(test))]
 pub fn pipe(fds: &mut [i32; 2], flags: i32) -> isize {
     unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, flags as usize) }
+}
+#[cfg(test)]
+pub fn pipe(fds: &mut [i32; 2], flags: i32) -> isize {
+    unsafe extern "C" {
+        fn pipe2(fds: *mut i32, flags: i32) -> i32;
+    }
+    unsafe { pipe2(fds.as_mut_ptr(), flags) as isize }
 }
 
 /// (real, effective, saved) user or group ids.
@@ -1092,8 +1100,17 @@ pub fn write(fd: i32, buf: &[u8]) -> isize {
     unsafe { syscall3(SYS_WRITE, fd as usize, buf.as_ptr() as usize, buf.len()) }
 }
 
+#[cfg(not(test))]
 pub fn read(fd: i32, buf: &mut [u8]) -> isize {
     unsafe { syscall3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len()) }
+}
+#[cfg(test)]
+pub fn read(fd: i32, buf: &mut [u8]) -> isize {
+    #[allow(suspicious_runtime_symbol_definitions)]
+    unsafe extern "C" {
+        fn read(fd: i32, buf: *mut core::ffi::c_void, count: usize) -> isize;
+    }
+    unsafe { read(fd, buf.as_mut_ptr() as *mut _, buf.len()) }
 }
 
 pub fn open(path: &str, flags: i32) -> isize {
@@ -1110,6 +1127,7 @@ pub fn close(fd: i32) -> isize {
     unsafe { syscall1(SYS_CLOSE, fd as usize) }
 }
 
+#[cfg(not(test))]
 pub fn poll(fds: &mut [PollFd], timeout_ms: i64) -> isize {
     unsafe {
         syscall3(
@@ -1119,6 +1137,13 @@ pub fn poll(fds: &mut [PollFd], timeout_ms: i64) -> isize {
             timeout_ms as usize,
         )
     }
+}
+#[cfg(test)]
+pub fn poll(fds: &mut [PollFd], timeout_ms: i64) -> isize {
+    unsafe extern "C" {
+        fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32;
+    }
+    unsafe { poll(fds.as_mut_ptr(), fds.len(), timeout_ms as i32) as isize }
 }
 
 pub fn clock_gettime(clk_id: u32, ts: &mut Timespec) -> isize {
