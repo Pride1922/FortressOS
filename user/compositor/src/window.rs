@@ -1352,6 +1352,7 @@ pub struct WindowManager {
     pub locked: bool,
     pub lock_password: TextField<64>,
     pub lock_error: bool,
+    pub modifiers: u16,
 }
 
 impl WindowManager {
@@ -1413,6 +1414,7 @@ impl WindowManager {
             locked: false,
             lock_password: TextField::new(),
             lock_error: false,
+            modifiers: 0,
         })
     }
 
@@ -1438,6 +1440,7 @@ impl WindowManager {
             locked: false,
             lock_password: TextField::new(),
             lock_error: false,
+            modifiers: 0,
         }
     }
 
@@ -1911,6 +1914,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
     /// sees them: SAK (`Ctrl + Alt + Esc`), `Alt + Tab` window switching, and
     /// the `Super` key Start Menu toggle. Returns true if consumed.
     pub fn intercept_key(&mut self, ev: crate::proto::KeyEvent, s: &mut Surface) -> bool {
+        self.modifiers = ev.modifiers;
         // When screen is locked, intercept ALL keys
         if self.locked {
             if ev.state == crate::proto::KEY_STATE_RELEASE {
@@ -2409,12 +2413,33 @@ pub fn verify_unlock_password(pass: &str) -> bool {
             // Floating macOS Dock interaction
             if dock_r.contains(x, y) {
                 let item_idx = (x - dock_r.x) / (64 * theme::scale(s.height));
-                match item_idx {
-                    0 => ret_action = Action::SpawnFileManager,
-                    1 => ret_action = Action::SpawnTerminal,
-                    2 => ret_action = Action::SpawnNotepad,
-                    3 => self.ensure_window_1(s),
-                    _ => {}
+                let target_app = match item_idx {
+                    0 => Some(AppId::Files),
+                    1 => Some(AppId::Terminal),
+                    2 => Some(AppId::Notepad),
+                    3 => Some(AppId::SysInfo),
+                    _ => None,
+                };
+                let shift_held = (self.modifiers & crate::proto::MOD_SHIFT) != 0;
+                if let Some(app) = target_app {
+                    if app == AppId::SysInfo {
+                        self.ensure_window_1(s);
+                    } else if shift_held || !self.app_is_running(app) {
+                        match app {
+                            AppId::Files => ret_action = Action::SpawnFileManager,
+                            AppId::Terminal => ret_action = Action::SpawnTerminal,
+                            AppId::Notepad => ret_action = Action::SpawnNotepad,
+                            _ => {}
+                        }
+                    } else if self.app_is_focused(app) {
+                        // If multiple windows exist, cycle through them
+                        if self.app_window_count(app) > 1 {
+                            self.cycle_app_windows(app, s);
+                        }
+                    } else {
+                        // Running in background or minimized: focus and restore frontmost window
+                        self.focus_app(app, s);
+                    }
                 }
                 Self::dock_damage(s);
                 self.buttons = buttons;
@@ -3076,7 +3101,15 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                         let in_item_x = px % 64;
 
                         let pixel = if item_idx < 4 {
-                            let is_running = match item_idx {
+                            let target_app = match item_idx {
+                                0 => AppId::Files,
+                                1 => AppId::Terminal,
+                                2 => AppId::Notepad,
+                                3 => AppId::SysInfo,
+                                _ => AppId::Files,
+                            };
+                            let win_count = self.app_window_count(target_app);
+                            let is_running = win_count > 0 || match item_idx {
                                 0 => has_win5,
                                 1 => has_win3,
                                 2 => has_win4,
@@ -3084,8 +3117,8 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                 _ => false,
                             };
 
-                            let app_id = [5, 3, 4, if self.demo_mode { 1 } else { 6 }][item_idx];
-                            let focused = self.focused_window_id() == Some(app_id);
+                            let legacy_id = [5, 3, 4, if self.demo_mode { 1 } else { 6 }][item_idx];
+                            let focused = self.app_is_focused(target_app) || self.focused_window_id() == Some(legacy_id);
                             let is_hovered = self.dock_hover == Some(item_idx);
                             let is_neighbor = self
                                 .dock_hover
@@ -3136,9 +3169,14 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                     slot_bg,
                                 )
                             } else if is_running && (52..=54).contains(&py) {
-                                // Running App Accent Pill (16px active, 8px background)
+                                // Running App Accent Indicator:
+                                // - Active focused app: 16px pill (24..=39) in theme::ACCENT
+                                // - Background app with multiple windows: dual dots (26..=29 and 34..=37)
+                                // - Background app with single window: single centered dot (28..=35)
                                 let in_pill = if focused {
                                     (24..=39).contains(&in_item_x)
+                                } else if win_count > 1 {
+                                    (26..=29).contains(&in_item_x) || (34..=37).contains(&in_item_x)
                                 } else {
                                     (28..=35).contains(&in_item_x)
                                 };

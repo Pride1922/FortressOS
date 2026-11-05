@@ -3662,3 +3662,58 @@ fn app_registry_manifests_and_window_lifecycle() {
     assert_eq!(wm.app_window_count(AppId::Terminal), 2);
     assert_eq!(window::window_icon_kind(&wm.windows.iter().find(|w| w.id == 101).unwrap()), 1);
 }
+
+#[test]
+fn dock_smart_click_focus_restore_and_cycle() {
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::demo().unwrap();
+    let dock_r = WindowManager::dock_rect(1280, 800);
+    let click_y = dock_r.y + 20;
+
+    // 1. Files is not running initially: left click triggers SpawnFileManager
+    let act = wm.mouse(dock_r.x + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 20, click_y, 0, &mut s);
+    assert_eq!(act, window::Action::SpawnFileManager);
+
+    // 2. Open a window for Files (id 105) and minimize it
+    let r1 = surface::Rect { x: 100, y: 100, w: 400, h: 300 };
+    let mut w1 = window::Window::new(105, "Files: /home/fabio", r1).unwrap()
+        .with_app_id(window::AppId::Files);
+    w1.is_minimized = true;
+    wm.windows.push(w1);
+
+    // Clicking dock item 0 should restore and focus the minimized Files window without spawning a duplicate!
+    let act = wm.mouse(dock_r.x + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 20, click_y, 0, &mut s);
+    assert_eq!(act, window::Action::None);
+    assert!(!wm.windows.iter().find(|w| w.id == 105).unwrap().is_minimized);
+    assert!(wm.app_is_focused(window::AppId::Files));
+
+    // 3. Add a second Files window (id 106)
+    let r2 = surface::Rect { x: 140, y: 140, w: 400, h: 300 };
+    let w2 = window::Window::new(106, "Files: /tmp", r2).unwrap()
+        .with_app_id(window::AppId::Files);
+    wm.windows.push(w2);
+    wm.raise(106, &mut s);
+    assert_eq!(wm.app_window_count(window::AppId::Files), 2);
+    assert_eq!(wm.windows.last().unwrap().id, 106);
+
+    // Clicking dock item 0 when window 106 is already focused should cycle to window 105!
+    let act = wm.mouse(dock_r.x + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 20, click_y, 0, &mut s);
+    assert_eq!(act, window::Action::None);
+    assert_eq!(wm.windows.last().unwrap().id, 105);
+
+    // Clicking again should cycle back to window 106!
+    let act = wm.mouse(dock_r.x + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 20, click_y, 0, &mut s);
+    assert_eq!(act, window::Action::None);
+    assert_eq!(wm.windows.last().unwrap().id, 106);
+
+    // 4. Shift+Clicking dock item 0 should launch a new window explicitly
+    wm.modifiers = crate::proto::MOD_SHIFT;
+    let act = wm.mouse(dock_r.x + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 20, click_y, 0, &mut s);
+    assert_eq!(act, window::Action::SpawnFileManager);
+    wm.modifiers = 0;
+}
