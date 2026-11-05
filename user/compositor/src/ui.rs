@@ -44,11 +44,11 @@ impl<'a> Canvas<'a> {
             result.window.content.fill(theme::PANEL);
             if registered(result.window.id) {
                 let width = result.window.rect.w - 2;
-                let sidebar_w = (180 * scale).min(width);
+                let sidebar_w = (theme::WIDTH_SIDEBAR * scale).min(width);
                 let height = result.window.rect.h - 26;
                 for y in 0..height {
                     for x in 0..sidebar_w {
-                        result.window.content[y * width + x] = 0xff111620;
+                        result.window.content[y * width + x] = theme::BG_SIDEBAR;
                     }
                 }
             }
@@ -494,17 +494,17 @@ impl<'a> Canvas<'a> {
         self.box_text_centered(r, text, 0xffffffff, theme::ACCENT, true, focused);
     }
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
-        let outer_bg = 0xff111620;
-        let bg = if selected { 0xff1e293b } else { outer_bg };
+        let outer_bg = theme::BG_SIDEBAR;
+        let bg = if selected { theme::BG_NAV_ROW } else { outer_bg };
         let border = if focused {
             theme::ACCENT
         } else if selected {
-            0xff334155
+            theme::BG_NAV_SELECTED
         } else {
             outer_bg
         };
-        let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
-        let icon_col = if selected { 0xff38bdf8 } else { 0xff64748b };
+        let fg = if selected { theme::TEXT_PRIMARY } else { theme::TEXT_NAV_UNSELECTED };
+        let icon_col = if selected { theme::BORDER_ACCENT_LIGHT } else { theme::TEXT_SLATE };
         let nav_kind = if text.starts_with("Personal") {
             0u8
         } else if text.starts_with("Network") {
@@ -528,9 +528,9 @@ impl<'a> Canvas<'a> {
         let ic_x = 12isize;
         let ic_y = (r.h / 2) as isize;
         let top_hi = if focused {
-            0xff60a5fa
+            theme::TOP_HIGHLIGHT_NAV_FOCUSED
         } else if selected {
-            0xff475973
+            theme::TOP_HIGHLIGHT_NAV
         } else {
             0
         };

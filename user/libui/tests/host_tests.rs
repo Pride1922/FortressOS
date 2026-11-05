@@ -115,3 +115,20 @@ fn test_clip_damage() {
     let clipped = clip_damage(&m, 60, 40);
     assert_eq!(clipped, Some((5, 10, 55, 30)));
 }
+
+#[test]
+fn test_theme_tokens() {
+    use libui::theme::*;
+    assert_eq!(BG_APP, PANEL);
+    assert_eq!(BG_SURFACE, SURFACE);
+    assert_eq!(BORDER_CARD, BORDER);
+    assert_eq!(TEXT_PRIMARY, WHITE);
+    assert_eq!(TEXT_BODY, TEXT);
+    assert_eq!(BORDER_FOCUS, ACCENT);
+    assert_eq!(RADIUS_CARD, 8);
+    assert_eq!(RADIUS_BUTTON, 6);
+    assert_eq!(WIDTH_SIDEBAR, 180);
+    assert_eq!(BG_SIDEBAR, 0xff111620);
+    assert_eq!(BORDER_DIVIDER, 0xff263040);
+    assert_eq!(BORDER_SUBTLE, 0xff2c313c);
+}

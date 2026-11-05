@@ -4,9 +4,7 @@ pub use libui::font::{text_pixel, text_pixel_bold, text_width};
 #[allow(unused_imports)]
 pub use libui::gfx::{blend_coverage, rounded_coverage};
 #[allow(unused_imports)]
-pub use libui::theme::{
-    ACCENT, ACCENT_BLUE, AMBER, BORDER, MUTED, PANEL, RED, SUBTEXT, SURFACE, TEXT, YELLOW,
-};
+pub use libui::theme::*;
 
 #[allow(dead_code)]
 static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);

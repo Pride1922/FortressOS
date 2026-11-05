@@ -1442,20 +1442,20 @@ impl AppHost {
     }
     fn draw_sidebar(&self, index: usize, c: &mut Canvas) {
         let h = c.height();
-        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, 0xff263040);
+        c.fill_rect(Rect { x: theme::WIDTH_SIDEBAR, y: 0, w: 1, h }, theme::BORDER_DIVIDER);
 
         c.badge_on(
             Rect { x: 14, y: 11, w: 30, h: 30 },
             self.user.initial.as_str(),
-            0xffffffff,
-            0xff1e385b,
+            theme::TEXT_PRIMARY,
+            theme::BG_BADGE_INFO,
             theme::ACCENT,
-            0xff111620,
+            theme::BG_SIDEBAR,
         );
-        c.label_bold(52, 9, 120, 18, self.user.name.as_str(), 0xffffffff, 0xff111620);
-        c.label_h(52, 26, 120, 18, self.user.role.as_str(), theme::SUBTEXT, 0xff111620);
+        c.label_bold(52, 9, 120, 18, self.user.name.as_str(), theme::TEXT_PRIMARY, theme::BG_SIDEBAR);
+        c.label_h(52, 26, 120, 18, self.user.role.as_str(), theme::SUBTEXT, theme::BG_SIDEBAR);
 
-        c.fill_rect(Rect { x: 14, y: 48, w: 152, h: 1 }, 0xff222d3d);
+        c.fill_rect(Rect { x: 14, y: 48, w: 152, h: 1 }, theme::BORDER_PROFILE_DIVIDER);
 
         let nav_items = [
             "Personalization",
@@ -1473,8 +1473,8 @@ impl AppHost {
         }
 
         if h >= 400 {
-            c.fill_rect(Rect { x: 14, y: h.saturating_sub(36), w: 152, h: 1 }, 0xff1c2533);
-            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", 0xff64748b, 0xff111620);
+            c.fill_rect(Rect { x: 14, y: h.saturating_sub(36), w: 152, h: 1 }, theme::BORDER_DIVIDER_DARK);
+            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", theme::TEXT_SLATE, theme::BG_SIDEBAR);
         }
     }
     fn draw(&self, index: usize, c: &mut Canvas) {
@@ -1487,7 +1487,7 @@ impl AppHost {
                 c.label_h(196, 12, 520, 18, "Personalization", theme::TEXT, theme::PANEL);
                 c.label_h(196, 32, 520, 18, "Display scaling, wallpaper artwork, and clock format", theme::SUBTEXT, theme::PANEL);
 
-                c.label_bold(196, 56, 520, 18, "Interface Scale", 0xffffffff, theme::PANEL);
+                c.label_bold(196, 56, 520, 18, "Interface Scale", theme::TEXT_PRIMARY, theme::PANEL);
                 c.label_h(196, 74, 520, 18, "Scale windows and desktop elements for screen density", theme::SUBTEXT, theme::PANEL);
                 for i in 0..3 {
                     c.button(
@@ -1497,9 +1497,9 @@ impl AppHost {
                         focus == i,
                     );
                 }
-                c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, 0xff2c313c);
+                c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, theme::BORDER_SUBTLE);
 
-                c.label_bold(196, 138, 520, 18, "Desktop Background", 0xffffffff, theme::PANEL);
+                c.label_bold(196, 138, 520, 18, "Desktop Background", theme::TEXT_PRIMARY, theme::PANEL);
                 c.label_h(196, 156, 520, 18, "Choose wallpaper artwork or ambient radial glow", theme::SUBTEXT, theme::PANEL);
                 c.wallpaper_card(
                     APPEARANCE[3].rect,
@@ -1515,9 +1515,9 @@ impl AppHost {
                     !self.draft.wallpaper,
                     focus == 4,
                 );
-                c.fill_rect(Rect { x: 196, y: 214, w: 540, h: 1 }, 0xff2c313c);
+                c.fill_rect(Rect { x: 196, y: 214, w: 540, h: 1 }, theme::BORDER_SUBTLE);
 
-                c.label_bold(196, 222, 520, 18, "Taskbar Clock", 0xffffffff, theme::PANEL);
+                c.label_bold(196, 222, 520, 18, "Taskbar Clock", theme::TEXT_PRIMARY, theme::PANEL);
                 c.label_h(196, 240, 520, 18, "Choose between 24-hour and 12-hour clock format", theme::SUBTEXT, theme::PANEL);
                 c.button(
                     APPEARANCE[5].rect,
@@ -1531,7 +1531,7 @@ impl AppHost {
                     !self.draft.clock_24h,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 298, w: 540, h: 1 }, 0xff2c313c);
+                c.fill_rect(Rect { x: 196, y: 298, w: 540, h: 1 }, theme::BORDER_SUBTLE);
 
                 c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
                 c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
@@ -1543,14 +1543,14 @@ impl AppHost {
                 c.label_h(196, 12, 520, 18, "Time & Language", theme::TEXT, theme::PANEL);
                 c.label_h(196, 32, 520, 18, "System clock, time synchronization, and regional timezone", theme::SUBTEXT, theme::PANEL);
 
-                c.card(Rect { x: 196, y: 52, w: 540, h: 52 }, 0xff282828, theme::BORDER);
+                c.card(Rect { x: 196, y: 52, w: 540, h: 52 }, theme::BG_CARD, theme::BORDER);
                 c.icon_badge(
                     Rect { x: 204, y: 64, w: 32, h: 28 },
                     2,
                     theme::ACCENT,
-                    0xff1e2d40,
+                    theme::BG_BADGE_INFO,
                     theme::ACCENT,
-                    0xff282828,
+                    theme::BG_CARD,
                 );
                 if let Some(t) = self.calendar {
                     let _ = write!(
@@ -1561,31 +1561,31 @@ impl AppHost {
                 } else {
                     let _ = write!(text, "Clock awaiting RTC synchronization");
                 }
-                c.label_bold(246, 58, 360, 18, text.as_str(), 0xffffffff, 0xff282828);
+                c.label_bold(246, 58, 360, 18, text.as_str(), theme::TEXT_PRIMARY, theme::BG_CARD);
                 let (sublabel, subcolor) = if self.clock_sync_in_progress {
-                    ("Synchronizing clock via NTP...", 0xfffacc15)
+                    ("Synchronizing clock via NTP...", theme::TEXT_WARNING)
                 } else if self.clock_synced {
-                    ("Clock synchronized via NTP (pool.ntp.org)", 0xff4ade80)
+                    ("Clock synchronized via NTP (pool.ntp.org)", theme::TEXT_SUCCESS)
                 } else {
                     ("Hardware RTC clock synchronized", theme::SUBTEXT)
                 };
-                c.label_h(246, 78, 360, 18, sublabel, subcolor, 0xff282828);
+                c.label_h(246, 78, 360, 18, sublabel, subcolor, theme::BG_CARD);
                 if self.clock_sync_in_progress {
                     c.button(CLOCK[7].rect, "Syncing...", true, focus == 7);
                 } else if self.clock_synced {
                     c.badge_on(
                         CLOCK[7].rect,
                         "NTP Synced",
-                        0xff4ade80,
-                        0xff133223,
-                        0xff22c55e,
-                        0xff282828,
+                        theme::TEXT_SUCCESS,
+                        theme::BG_BADGE_SUCCESS,
+                        theme::BORDER_BADGE_SUCCESS,
+                        theme::BG_CARD,
                     );
                 } else {
                     c.button_accent(CLOCK[7].rect, "Sync Clock", focus == 7);
                 }
 
-                c.label_bold(196, 114, 520, 18, "System Timezone", 0xffffffff, theme::PANEL);
+                c.label_bold(196, 114, 520, 18, "System Timezone", theme::TEXT_PRIMARY, theme::PANEL);
                 c.label_h(196, 132, 520, 18, "Enter an installed IANA Region/City name", theme::SUBTEXT, theme::PANEL);
                 c.entry_on(CLOCK[0].rect, self.zone.as_str(), focus == 0, theme::PANEL);
                 c.button_accent(CLOCK[1].rect, "Save Timezone", focus == 1);
@@ -1593,9 +1593,9 @@ impl AppHost {
                 for (i, label) in ["UTC", "Brussels", "New York", "Tokyo"].iter().enumerate() {
                     c.button(CLOCK[i + 2].rect, label, false, focus == i + 2);
                 }
-                c.fill_rect(Rect { x: 196, y: 238, w: 540, h: 1 }, 0xff2c313c);
+                c.fill_rect(Rect { x: 196, y: 238, w: 540, h: 1 }, theme::BORDER_SUBTLE);
 
-                c.label_bold(196, 246, 520, 18, "Taskbar Clock Format", 0xffffffff, theme::PANEL);
+                c.label_bold(196, 246, 520, 18, "Taskbar Clock Format", theme::TEXT_PRIMARY, theme::PANEL);
                 c.label_h(196, 264, 520, 18, "Toggle between 12-hour and 24-hour display format", theme::SUBTEXT, theme::PANEL);
                 c.button(
                     CLOCK[6].rect,
@@ -1607,7 +1607,7 @@ impl AppHost {
                     true,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 322, w: 540, h: 1 }, 0xff2c313c);
+                c.fill_rect(Rect { x: 196, y: 322, w: 540, h: 1 }, theme::BORDER_SUBTLE);
 
                 c.label(196, 330, 520, self.messages[kind].as_str(), theme::MUTED);
             }
@@ -1619,7 +1619,7 @@ impl AppHost {
         c.label_h(196, 32, 520, 18, "Energy modes, battery charge status, and power efficiency", theme::SUBTEXT, theme::PANEL);
 
         // Power Status Hero Card (x: 196, y: 56, w: 540, h: 96)
-        c.card(Rect { x: 196, y: 56, w: 540, h: 96 }, 0xff282828, theme::BORDER);
+        c.card(Rect { x: 196, y: 56, w: 540, h: 96 }, theme::BG_CARD, theme::BORDER);
 
         if let Some(ref bat) = self.battery {
             c.battery_icon(212, 70, bat);
@@ -1633,10 +1633,10 @@ impl AppHost {
                 _ => "Unknown",
             };
             let _ = write!(text, "{}% - {}", cap, state_str);
-            c.label_bold(244, 68, 480, 18, text.as_str(), 0xffffffff, 0xff282828);
+            c.label_bold(244, 68, 480, 18, text.as_str(), theme::TEXT_PRIMARY, theme::BG_CARD);
 
             // Progress bar
-            c.fill_rect(Rect { x: 212, y: 92, w: 508, h: 6 }, 0xff334155);
+            c.fill_rect(Rect { x: 212, y: 92, w: 508, h: 6 }, theme::BG_NAV_SELECTED);
             let fill_w = ((cap as usize) * 508) / 100;
             let col = if cap < 10 { theme::RED } else if cap < 20 { theme::AMBER } else { theme::ACCENT_BLUE };
             if fill_w > 0 {
@@ -1655,24 +1655,24 @@ impl AppHost {
             if bat.temperature_c > 0 {
                 let _ = write!(sub, "   Thermal: {} C", bat.temperature_c);
             }
-            c.label_h(212, 106, 508, 18, sub.as_str(), theme::MUTED, 0xff282828);
+            c.label_h(212, 106, 508, 18, sub.as_str(), theme::MUTED, theme::BG_CARD);
         } else {
             c.icon_badge(
                 Rect { x: 204, y: 64, w: 32, h: 28 },
                 0,
                 theme::ACCENT,
-                0xff1e2d40,
+                theme::BG_BADGE_INFO,
                 theme::ACCENT,
-                0xff282828,
+                theme::BG_CARD,
             );
-            c.label_bold(246, 64, 480, 18, "No Battery Detected", 0xffffffff, 0xff282828);
-            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery detected or ACPI probe pending.", theme::MUTED, 0xff282828);
-            c.label_h(246, 106, 480, 18, "Hardware power states and thermal limits managed by ACPI.", theme::SUBTEXT, 0xff282828);
+            c.label_bold(246, 64, 480, 18, "No Battery Detected", theme::TEXT_PRIMARY, theme::BG_CARD);
+            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery detected or ACPI probe pending.", theme::MUTED, theme::BG_CARD);
+            c.label_h(246, 106, 480, 18, "Hardware power states and thermal limits managed by ACPI.", theme::SUBTEXT, theme::BG_CARD);
         }
 
         // Power Profile Section
-        c.fill_rect(Rect { x: 196, y: 168, w: 540, h: 1 }, 0xff2c313c);
-        c.label_bold(196, 178, 520, 18, "Power Profile", 0xffffffff, theme::PANEL);
+        c.fill_rect(Rect { x: 196, y: 168, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+        c.label_bold(196, 178, 520, 18, "Power Profile", theme::TEXT_PRIMARY, theme::PANEL);
         c.label_h(196, 196, 520, 18, "Balance system responsiveness and processor energy efficiency", theme::SUBTEXT, theme::PANEL);
 
         c.button(
@@ -1688,7 +1688,7 @@ impl AppHost {
             focus == 1,
         );
 
-        c.fill_rect(Rect { x: 196, y: 260, w: 540, h: 1 }, 0xff2c313c);
+        c.fill_rect(Rect { x: 196, y: 260, w: 540, h: 1 }, theme::BORDER_SUBTLE);
         c.label(196, 270, 520, self.messages[3].as_str(), theme::MUTED);
     }
     fn draw_network(&self, c: &mut Canvas, focus: usize) {
@@ -1704,70 +1704,70 @@ impl AppHost {
         };
 
         // Hero Ethernet Card container (x: 196, y: 52, w: 540, h: 76)
-        c.card(Rect { x: 196, y: 52, w: 540, h: 76 }, 0xff282828, theme::BORDER);
+        c.card(Rect { x: 196, y: 52, w: 540, h: 76 }, theme::BG_CARD, theme::BORDER);
         c.icon_badge(
             Rect { x: 204, y: 58, w: 32, h: 28 },
             0,
             theme::ACCENT,
-            0xff1e2d40,
+            theme::BG_BADGE_INFO,
             theme::ACCENT,
-            0xff282828,
+            theme::BG_CARD,
         );
 
         if let Some(n) = self.network.filter(|_| !net_is_wifi) {
             let (status_text, status_color, pill_label, pill_fg, pill_bg, pill_border) = match n.link {
-                2 => ("Connected  (Online)", 0xff4ade80, "Online", 0xff4ade80, 0xff133223, 0xff22c55e),
-                1 => ("Waiting for cable...", 0xfffacc15, "Waiting", 0xfffacc15, 0xff332b14, 0xffeab308),
-                3 => ("Link Down", 0xfff87171, "Offline", 0xfff87171, 0xff361818, 0xffef4444),
-                4 => ("Link Failed", 0xfff87171, "Failed", 0xfff87171, 0xff361818, 0xffef4444),
-                _ => ("Uninitialized", theme::SUBTEXT, "Idle", theme::SUBTEXT, 0xff1f2733, 0xff3a485c),
+                2 => ("Connected  (Online)", theme::TEXT_SUCCESS, "Online", theme::TEXT_SUCCESS, theme::BG_BADGE_SUCCESS, theme::BORDER_BADGE_SUCCESS),
+                1 => ("Waiting for cable...", theme::TEXT_WARNING, "Waiting", theme::TEXT_WARNING, theme::BG_BADGE_WARNING, theme::BORDER_BADGE_WARNING),
+                3 => ("Link Down", theme::TEXT_DANGER, "Offline", theme::TEXT_DANGER, theme::BG_BADGE_DANGER, theme::BORDER_BADGE_DANGER),
+                4 => ("Link Failed", theme::TEXT_DANGER, "Failed", theme::TEXT_DANGER, theme::BG_BADGE_DANGER, theme::BORDER_BADGE_DANGER),
+                _ => ("Uninitialized", theme::SUBTEXT, "Idle", theme::SUBTEXT, theme::BG_BADGE_MUTED, theme::BORDER_BADGE_MUTED),
             };
-            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
-            c.label_h(246, 76, 320, 18, status_text, status_color, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, theme::BG_CARD);
+            c.label_h(246, 76, 320, 18, status_text, status_color, theme::BG_CARD);
             c.badge_on(
                 Rect { x: 632, y: 58, w: 92, h: 22 },
                 pill_label,
                 pill_fg,
                 pill_bg,
                 pill_border,
-                0xff282828,
+                theme::BG_CARD,
             );
             let _ = write!(text, "IPv4: {}   Gateway: {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
-            c.label_h(206, 102, 516, 18, text.as_str(), theme::SUBTEXT, 0xff282828);
+            c.label_h(206, 102, 516, 18, text.as_str(), theme::SUBTEXT, theme::BG_CARD);
             text.clear();
         } else if net_is_wifi {
-            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
-            c.label_h(246, 76, 320, 18, "Disconnected (Cable unplugged)", theme::SUBTEXT, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, theme::BG_CARD);
+            c.label_h(246, 76, 320, 18, "Disconnected (Cable unplugged)", theme::SUBTEXT, theme::BG_CARD);
             c.badge_on(
                 Rect { x: 632, y: 58, w: 92, h: 22 },
                 "Unplugged",
-                0xff9fb0c7,
-                0xff1f2733,
-                0xff334155,
-                0xff282828,
+                theme::TEXT_NAV_UNSELECTED,
+                theme::BG_BADGE_MUTED,
+                theme::BG_NAV_SELECTED,
+                theme::BG_CARD,
             );
             if let Some(n) = self.network.filter(|n| n.ip != 0) {
                 let _ = write!(text, "Wi-Fi IPv4: {}   Gateway: {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
-                c.label_h(206, 102, 516, 18, text.as_str(), 0xff4ade80, 0xff282828);
+                c.label_h(206, 102, 516, 18, text.as_str(), theme::TEXT_SUCCESS, theme::BG_CARD);
                 text.clear();
             } else {
-                c.label_h(206, 102, 516, 18, "Active traffic routed over Wi-Fi interface (wlan0)", theme::SUBTEXT, 0xff282828);
+                c.label_h(206, 102, 516, 18, "Active traffic routed over Wi-Fi interface (wlan0)", theme::SUBTEXT, theme::BG_CARD);
             }
         } else {
-            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
-            c.label_h(246, 76, 320, 18, "Hardware unavailable", theme::SUBTEXT, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, theme::BG_CARD);
+            c.label_h(246, 76, 320, 18, "Hardware unavailable", theme::SUBTEXT, theme::BG_CARD);
             c.badge_on(
                 Rect { x: 632, y: 58, w: 92, h: 22 },
                 "Offline",
                 theme::SUBTEXT,
-                0xff1f2733,
-                0xff334155,
-                0xff282828,
+                theme::BG_BADGE_MUTED,
+                theme::BG_NAV_SELECTED,
+                theme::BG_CARD,
             );
         }
 
         // Wi-Fi Card container (x: 196, y: 136, w: 540, h: 44)
-        c.card(Rect { x: 196, y: 136, w: 540, h: 44 }, 0xff282828, theme::BORDER);
+        c.card(Rect { x: 196, y: 136, w: 540, h: 44 }, theme::BG_CARD, theme::BORDER);
         c.icon_badge(
             Rect { x: 204, y: 144, w: 32, h: 28 },
             1,
