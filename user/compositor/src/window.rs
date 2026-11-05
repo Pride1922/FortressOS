@@ -1537,6 +1537,17 @@ impl WindowManager {
         }
     }
 
+    pub fn start_menu_damage_rect(height: usize) -> Rect {
+        let r = Self::start_menu_rect(height);
+        let scale = theme::scale(height);
+        Rect {
+            x: r.x.saturating_sub(6 * scale),
+            y: r.y.saturating_sub(4 * scale),
+            w: r.w + 12 * scale,
+            h: r.h + 12 * scale,
+        }
+    }
+
     pub fn context_menu_rect(x: usize, y: usize, height: usize) -> Rect {
         let scale = theme::scale(height);
         Rect {
@@ -1930,7 +1941,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
         self.launcher_selected = 0;
         self.menu_hover = if self.start_open { Some(0) } else { None };
         s.damage(Self::start_btn_rect(s.height));
-        s.damage(Self::start_menu_rect(s.height));
+        s.damage(Self::start_menu_damage_rect(s.height));
     }
 
     #[allow(dead_code)]
@@ -2147,7 +2158,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                     self.launcher_search.clear();
                     self.menu_hover = None;
                     s.damage(Self::start_btn_rect(s.height));
-                    s.damage(Self::start_menu_rect(s.height));
+                    s.damage(Self::start_menu_damage_rect(s.height));
                 }
                 return true;
             }
@@ -2160,7 +2171,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                         self.launcher_selected - 1
                     };
                     self.menu_hover = Some(self.launcher_selected);
-                    s.damage(Self::start_menu_rect(s.height));
+                    s.damage(Self::start_menu_damage_rect(s.height));
                 }
                 return true;
             }
@@ -2168,7 +2179,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 if ev.is_press_or_repeat() && count > 0 {
                     self.launcher_selected = (self.launcher_selected + 1) % count;
                     self.menu_hover = Some(self.launcher_selected);
-                    s.damage(Self::start_menu_rect(s.height));
+                    s.damage(Self::start_menu_damage_rect(s.height));
                 }
                 return true;
             }
@@ -2189,7 +2200,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                     self.launcher_search.clear();
                     self.menu_hover = None;
                     s.damage(Self::start_btn_rect(s.height));
-                    s.damage(Self::start_menu_rect(s.height));
+                    s.damage(Self::start_menu_damage_rect(s.height));
                 }
                 return true;
             }
@@ -2198,7 +2209,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                     self.launcher_search.backspace();
                     self.launcher_selected = 0;
                     self.menu_hover = Some(0);
-                    s.damage(Self::start_menu_rect(s.height));
+                    s.damage(Self::start_menu_damage_rect(s.height));
                 }
                 return true;
             }
@@ -2208,7 +2219,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                         self.launcher_search.push(ev.ascii as char);
                         self.launcher_selected = 0;
                         self.menu_hover = Some(0);
-                        s.damage(Self::start_menu_rect(s.height));
+                        s.damage(Self::start_menu_damage_rect(s.height));
                     }
                 }
                 return true;
@@ -2310,18 +2321,19 @@ pub fn verify_unlock_password(pass: &str) -> bool {
 
     fn dock_damage(s: &mut Surface) {
         let d = Self::dock_rect(s.width, s.height);
+        let scale = theme::scale(s.height);
         s.damage(Self::tooltip_rect(s.width, s.height));
         s.damage(Rect {
-            x: d.x.saturating_sub(4),
-            y: d.y,
-            w: d.w + 8,
-            h: d.h + 8,
+            x: d.x.saturating_sub(8 * scale),
+            y: d.y.saturating_sub(8 * scale),
+            w: d.w + 16 * scale,
+            h: d.h + 16 * scale,
         });
         s.damage(Rect {
             x: 0,
-            y: s.height.saturating_sub(32),
+            y: s.height.saturating_sub(36 * scale),
             w: s.width,
-            h: 32,
+            h: 36 * scale,
         });
     }
 
@@ -2674,7 +2686,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 self.launcher_focused = false;
                 self.launcher_search.clear();
                 s.damage(start_btn);
-                s.damage(start_menu);
+                s.damage(Self::start_menu_damage_rect(s.height));
                 self.buttons = buttons;
                 return ret_action;
             }
@@ -2752,7 +2764,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 if let Some(idx) = new_menu_hover {
                     self.launcher_selected = idx;
                 }
-                s.damage(start_menu);
+                s.damage(Self::start_menu_damage_rect(s.height));
             }
         }
 

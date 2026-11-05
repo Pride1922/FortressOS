@@ -3836,3 +3836,53 @@ fn searchable_launcher_keyboard_search_and_session_controls() {
     assert!(!wm.start_open);
     assert_eq!(wm.take_pending_action(), Some(window::Action::SpawnNotepad));
 }
+
+#[test]
+fn dock_and_launcher_damage_envelopes_scaling_and_benchmark() {
+    // 1. 1080p (Scale = 1) vs 2160p (Scale = 2) Geometry
+    let menu_1080 = WindowManager::start_menu_rect(1080);
+    let dmg_1080 = WindowManager::start_menu_damage_rect(1080);
+    assert_eq!(menu_1080.w, 220);
+    assert_eq!(menu_1080.h, 224);
+    assert!(dmg_1080.contains(menu_1080.x, menu_1080.y));
+    assert!(dmg_1080.contains(menu_1080.x + menu_1080.w - 1, menu_1080.y + menu_1080.h - 1));
+    assert!(dmg_1080.w > menu_1080.w);
+    assert!(dmg_1080.h > menu_1080.h);
+
+    let menu_4k = WindowManager::start_menu_rect(2160);
+    let dmg_4k = WindowManager::start_menu_damage_rect(2160);
+    assert_eq!(menu_4k.w, 440);
+    assert_eq!(menu_4k.h, 448);
+    assert!(dmg_4k.contains(menu_4k.x, menu_4k.y));
+    assert!(dmg_4k.contains(menu_4k.x + menu_4k.w - 1, menu_4k.y + menu_4k.h - 1));
+    assert_eq!(dmg_4k.w, dmg_1080.w * 2);
+
+    // 2. Damage Envelope Efficiency: Dock & Launcher damage must be bounded incremental
+    let mut s = Surface::new(1920, 1080).unwrap();
+    let mut wm = WindowManager::demo().unwrap();
+    assert_eq!(s.damage_pixels(), 0);
+
+    // Hover over dock and verify incremental damage area < 10% of full 1080p screen
+    let dock_r = WindowManager::dock_rect(1920, 1080);
+    let _ = wm.mouse(dock_r.x + 30, dock_r.y + 20, 0, &mut s);
+    let damaged_pixels = s.damage_pixels();
+    let full_pixels = 1920 * 1080;
+    assert!(damaged_pixels > 0, "dock hover must damage surface");
+    assert!(damaged_pixels < full_pixels / 10, "Dock damage area must be < 10% of frame, was {}/{}", damaged_pixels, full_pixels);
+
+    // 3. Performance Benchmark: Measure render time for incremental damage repair
+    let mut bench_surface = Surface::new(1920, 1080).unwrap();
+    let dock_damage = WindowManager::dock_rect(1920, 1080);
+    bench_surface.damage(dock_damage);
+
+    let iters = 20;
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        wm.render(&mut bench_surface);
+    }
+    let elapsed = t0.elapsed();
+    let avg_us = elapsed.as_micros() as f64 / iters as f64;
+    std::println!("\n=== UI Benchmark: 1080p Desktop Incremental Dock & Launcher Damage Repair ===");
+    std::println!("Average Render Latency: {:.2} us (budget < 50000.0 us in unoptimized debug)", avg_us);
+    assert!(avg_us < 50000.0, "Frame render time exceeds budget: {:.2} us", avg_us);
+}

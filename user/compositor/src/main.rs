@@ -820,7 +820,7 @@ fn handle_key(
             if windows.start_open {
                 windows.start_open = false;
                 scene.damage(WindowManager::start_btn_rect(scene.height));
-                scene.damage(WindowManager::start_menu_rect(scene.height));
+                scene.damage(WindowManager::start_menu_damage_rect(scene.height));
             } else {
                 return true;
             }
