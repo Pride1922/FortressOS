@@ -698,7 +698,7 @@ fn render_greeter(
     screen_w: usize,
     screen_h: usize,
 ) {
-    // 1. Wallpaper background: Dark slate gradient
+    // 1. Wallpaper background: Obsidian Aurora radial dark slate gradient
     for y in 0..screen_h {
         let ny = (y * 1024 / screen_h.max(1)) as i32;
         let dy = ny - 380;
@@ -708,16 +708,23 @@ fn render_greeter(
             let dx = nx - 580;
             let dist2 = (dx * dx + dy2) / 1024;
             let glow = (900 - dist2).max(0) as u32;
-            let r = 14 + glow * 24 / 900;
-            let g = 18 + glow * 38 / 900;
-            let b = 28 + glow * 65 / 900;
+            let r = 9 + glow * 18 / 900;
+            let g = 13 + glow * 32 / 900;
+            let b = 20 + glow * 56 / 900;
             p.put(x, y, 0xff000000 | (r << 16) | (g << 8) | b);
         }
     }
 
+    // Top minimal status bar
+    if screen_h >= 600 {
+        p.fill_rect(rect(0, 0, screen_w, 28), 0xcc0d1117);
+        p.label(16, 3, 300, "FortressOS 1.0 — Verified Boot Session", theme::TEXT_MUTED);
+        p.label(screen_w.saturating_sub(180), 3, 160, "Security: Level 1 Enrolled", theme::TEXT_SECONDARY);
+    }
+
     // 2. Central Glass Card
     let cr = state.card_rect;
-    let card_bg = 0xff161b22;
+    let card_bg = theme::OBSIDIAN_PANEL;
 
     // Clock and Date Header above Card
     let mut ts = raw_sys::Timespec::default();
@@ -767,22 +774,39 @@ fn render_greeter(
                 let pill_x = (screen_w.saturating_sub(pill_w)) / 2;
                 let pill_y = cr.y.saturating_sub(pill_h + 16);
 
-                p.sheet_card(rect(pill_x, pill_y, pill_w, pill_h), 0xdd161b22, 0xff30363d, true);
+                p.sheet_card(rect(pill_x, pill_y, pill_w, pill_h), card_bg, theme::BORDER, true);
 
                 let tx = pill_x + (pill_w.saturating_sub(time_w)) / 2;
-                p.label_bold(tx, pill_y + 8, time_w, 20, time_view, 0xffffffff, 0xdd161b22);
+                p.label_bold(tx, pill_y + 8, time_w, 20, time_view, theme::TEXT_PRIMARY, card_bg);
 
                 let dx = pill_x + (pill_w.saturating_sub(date_w)) / 2;
-                p.label(dx, pill_y + 30, date_w, date_view, theme::MUTED);
+                p.label(dx, pill_y + 30, date_w, date_view, theme::TEXT_SECONDARY);
             }
         }
     }
 
-    p.sheet_card(cr, card_bg, 0xff30363d, true);
+    p.sheet_card(cr, card_bg, theme::BORDER, true);
 
-    // 3. Brand Header
-    p.label_bold(cr.x + 32, cr.y + 24, cr.w - 64, 28, "FortressOS", 0xffffffff, card_bg);
-    p.label(cr.x + 32, cr.y + 54, cr.w - 64, "Sign in to your secure session", theme::MUTED);
+    // 3. Brand Header with Fortress Shield Emblem
+    let sx = cr.x + 32;
+    let sy = cr.y + 26;
+    for dy in 0..20 {
+        for dx in 0..16 {
+            let in_shield = if dy < 12 {
+                dx >= 1 && dx < 15
+            } else {
+                let inset = dy - 12;
+                dx >= inset && dx < 16 - inset
+            };
+            if in_shield {
+                let is_rim = dy == 0 || dx == 1 || dx == 14 || (dy >= 12 && (dx == (dy - 12) || dx == 15 - (dy - 12)));
+                let col = if is_rim { theme::ACCENT_CYAN } else { 0xff1e3a5f };
+                p.put(sx + dx, sy + dy, col);
+            }
+        }
+    }
+    p.label_bold(cr.x + 56, cr.y + 22, cr.w - 88, 28, "FortressOS", theme::TEXT_PRIMARY, card_bg);
+    p.label(cr.x + 32, cr.y + 54, cr.w - 64, "Sign in to your secure session", theme::TEXT_SECONDARY);
 
     // Error message banner
     if let Some(err) = state.error {
@@ -790,17 +814,17 @@ fn render_greeter(
     }
 
     // 4. Username Field
-    p.label(cr.x + 32, cr.y + 92, 120, "Username", theme::SUBTEXT);
+    p.label(cr.x + 32, cr.y + 92, 120, "Username", theme::TEXT_SECONDARY);
     p.text_input(state.user_rect, state.username.as_str(), state.focus == 0);
 
     // 5. Password Field (Masked with bullet characters)
-    p.label(cr.x + 32, cr.y + 162, 120, "Password", theme::SUBTEXT);
+    p.label(cr.x + 32, cr.y + 162, 120, "Password", theme::TEXT_SECONDARY);
     let masked_buf = [b'*'; 64];
     let plen = state.password.len().min(64);
     let masked_str = core::str::from_utf8(&masked_buf[..plen]).unwrap_or("");
     p.text_input(state.pass_rect, masked_str, state.focus == 1);
 
-    // 6. Login Button
+    // 6. Login Button (Cyan Primary Button)
     p.button_accent(state.login_btn_rect, "Sign In", state.focus == 2);
 
     // 7. Power & Session Buttons
