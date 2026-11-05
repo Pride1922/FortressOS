@@ -40,6 +40,37 @@ impl SurfaceStyle {
         self
     }
 
+    pub const fn with_radius(mut self, radius: usize) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    pub const fn with_border(mut self, border: u32) -> Self {
+        self.border = border;
+        self
+    }
+
+    pub const fn with_fill(mut self, fill: u32) -> Self {
+        self.fill = fill;
+        self
+    }
+
+    /// Content card on custom background.
+    pub const fn card_on(outer_bg: u32, fill: u32, border: u32) -> Self {
+        let top = if border == theme::BORDER { theme::TOP_HIGHLIGHT_DEFAULT } else { border };
+        Self::new(theme::RADIUS_CARD, outer_bg, fill, border).highlight(top)
+    }
+
+    /// Button with custom styling.
+    pub const fn button_styled(fill: u32, border: u32, top_highlight: u32, outer_bg: u32) -> Self {
+        Self::new(theme::RADIUS_BUTTON, outer_bg, fill, border).highlight(top_highlight)
+    }
+
+    /// Small status badge or pill.
+    pub const fn pill(radius: usize, fill: u32, border: u32, outer_bg: u32) -> Self {
+        Self::new(radius, outer_bg, fill, border)
+    }
+
     /// Raised content card (radius 8); the standard border gets a lit top edge.
     pub const fn card(fill: u32, border: u32) -> Self {
         let top = if border == theme::BORDER { 0xff4c4c52 } else { border };

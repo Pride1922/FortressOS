@@ -324,15 +324,38 @@ impl<'a> Painter<'a> {
         self.shade(r, |lx, ly| style.shade(lx, ly, w, h));
     }
 
-    /// Raised card with 3 px shadow.
-    pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
-        let shadow_h = 3usize;
-        let total_h = r.h + shadow_h;
-        let radius = 8.min(r.h / 2);
-        let top_hi = if border == theme::BORDER { 0xff4c4c52 } else { border };
+    /// 1 px horizontal divider line.
+    pub fn divider_h(&mut self, x: usize, y: usize, w: usize, color: u32) {
+        self.fill_rect(Rect::new(x, y, w, 1), color);
+    }
+
+    /// Flat card without shadow calculation (fast path, zero shadow damage).
+    pub fn card_flat(&mut self, r: Rect, bg: u32, border: u32, outer_bg: u32) {
+        let radius = theme::RADIUS_CARD.min(r.h / 2);
+        let top_hi = if border == theme::BORDER { theme::TOP_HIGHLIGHT_DEFAULT } else { border };
+        let style = SurfaceStyle::new(radius, outer_bg, bg, border).highlight(top_hi);
+        self.shade(r, |lx, ly| style.shade(lx, ly, r.w, r.h));
+    }
+
+    /// Card with optional elevation shadow (elevation 0 = flat, elevation > 0 = soft drop shadow).
+    pub fn card_elevated(
+        &mut self,
+        r: Rect,
+        bg: u32,
+        border: u32,
+        elevation: usize,
+        outer_bg: u32,
+    ) {
+        if elevation == 0 {
+            self.card_flat(r, bg, border, outer_bg);
+            return;
+        }
+        let total_h = r.h.saturating_add(elevation);
+        let radius = theme::RADIUS_CARD.min(r.h / 2);
+        let top_hi = if border == theme::BORDER { theme::TOP_HIGHLIGHT_DEFAULT } else { border };
         let card_style = SurfaceStyle {
             radius,
-            outer_bg: theme::PANEL,
+            outer_bg,
             fill: bg,
             border,
             top_highlight: top_hi,
@@ -348,9 +371,9 @@ impl<'a> Painter<'a> {
                 if ly < r.h {
                     let shadow_bg = if ly >= 2 {
                         let s_cov = gfx::rounded_coverage(lx, ly - 2, r.w, r.h, radius);
-                        gfx::blend_coverage(0xff0b0d12, theme::PANEL, s_cov * 6 / 16)
+                        gfx::blend_coverage(theme::SHADOW_CORE, outer_bg, s_cov * 6 / 16)
                     } else {
-                        theme::PANEL
+                        outer_bg
                     };
                     SurfaceStyle {
                         outer_bg: shadow_bg,
@@ -363,7 +386,7 @@ impl<'a> Painter<'a> {
                         lx,
                         r.h.saturating_sub(radius) + dy,
                         r.w,
-                        radius + shadow_h,
+                        radius + elevation,
                         radius,
                     );
                     let alpha = match dy {
@@ -371,10 +394,56 @@ impl<'a> Painter<'a> {
                         1 => s_cov * 4 / 16,
                         _ => s_cov * 2 / 16,
                     };
-                    gfx::blend_coverage(0xff08090c, theme::PANEL, alpha)
+                    gfx::blend_coverage(theme::SHADOW_AMBIENT, outer_bg, alpha)
                 }
             },
         );
+    }
+
+    /// Raised card with 3 px shadow.
+    pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+        self.card_elevated(r, bg, border, 3, theme::PANEL);
+    }
+
+    /// Push button with custom styling.
+    pub fn button_styled(
+        &mut self,
+        r: Rect,
+        text: &str,
+        fill: u32,
+        border: u32,
+        fg: u32,
+        focused: bool,
+    ) {
+        let border_col = if focused { theme::BORDER_FOCUS } else { border };
+        let top_hi = if fill == theme::ACCENT {
+            theme::TOP_HIGHLIGHT_ACCENT
+        } else if fill == theme::SELECTED {
+            theme::TOP_HIGHLIGHT_SELECTED
+        } else if fill == theme::SURFACE {
+            theme::TOP_HIGHLIGHT_SURFACE
+        } else {
+            0
+        };
+        let radius = theme::RADIUS_BUTTON.min(r.h / 2);
+        let style = SurfaceStyle {
+            radius,
+            outer_bg: theme::PANEL,
+            fill,
+            border: border_col,
+            top_highlight: top_hi,
+        };
+        let text_y = r.h.saturating_sub(18) / 2;
+        let tw = font::text_width(text);
+        let inset = if tw == 0 { 8 } else { r.w.saturating_sub(tw) / 2 }.max(4);
+        self.shade(r, |lx, ly| {
+            let base = style.shade(lx, ly, r.w, r.h);
+            if lx >= inset && lx + 3 < r.w && ly >= text_y && ly < text_y + 18 {
+                font::text_pixel(text, lx - inset, ly - text_y, fg, base)
+            } else {
+                base
+            }
+        });
     }
 
     /// Sheet card with halo / glow when active.

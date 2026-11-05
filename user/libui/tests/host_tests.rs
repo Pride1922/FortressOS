@@ -132,3 +132,78 @@ fn test_theme_tokens() {
     assert_eq!(BORDER_DIVIDER, 0xff263040);
     assert_eq!(BORDER_SUBTLE, 0xff2c313c);
 }
+
+#[test]
+fn test_surface_style_extensions() {
+    use libui::style::SurfaceStyle;
+    use libui::theme::*;
+
+    let s1 = SurfaceStyle::card_on(BG_SIDEBAR, BG_CARD, BORDER_CARD);
+    assert_eq!(s1.outer_bg, BG_SIDEBAR);
+    assert_eq!(s1.radius, RADIUS_CARD);
+    assert_eq!(s1.fill, BG_CARD);
+
+    let s2 = s1.with_radius(12).with_fill(0xff00ff00).with_border(0xff0000ff);
+    assert_eq!(s2.radius, 12);
+    assert_eq!(s2.fill, 0xff00ff00);
+    assert_eq!(s2.border, 0xff0000ff);
+
+    let pill = SurfaceStyle::pill(RADIUS_PILL, BG_CARD, BORDER_SUBTLE, PANEL);
+    assert_eq!(pill.radius, RADIUS_PILL);
+    assert_eq!(pill.fill, BG_CARD);
+}
+
+#[test]
+fn test_card_shadow_redraw_cost_benchmark() {
+    use libui::gfx::rect;
+    use libui::painter::Painter;
+    use libui::theme::*;
+    use std::time::Instant;
+
+    let width = 600usize;
+    let height = 200usize;
+    let mut buf = vec![PANEL; width * height];
+    let card_r = rect(20, 20, 540, 76);
+
+    const ITERS: usize = 300;
+
+    // 1. Measure card_flat (elevation 0)
+    let t0 = Instant::now();
+    for _ in 0..ITERS {
+        let mut p = Painter::new(&mut buf, width, height, width).unwrap().with_damage();
+        p.card_flat(card_r, BG_CARD, BORDER_CARD, PANEL);
+        let _ = p.finish();
+    }
+    let elapsed_flat = t0.elapsed();
+
+    // 2. Measure card_elevated (elevation 2)
+    let t0 = Instant::now();
+    for _ in 0..ITERS {
+        let mut p = Painter::new(&mut buf, width, height, width).unwrap().with_damage();
+        p.card_elevated(card_r, BG_CARD, BORDER_CARD, 2, PANEL);
+        let _ = p.finish();
+    }
+    let elapsed_elev2 = t0.elapsed();
+
+    // 3. Measure card_elevated (elevation 3, default)
+    let t0 = Instant::now();
+    for _ in 0..ITERS {
+        let mut p = Painter::new(&mut buf, width, height, width).unwrap().with_damage();
+        p.card_elevated(card_r, BG_CARD, BORDER_CARD, 3, PANEL);
+        let _ = p.finish();
+    }
+    let elapsed_elev3 = t0.elapsed();
+
+    let us_flat = elapsed_flat.as_micros() as f64 / ITERS as f64;
+    let us_elev2 = elapsed_elev2.as_micros() as f64 / ITERS as f64;
+    let us_elev3 = elapsed_elev3.as_micros() as f64 / ITERS as f64;
+
+    std::println!("\n=== Card Shadow Redraw Cost Benchmark (540x76 Hero Card) ===");
+    std::println!("Flat card (elevation 0):     {:.2} us/frame", us_flat);
+    std::println!("Elevated card (elevation 2): {:.2} us/frame (+{:.1}%)", us_elev2, ((us_elev2 - us_flat) / us_flat) * 100.0);
+    std::println!("Elevated card (elevation 3): {:.2} us/frame (+{:.1}%)", us_elev3, ((us_elev3 - us_flat) / us_flat) * 100.0);
+
+    assert!(us_flat > 0.0);
+    assert!(us_elev2 > 0.0);
+    assert!(us_elev3 > 0.0);
+}

@@ -370,11 +370,65 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+    /// 1 px horizontal divider line.
     #[allow(dead_code)]
-    pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+    pub fn divider_h(&mut self, x: usize, y: usize, w: usize, color: u32) {
+        self.fill_rect(Rect { x, y, w, h: 1 }, color);
+    }
+
+    /// Flat card without shadow calculation (fast path, zero shadow damage).
+    pub fn card_flat(&mut self, r: Rect, bg: u32, border: u32, outer_bg: u32) {
         let r = self.adj(r);
-        let shadow_h = 3usize;
-        let total_h = r.h + shadow_h;
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let radius = theme::RADIUS_CARD.min(r.h / 2);
+        let top_hi = if border == theme::BORDER { theme::TOP_HIGHLIGHT_DEFAULT } else { border };
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let color = Self::rounded_frame_pixel(
+                    lx,
+                    ly,
+                    r.w,
+                    r.h,
+                    radius,
+                    outer_bg,
+                    bg,
+                    border,
+                    top_hi,
+                );
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, color);
+                }
+            }
+        }
+    }
+
+    /// Card with optional elevation shadow (elevation 0 = flat, elevation > 0 = soft drop shadow).
+    pub fn card_elevated(
+        &mut self,
+        r: Rect,
+        bg: u32,
+        border: u32,
+        elevation: usize,
+        outer_bg: u32,
+    ) {
+        if elevation == 0 {
+            self.card_flat(r, bg, border, outer_bg);
+            return;
+        }
+        let r = self.adj(r);
+        let total_h = r.h.saturating_add(elevation);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -386,8 +440,8 @@ impl<'a> Canvas<'a> {
             .saturating_add(self.window.rect.h - 26)
             .saturating_sub(top)
             .min(height);
-        let radius = 8.min(r.h / 2);
-        let top_hi = if border == theme::BORDER { 0xff4c4c52 } else { border };
+        let radius = theme::RADIUS_CARD.min(r.h / 2);
+        let top_hi = if border == theme::BORDER { theme::TOP_HIGHLIGHT_DEFAULT } else { border };
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -395,9 +449,9 @@ impl<'a> Canvas<'a> {
                 let color = if ly < r.h {
                     let shadow_bg = if ly >= 2 {
                         let s_cov = theme::rounded_coverage(lx, ly - 2, r.w, r.h, radius);
-                        theme::blend_coverage(0xff0b0d12, theme::PANEL, s_cov * 6 / 16)
+                        theme::blend_coverage(theme::SHADOW_CORE, outer_bg, s_cov * 6 / 16)
                     } else {
-                        theme::PANEL
+                        outer_bg
                     };
                     Self::rounded_frame_pixel(
                         lx,
@@ -411,12 +465,12 @@ impl<'a> Canvas<'a> {
                         top_hi,
                     )
                 } else {
-                    let dy = ly - r.h; // 0..2
+                    let dy = ly - r.h;
                     let s_cov = theme::rounded_coverage(
                         lx,
                         r.h.saturating_sub(radius) + dy,
                         r.w,
-                        radius + shadow_h,
+                        radius + elevation,
                         radius,
                     );
                     let alpha = match dy {
@@ -424,13 +478,18 @@ impl<'a> Canvas<'a> {
                         1 => s_cov * 4 / 16,
                         _ => s_cov * 2 / 16,
                     };
-                    theme::blend_coverage(0xff08090c, theme::PANEL, alpha)
+                    theme::blend_coverage(theme::SHADOW_AMBIENT, outer_bg, alpha)
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, color);
                 }
             }
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+        self.card_elevated(r, bg, border, 3, theme::PANEL);
     }
     pub fn sheet_card(&mut self, r: Rect, bg: u32, border: u32, active: bool) {
         let r = self.adj(r);
