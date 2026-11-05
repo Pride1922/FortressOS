@@ -1330,6 +1330,14 @@ pub enum Action {
     Restart,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LauncherItem {
+    App(&'static app_registry::AppManifest),
+    Exit,
+    Restart,
+    Lock,
+}
+
 pub struct WindowManager {
     pub windows: Vec<Window>,
     pub demo_mode: bool,
@@ -1340,6 +1348,10 @@ pub struct WindowManager {
     network_state: u8,
     pub start_open: bool,
     pub menu_hover: Option<usize>,
+    pub launcher_search: TextField<32>,
+    pub launcher_selected: usize,
+    pub launcher_focused: bool,
+    pub pending_action: Option<Action>,
     #[allow(dead_code)]
     pub dock_hover: Option<usize>,
     pub context_menu: Option<(usize, usize)>,
@@ -1403,6 +1415,10 @@ impl WindowManager {
             network_state: 0,
             start_open: false,
             menu_hover: None,
+            launcher_search: TextField::new(),
+            launcher_selected: 0,
+            launcher_focused: false,
+            pending_action: None,
             dock_hover: None,
             context_menu: None,
             context_hover: None,
@@ -1429,6 +1445,10 @@ impl WindowManager {
             network_state: 0,
             start_open: false,
             menu_hover: None,
+            launcher_search: TextField::new(),
+            launcher_selected: 0,
+            launcher_focused: false,
+            pending_action: None,
             dock_hover: None,
             context_menu: None,
             context_hover: None,
@@ -1905,9 +1925,114 @@ pub fn verify_unlock_password(pass: &str) -> bool {
 
     pub fn toggle_start_menu(&mut self, s: &mut Surface) {
         self.start_open = !self.start_open;
-        self.menu_hover = None;
+        self.launcher_focused = self.start_open;
+        self.launcher_search.clear();
+        self.launcher_selected = 0;
+        self.menu_hover = if self.start_open { Some(0) } else { None };
         s.damage(Self::start_btn_rect(s.height));
         s.damage(Self::start_menu_rect(s.height));
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pending_action(&mut self) -> Option<Action> {
+        self.pending_action.take()
+    }
+
+    pub fn matching_launcher_items(&self) -> ([Option<LauncherItem>; 16], usize) {
+        let mut items = [None; 16];
+        let mut count = 0;
+        let query = self.launcher_search.as_str().trim();
+
+        if query.is_empty() {
+            let primary_apps = [
+                AppId::Terminal,
+                AppId::Files,
+                AppId::Notepad,
+                AppId::Calc,
+                AppId::Vault,
+                AppId::Settings,
+                AppId::SysInfo,
+            ];
+            for id in primary_apps {
+                if let Some(app) = app_registry::find_manifest(id) {
+                    if count < items.len() {
+                        items[count] = Some(LauncherItem::App(app));
+                        count += 1;
+                    }
+                }
+            }
+            if count < items.len() {
+                items[count] = Some(LauncherItem::Exit);
+                count += 1;
+            }
+            if count < items.len() {
+                items[count] = Some(LauncherItem::Restart);
+                count += 1;
+            }
+        } else {
+            // Filter applications matching the search query
+            for app in app_registry::APP_CATALOG {
+                if app.matches_query(query) {
+                    if count < items.len() {
+                        items[count] = Some(LauncherItem::App(app));
+                        count += 1;
+                    }
+                }
+            }
+            // Allow searching session controls
+            if app_registry::contains_ignore_case("Lock Screen", query)
+                || app_registry::contains_ignore_case("lock sleep protect", query)
+            {
+                if count < items.len() {
+                    items[count] = Some(LauncherItem::Lock);
+                    count += 1;
+                }
+            }
+            if app_registry::contains_ignore_case("Exit to Console", query)
+                || app_registry::contains_ignore_case("exit quit console shutdown logout", query)
+            {
+                if count < items.len() {
+                    items[count] = Some(LauncherItem::Exit);
+                    count += 1;
+                }
+            }
+            if app_registry::contains_ignore_case("Restart", query)
+                || app_registry::contains_ignore_case("restart reboot", query)
+            {
+                if count < items.len() {
+                    items[count] = Some(LauncherItem::Restart);
+                    count += 1;
+                }
+            }
+        }
+
+        (items, count)
+    }
+
+    pub fn activate_launcher_item(&mut self, item: LauncherItem, s: &mut Surface) -> Action {
+        match item {
+            LauncherItem::App(app) => match app.id {
+                AppId::Terminal => Action::SpawnTerminal,
+                AppId::Files => Action::SpawnFileManager,
+                AppId::Notepad => Action::SpawnNotepad,
+                AppId::Calc => Action::SpawnCalc,
+                AppId::Vault => Action::SpawnVault,
+                AppId::Settings => Action::OpenDesktopApp(7),
+                AppId::SysInfo => {
+                    self.ensure_window_1(s);
+                    Action::None
+                }
+                AppId::Network => Action::OpenDesktopApp(8),
+                AppId::DateTime => Action::OpenDesktopApp(9),
+                AppId::Power => Action::OpenDesktopApp(10),
+            },
+            LauncherItem::Exit => Action::Exit,
+            LauncherItem::Restart => Action::Restart,
+            LauncherItem::Lock => {
+                self.lock(s);
+                Action::None
+            }
+        }
     }
 
     /// Intercepts compositor-reserved key combinations before any client window
@@ -2011,6 +2136,86 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 self.toggle_start_menu(s);
             }
             return true;
+        }
+
+        // When Application Launcher is open and focused, intercept keyboard navigation & typing
+        if self.start_open && self.launcher_focused {
+            if ev.keycode == crate::proto::KEY_ESC || ev.ascii == 27 {
+                if ev.state == crate::proto::KEY_STATE_PRESS {
+                    self.start_open = false;
+                    self.launcher_focused = false;
+                    self.launcher_search.clear();
+                    self.menu_hover = None;
+                    s.damage(Self::start_btn_rect(s.height));
+                    s.damage(Self::start_menu_rect(s.height));
+                }
+                return true;
+            }
+            let (items, count) = self.matching_launcher_items();
+            if ev.keycode == 103 /* KEY_UP */ {
+                if ev.is_press_or_repeat() && count > 0 {
+                    self.launcher_selected = if self.launcher_selected == 0 {
+                        count - 1
+                    } else {
+                        self.launcher_selected - 1
+                    };
+                    self.menu_hover = Some(self.launcher_selected);
+                    s.damage(Self::start_menu_rect(s.height));
+                }
+                return true;
+            }
+            if ev.keycode == 108 /* KEY_DOWN */ {
+                if ev.is_press_or_repeat() && count > 0 {
+                    self.launcher_selected = (self.launcher_selected + 1) % count;
+                    self.menu_hover = Some(self.launcher_selected);
+                    s.damage(Self::start_menu_rect(s.height));
+                }
+                return true;
+            }
+            if ev.keycode == crate::proto::KEY_ENTER
+                || ev.keycode == 96
+                || ev.ascii == b'\r'
+                || ev.ascii == b'\n'
+            {
+                if ev.state == crate::proto::KEY_STATE_PRESS {
+                    if self.launcher_selected < count {
+                        if let Some(item) = items[self.launcher_selected] {
+                            let action = self.activate_launcher_item(item, s);
+                            self.pending_action = Some(action);
+                        }
+                    }
+                    self.start_open = false;
+                    self.launcher_focused = false;
+                    self.launcher_search.clear();
+                    self.menu_hover = None;
+                    s.damage(Self::start_btn_rect(s.height));
+                    s.damage(Self::start_menu_rect(s.height));
+                }
+                return true;
+            }
+            if ev.ascii == 8 || ev.ascii == 127 || ev.keycode == 14 /* Backspace */ {
+                if ev.is_press_or_repeat() {
+                    self.launcher_search.backspace();
+                    self.launcher_selected = 0;
+                    self.menu_hover = Some(0);
+                    s.damage(Self::start_menu_rect(s.height));
+                }
+                return true;
+            }
+            if ev.ascii >= 32 && ev.ascii <= 126 {
+                if ev.is_press_or_repeat() {
+                    if self.launcher_search.len() < 31 {
+                        self.launcher_search.push(ev.ascii as char);
+                        self.launcher_selected = 0;
+                        self.menu_hover = Some(0);
+                        s.damage(Self::start_menu_rect(s.height));
+                    }
+                }
+                return true;
+            }
+            if ev.is_press_or_repeat() {
+                return true;
+            }
         }
         false
     }
@@ -2447,9 +2652,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
             }
 
             if start_btn.contains(x, y) {
-                self.start_open = !self.start_open;
-                s.damage(start_btn);
-                s.damage(start_menu);
+                self.toggle_start_menu(s);
                 self.buttons = buttons;
                 return Action::None;
             }
@@ -2459,21 +2662,17 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                     let py = (y - start_menu.y) / theme::scale(s.height);
                     if py >= 24 {
                         let item_idx = (py - 24) / 22;
-                        match item_idx {
-                            0 => ret_action = Action::SpawnTerminal,
-                            1 => ret_action = Action::SpawnFileManager,
-                            2 => ret_action = Action::SpawnNotepad,
-                            3 => ret_action = Action::SpawnCalc,
-                            4 => ret_action = Action::SpawnVault,
-                            5 => ret_action = Action::OpenDesktopApp(7),
-                            6 => self.ensure_window_1(s),
-                            7 => ret_action = Action::Exit,
-                            8 => ret_action = Action::Restart,
-                            _ => {}
+                        let (items, count) = self.matching_launcher_items();
+                        if item_idx < count {
+                            if let Some(item) = items[item_idx] {
+                                ret_action = self.activate_launcher_item(item, s);
+                            }
                         }
                     }
                 }
                 self.start_open = false;
+                self.launcher_focused = false;
+                self.launcher_search.clear();
                 s.damage(start_btn);
                 s.damage(start_menu);
                 self.buttons = buttons;
@@ -2540,15 +2739,19 @@ pub fn verify_unlock_password(pass: &str) -> bool {
 
         if self.start_open {
             let start_menu = Self::start_menu_rect(s.height);
+            let (_items, count) = self.matching_launcher_items();
             let new_menu_hover =
                 if start_menu.contains(x, y) && y >= start_menu.y + 24 * theme::scale(s.height) {
                     let idx = ((y - start_menu.y) / theme::scale(s.height) - 24) / 22;
-                    if idx < 9 { Some(idx) } else { None }
+                    if idx < count { Some(idx) } else { None }
                 } else {
                     None
                 };
             if new_menu_hover != self.menu_hover {
                 self.menu_hover = new_menu_hover;
+                if let Some(idx) = new_menu_hover {
+                    self.launcher_selected = idx;
+                }
                 s.damage(start_menu);
             }
         }
@@ -3254,12 +3457,14 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 }
             }
 
-            // Windows-Style Start Menu Popup
+            // Windows-Style Start Menu Popup / Application Launcher
             if self.start_open {
                 let start_menu = Self::start_menu_rect(s.height);
                 if let Some(clip) = start_menu.intersection(r) {
                     let bw = start_menu.w / scale;
                     let bh = start_menu.h / scale;
+                    let (items, count) = self.matching_launcher_items();
+                    let q_str = self.launcher_search.as_str();
                     for y in clip.y..clip.y + clip.h {
                         for x in clip.x..clip.x + clip.w {
                             let px = (x - start_menu.x) / scale;
@@ -3274,192 +3479,259 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                 if py == 23 {
                                     theme::BORDER
                                 } else {
-                                    let in_tower = (9..=17).contains(&px)
-                                        && (6..=17).contains(&py)
-                                        && fortress_tower_pixel(px - 9, py - 6);
-                                    if in_tower {
-                                        0xff38bdf8
-                                    } else if px >= 24 && px < 110 && (4..20).contains(&py) {
-                                        theme::text_pixel("FortressOS", px - 24, py - 4, theme::TEXT, 0xff202020)
-                                    } else if px >= bw.saturating_sub(44) && px < bw.saturating_sub(8) && (4..20).contains(&py) {
-                                        theme::text_pixel("v0.2", px - bw.saturating_sub(44), py - 4, theme::MUTED, 0xff202020)
+                                    // Search Bar in header (px in 8..bw-8, py in 4..20)
+                                    let is_search_box = px >= 8 && px < bw - 8 && py >= 4 && py <= 20;
+                                    let is_search_border = is_search_box
+                                        && (px == 8 || px == bw - 9 || py == 4 || py == 20);
+                                    if is_search_border {
+                                        if !q_str.is_empty() {
+                                            theme::ACCENT
+                                        } else {
+                                            theme::BORDER
+                                        }
+                                    } else if is_search_box {
+                                        let box_bg = 0xff161b22;
+                                        let gx = px.saturating_sub(12);
+                                        let gy = py.saturating_sub(8);
+                                        let in_glass = px >= 12 && px < 20 && (8..16).contains(&py)
+                                            && (((gx == 1 || gx == 4) && (1..=4).contains(&gy))
+                                                || ((gy == 1 || gy == 4) && (1..=4).contains(&gx))
+                                                || (gx == 5 && gy == 5)
+                                                || (gx == 6 && gy == 6));
+                                        if in_glass {
+                                            0xff8b949e
+                                        } else if q_str.is_empty() {
+                                            if px >= 24 && px < bw - 12 && (4..20).contains(&py) {
+                                                theme::text_pixel("Search...", px - 24, py - 4, theme::MUTED, box_bg)
+                                            } else {
+                                                box_bg
+                                            }
+                                        } else {
+                                            let text_len = q_str.len();
+                                            let cursor_x = 24 + text_len * 8;
+                                            if px == cursor_x && (6..18).contains(&py) {
+                                                theme::ACCENT
+                                            } else if px >= 24 && px < bw - 12 && (4..20).contains(&py) {
+                                                theme::text_pixel(q_str, px - 24, py - 4, theme::TEXT, box_bg)
+                                            } else {
+                                                box_bg
+                                            }
+                                        }
                                     } else {
-                                        0xff202020
+                                        0xff202022
                                     }
+                                }
+                            } else if count == 0 {
+                                // Empty state when query matches no apps
+                                if (48..64).contains(&py) && px >= 16 && px < bw - 16 {
+                                    theme::text_pixel("No applications found", px - 16, py - 48, theme::TEXT, 0xff202022)
+                                } else if (68..84).contains(&py) && px >= 16 && px < bw - 16 {
+                                    theme::text_pixel("Check spelling or search terms", px - 16, py - 68, theme::MUTED, 0xff202022)
+                                } else {
+                                    0xff202022
                                 }
                             } else {
                                 let item_idx = (py - 24) / 22;
                                 let item_y = (py - 24) % 22;
-                                let is_hover = self.menu_hover == Some(item_idx);
-                                let item_bg = if is_hover && px >= 4 && px < bw - 4 {
-                                    0xff3a3a3a
-                                } else {
-                                    0xff282828
-                                };
+                                if item_idx < count {
+                                    let is_hover = self.menu_hover == Some(item_idx)
+                                        || (self.menu_hover.is_none() && self.launcher_selected == item_idx);
+                                    let item_bg = if is_hover && px >= 4 && px < bw - 4 {
+                                        0xff3a3a3a
+                                    } else {
+                                        0xff282828
+                                    };
 
-                                // Application Icon (14x14 at px in 10..24, item_y in 4..18)
-                                let icon_pixel = if px >= 10 && px < 24 && (4..18).contains(&item_y) {
-                                    let ix = px - 10;
-                                    let iy = item_y - 4;
-                                    match item_idx {
-                                        0 => {
-                                            // Terminal: tile with '>_' prompt
-                                            if (iy == 4 && ix == 4) || (iy == 5 && ix == 5) || (iy == 6 && ix == 6)
-                                                || (iy == 7 && ix == 5) || (iy == 8 && ix == 4)
-                                                || (iy == 9 && (7..=10).contains(&ix))
-                                            {
-                                                Some(0xff56d364)
-                                            } else if ix == 1 || ix == 12 || iy == 1 || iy == 12 {
-                                                Some(0xff30363d)
-                                            } else if ix > 1 && ix < 12 && iy > 1 && iy < 12 {
-                                                Some(0xff0d1117)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        1 => {
-                                            // Files: golden folder
-                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
-                                                Some(0xffd29922)
-                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
-                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        2 => {
-                                            // Notepad: document sheet with lines
-                                            if (3..=10).contains(&ix) && (2..=11).contains(&iy) {
-                                                if (iy == 4 || iy == 6 || iy == 8) && (5..=8).contains(&ix) {
-                                                    Some(0xff1f6feb)
-                                                } else {
-                                                    Some(0xffffffff)
+                                    // Divider line above session actions (when showing full menu)
+                                    let is_divider = q_str.is_empty() && item_idx == 7 && item_y == 0;
+                                    if is_divider {
+                                        theme::BORDER
+                                    } else {
+                                        let item = items[item_idx];
+                                        let icon_pixel = if px >= 10 && px < 24 && (4..18).contains(&item_y) {
+                                            let ix = px - 10;
+                                            let iy = item_y - 4;
+                                            match item {
+                                                Some(LauncherItem::App(app)) => {
+                                                    match app.icon_kind {
+                                                        0 => {
+                                                            // Files: golden folder
+                                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
+                                                                Some(0xffd29922)
+                                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
+                                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        1 => {
+                                                            // Terminal: tile with '>_' prompt
+                                                            if (iy == 4 && ix == 4) || (iy == 5 && ix == 5) || (iy == 6 && ix == 6)
+                                                                || (iy == 7 && ix == 5) || (iy == 8 && ix == 4)
+                                                                || (iy == 9 && (7..=10).contains(&ix))
+                                                            {
+                                                                Some(0xff56d364)
+                                                            } else if ix == 1 || ix == 12 || iy == 1 || iy == 12 {
+                                                                Some(0xff30363d)
+                                                            } else if ix > 1 && ix < 12 && iy > 1 && iy < 12 {
+                                                                Some(0xff0d1117)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        2 => {
+                                                            // Notepad: document sheet with lines
+                                                            if (3..=10).contains(&ix) && (2..=11).contains(&iy) {
+                                                                if (iy == 4 || iy == 6 || iy == 8) && (5..=8).contains(&ix) {
+                                                                    Some(0xff1f6feb)
+                                                                } else {
+                                                                    Some(0xffffffff)
+                                                                }
+                                                            } else if (2..=11).contains(&ix) && (1..=12).contains(&iy) {
+                                                                Some(0xff1f6feb)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        3 => {
+                                                            // Calculator: blue tile with math symbols
+                                                            if (2..=11).contains(&ix) && (2..=11).contains(&iy) {
+                                                                if (iy == 4 && (4..=6).contains(&ix)) || (ix == 5 && (3..=5).contains(&iy)) {
+                                                                    Some(0xffffffff)
+                                                                } else if iy == 9 && (4..=6).contains(&ix) {
+                                                                    Some(0xffffffff)
+                                                                } else if (iy == 4 && (8..=10).contains(&ix)) || (iy == 9 && (8..=10).contains(&ix)) {
+                                                                    Some(0xff56d364)
+                                                                } else if ix == 2 || ix == 11 || iy == 2 || iy == 11 {
+                                                                    Some(0xff30363d)
+                                                                } else {
+                                                                    Some(0xff1f6feb)
+                                                                }
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        4 => {
+                                                            // Vault: Golden Padlock
+                                                            if (4..=9).contains(&ix) && (2..=5).contains(&iy) && !(6..=7).contains(&ix) && iy < 5 {
+                                                                Some(0xffc9d1d9)
+                                                            } else if (4..=9).contains(&ix) && iy == 2 {
+                                                                Some(0xffc9d1d9)
+                                                            } else if (3..=10).contains(&ix) && (5..=12).contains(&iy) {
+                                                                if ix == 6 && (7..=9).contains(&iy) {
+                                                                    Some(0xff161b22)
+                                                                } else if ix == 3 || ix == 10 || iy == 5 || iy == 12 {
+                                                                    Some(0xffb08800)
+                                                                } else {
+                                                                    Some(0xffe3b341)
+                                                                }
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        5 => {
+                                                            // Settings: Gear icon
+                                                            let dx = (ix as i32 - 7).abs();
+                                                            let dy = (iy as i32 - 7).abs();
+                                                            if dx <= 1 && dy <= 1 {
+                                                                Some(item_bg)
+                                                            } else if (dx <= 4 && dy <= 4 && (dx >= 2 || dy >= 2))
+                                                                || ((dx == 5 && dy <= 1) || (dy == 5 && dx <= 1))
+                                                            {
+                                                                Some(0xff60a5fa)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        6 => {
+                                                            // System Information: CPU / chip
+                                                            if (5..=8).contains(&ix) && (5..=8).contains(&iy) {
+                                                                Some(0xffd2a8ff)
+                                                            } else if (3..=10).contains(&ix) && (3..=10).contains(&iy) {
+                                                                Some(0xff8957e5)
+                                                            } else if ((iy == 1 || iy == 12) && (ix == 4 || ix == 6 || ix == 9))
+                                                                || ((ix == 1 || ix == 12) && (iy == 4 || iy == 6 || iy == 9))
+                                                            {
+                                                                Some(0xffa371f7)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
+                                                        _ => None,
+                                                    }
                                                 }
-                                            } else if (2..=11).contains(&ix) && (1..=12).contains(&iy) {
-                                                Some(0xff1f6feb)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        3 => {
-                                            // Calculator: blue tile with math symbols
-                                            if (2..=11).contains(&ix) && (2..=11).contains(&iy) {
-                                                if (iy == 4 && (4..=6).contains(&ix)) || (ix == 5 && (3..=5).contains(&iy)) {
-                                                    Some(0xffffffff)
-                                                } else if iy == 9 && (4..=6).contains(&ix) {
-                                                    Some(0xffffffff)
-                                                } else if (iy == 4 && (8..=10).contains(&ix)) || (iy == 9 && (8..=10).contains(&ix)) {
-                                                    Some(0xff56d364)
-                                                } else if ix == 2 || ix == 11 || iy == 2 || iy == 11 {
-                                                    Some(0xff30363d)
-                                                } else {
-                                                    Some(0xff1f6feb)
+                                                Some(LauncherItem::Exit) => {
+                                                    // Exit: Power glyph
+                                                    let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
+                                                    if dist_sq >= 8 && dist_sq <= 22 && !(ix == 7 && iy <= 7) {
+                                                        Some(0xffff6b6b)
+                                                    } else if ix == 7 && (2..=6).contains(&iy) {
+                                                        Some(0xffff6b6b)
+                                                    } else {
+                                                        None
+                                                    }
                                                 }
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        4 => {
-                                            // Vault: Golden Padlock
-                                            if (4..=9).contains(&ix) && (2..=5).contains(&iy) && !(6..=7).contains(&ix) && iy < 5 {
-                                                Some(0xffc9d1d9)
-                                            } else if (4..=9).contains(&ix) && iy == 2 {
-                                                Some(0xffc9d1d9)
-                                            } else if (3..=10).contains(&ix) && (5..=12).contains(&iy) {
-                                                if ix == 6 && (7..=9).contains(&iy) {
-                                                    Some(0xff161b22)
-                                                } else if ix == 3 || ix == 10 || iy == 5 || iy == 12 {
-                                                    Some(0xffb08800)
-                                                } else {
-                                                    Some(0xffe3b341)
+                                                Some(LauncherItem::Restart) => {
+                                                    // Restart: circular arrow
+                                                    let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
+                                                    if dist_sq >= 8 && dist_sq <= 20 && !(ix <= 7 && iy >= 7) {
+                                                        Some(0xffe3b341)
+                                                    } else if (iy == 3 || iy == 4) && ix == 7 {
+                                                        Some(0xffe3b341)
+                                                    } else {
+                                                        None
+                                                    }
                                                 }
+                                                Some(LauncherItem::Lock) => {
+                                                    // Lock Screen: Padlock glyph
+                                                    if (4..=9).contains(&ix) && (2..=5).contains(&iy) && !(6..=7).contains(&ix) && iy < 5 {
+                                                        Some(0xffc9d1d9)
+                                                    } else if (4..=9).contains(&ix) && iy == 2 {
+                                                        Some(0xffc9d1d9)
+                                                    } else if (3..=10).contains(&ix) && (5..=12).contains(&iy) {
+                                                        if ix == 6 && (7..=9).contains(&iy) {
+                                                            Some(0xff161b22)
+                                                        } else if ix == 3 || ix == 10 || iy == 5 || iy == 12 {
+                                                            Some(0xffb08800)
+                                                        } else {
+                                                            Some(0xff56d364)
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                None => None,
+                                            }
+                                        } else {
+                                            None
+                                        };
+
+                                        if let Some(p) = icon_pixel {
+                                            p
+                                        } else {
+                                            let (label, is_danger) = match item {
+                                                Some(LauncherItem::App(app)) => (app.name, false),
+                                                Some(LauncherItem::Exit) => ("Exit to Console", true),
+                                                Some(LauncherItem::Restart) => ("Restart", false),
+                                                Some(LauncherItem::Lock) => ("Lock Screen", false),
+                                                None => ("", false),
+                                            };
+                                            let fg = if is_hover {
+                                                0xffffffff
+                                            } else if is_danger {
+                                                0xffff7b72
                                             } else {
-                                                None
+                                                theme::TEXT
+                                            };
+                                            if !label.is_empty() && px >= 28 && px < bw - 8 && (3..19).contains(&item_y) {
+                                                theme::text_pixel(label, px - 28, item_y - 3, fg, item_bg)
+                                            } else {
+                                                item_bg
                                             }
                                         }
-                                        5 => {
-                                            // Settings: Gear icon
-                                            let dx = (ix as i32 - 7).abs();
-                                            let dy = (iy as i32 - 7).abs();
-                                            if dx <= 1 && dy <= 1 {
-                                                Some(item_bg)
-                                            } else if (dx <= 4 && dy <= 4 && (dx >= 2 || dy >= 2))
-                                                || ((dx == 5 && dy <= 1) || (dy == 5 && dx <= 1))
-                                            {
-                                                Some(0xff60a5fa)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        6 => {
-                                            // System Information: CPU / chip
-                                            if (5..=8).contains(&ix) && (5..=8).contains(&iy) {
-                                                Some(0xffd2a8ff)
-                                            } else if (3..=10).contains(&ix) && (3..=10).contains(&iy) {
-                                                Some(0xff8957e5)
-                                            } else if ((iy == 1 || iy == 12) && (ix == 4 || ix == 6 || ix == 9))
-                                                || ((ix == 1 || ix == 12) && (iy == 4 || iy == 6 || iy == 9))
-                                            {
-                                                Some(0xffa371f7)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        7 => {
-                                            // Exit: Power glyph
-                                            let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
-                                            if dist_sq >= 8 && dist_sq <= 22 && !(ix == 7 && iy <= 7) {
-                                                Some(0xffff6b6b)
-                                            } else if ix == 7 && (2..=6).contains(&iy) {
-                                                Some(0xffff6b6b)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        8 => {
-                                            // Restart: circular arrow
-                                            let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
-                                            if dist_sq >= 8 && dist_sq <= 20 && !(ix <= 7 && iy >= 7) {
-                                                Some(0xffe3b341)
-                                            } else if (iy == 3 || iy == 4) && ix == 7 {
-                                                Some(0xffe3b341)
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                        _ => None,
                                     }
                                 } else {
-                                    None
-                                };
-
-                                if let Some(p) = icon_pixel {
-                                    p
-                                } else {
-                                    let (label, is_danger) = match item_idx {
-                                        0 => ("Terminal", false),
-                                        1 => ("Files", false),
-                                        2 => ("Notepad", false),
-                                        3 => ("Calculator", false),
-                                        4 => ("Vault", false),
-                                        5 => ("Settings", false),
-                                        6 => ("System Information", false),
-                                        7 => ("Exit to Console", true),
-                                        8 => ("Restart (save/close apps)", false),
-                                        _ => ("", false),
-                                    };
-                                    let fg = if is_hover {
-                                        0xffffffff
-                                    } else if is_danger {
-                                        0xffff7b72
-                                    } else {
-                                        theme::TEXT
-                                    };
-                                    if !label.is_empty() && px >= 28 && px < bw - 8 && (3..19).contains(&item_y) {
-                                        theme::text_pixel(label, px - 28, item_y - 3, fg, item_bg)
-                                    } else {
-                                        item_bg
-                                    }
+                                    0xff202022
                                 }
                             };
                         }

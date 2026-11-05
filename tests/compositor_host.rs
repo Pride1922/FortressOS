@@ -3717,3 +3717,122 @@ fn dock_smart_click_focus_restore_and_cycle() {
     assert_eq!(act, window::Action::SpawnFileManager);
     wm.modifiers = 0;
 }
+
+#[test]
+fn searchable_launcher_keyboard_search_and_session_controls() {
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::demo().unwrap();
+
+    // 1. Initial State: Launcher closed
+    assert!(!wm.start_open);
+    assert!(!wm.launcher_focused);
+
+    // 2. Open launcher via toggle
+    wm.toggle_start_menu(&mut s);
+    assert!(wm.start_open);
+    assert!(wm.launcher_focused);
+    assert_eq!(wm.launcher_selected, 0);
+    assert_eq!(wm.menu_hover, Some(0));
+    assert!(wm.launcher_search.is_empty());
+
+    let (items, count) = wm.matching_launcher_items();
+    assert_eq!(count, 9);
+    assert_eq!(items[0], Some(window::LauncherItem::App(window::app_registry::find_manifest(window::AppId::Terminal).unwrap())));
+    assert_eq!(items[1], Some(window::LauncherItem::App(window::app_registry::find_manifest(window::AppId::Files).unwrap())));
+    assert_eq!(items[7], Some(window::LauncherItem::Exit));
+    assert_eq!(items[8], Some(window::LauncherItem::Restart));
+
+    // 3. Keyboard navigation with Down / Up arrow keys and wrap-around
+    let down_ev = crate::proto::KeyEvent::new(108, 0, crate::proto::KEY_STATE_PRESS, 0);
+    let up_ev = crate::proto::KeyEvent::new(103, 0, crate::proto::KEY_STATE_PRESS, 0);
+
+    assert!(wm.intercept_key(down_ev, &mut s));
+    assert_eq!(wm.launcher_selected, 1);
+    assert_eq!(wm.menu_hover, Some(1));
+
+    assert!(wm.intercept_key(up_ev, &mut s));
+    assert_eq!(wm.launcher_selected, 0);
+
+    assert!(wm.intercept_key(up_ev, &mut s));
+    assert_eq!(wm.launcher_selected, 8); // Wraps to last item (Restart)
+
+    // 4. Real-time typing and search query filtering
+    let key_c = crate::proto::KeyEvent::new(46, 0, crate::proto::KEY_STATE_PRESS, b'c');
+    let key_a = crate::proto::KeyEvent::new(30, 0, crate::proto::KEY_STATE_PRESS, b'a');
+    let key_l = crate::proto::KeyEvent::new(38, 0, crate::proto::KEY_STATE_PRESS, b'l');
+    let key_c2 = crate::proto::KeyEvent::new(46, 0, crate::proto::KEY_STATE_PRESS, b'c');
+
+    assert!(wm.intercept_key(key_c, &mut s));
+    assert!(wm.intercept_key(key_a, &mut s));
+    assert!(wm.intercept_key(key_l, &mut s));
+    assert!(wm.intercept_key(key_c2, &mut s));
+    assert_eq!(wm.launcher_search.as_str(), "calc");
+    assert_eq!(wm.launcher_selected, 0);
+
+    let (calc_items, calc_count) = wm.matching_launcher_items();
+    assert_eq!(calc_count, 1);
+    assert_eq!(calc_items[0], Some(window::LauncherItem::App(window::app_registry::find_manifest(window::AppId::Calc).unwrap())));
+
+    // 5. Enter key activates the selected Calculator result
+    let enter_ev = crate::proto::KeyEvent::new(crate::proto::KEY_ENTER, 0, crate::proto::KEY_STATE_PRESS, b'\n');
+    assert!(wm.intercept_key(enter_ev, &mut s));
+    assert!(!wm.start_open);
+    assert!(!wm.launcher_focused);
+    assert_eq!(wm.take_pending_action(), Some(window::Action::SpawnCalc));
+
+    // 6. Empty search results state
+    wm.toggle_start_menu(&mut s);
+    let key_z = crate::proto::KeyEvent::new(44, 0, crate::proto::KEY_STATE_PRESS, b'z');
+    assert!(wm.intercept_key(key_z, &mut s));
+    assert!(wm.intercept_key(key_z, &mut s));
+    assert!(wm.intercept_key(key_z, &mut s));
+    assert_eq!(wm.launcher_search.as_str(), "zzz");
+
+    let (empty_items, empty_count) = wm.matching_launcher_items();
+    assert_eq!(empty_count, 0);
+    assert_eq!(empty_items[0], None);
+
+    // Enter with 0 results dismisses cleanly without action
+    assert!(wm.intercept_key(enter_ev, &mut s));
+    assert!(!wm.start_open);
+    assert_eq!(wm.take_pending_action(), None);
+
+    // 7. Search session controls (reboot -> Restart)
+    wm.toggle_start_menu(&mut s);
+    for b in b"reboot" {
+        let ev = crate::proto::KeyEvent::new(0, 0, crate::proto::KEY_STATE_PRESS, *b);
+        assert!(wm.intercept_key(ev, &mut s));
+    }
+    let (reboot_items, reboot_count) = wm.matching_launcher_items();
+    assert!(reboot_count >= 1);
+    assert_eq!(reboot_items[0], Some(window::LauncherItem::Restart));
+
+    assert!(wm.intercept_key(enter_ev, &mut s));
+    assert!(!wm.start_open);
+    assert_eq!(wm.take_pending_action(), Some(window::Action::Restart));
+
+    // 8. Escape key dismisses launcher and resets search
+    wm.toggle_start_menu(&mut s);
+    let key_t = crate::proto::KeyEvent::new(20, 0, crate::proto::KEY_STATE_PRESS, b't');
+    assert!(wm.intercept_key(key_t, &mut s));
+    assert_eq!(wm.launcher_search.as_str(), "t");
+
+    let esc_ev = crate::proto::KeyEvent::new(crate::proto::KEY_ESC, 0, crate::proto::KEY_STATE_PRESS, 27);
+    assert!(wm.intercept_key(esc_ev, &mut s));
+    assert!(!wm.start_open);
+    assert!(!wm.launcher_focused);
+    assert!(wm.launcher_search.is_empty());
+
+    // 9. Mouse and keyboard focus synchronization
+    wm.toggle_start_menu(&mut s);
+    let menu_r = WindowManager::start_menu_rect(s.height);
+    // Hover over slot 2 (Notepad, y = menu_r.y + 24 + 2 * 22 + 10 = menu_r.y + 78)
+    let _ = wm.mouse(menu_r.x + 50, menu_r.y + 78, 0, &mut s);
+    assert_eq!(wm.menu_hover, Some(2));
+    assert_eq!(wm.launcher_selected, 2);
+
+    // Press Enter to activate Notepad via mouse-selected index
+    assert!(wm.intercept_key(enter_ev, &mut s));
+    assert!(!wm.start_open);
+    assert_eq!(wm.take_pending_action(), Some(window::Action::SpawnNotepad));
+}

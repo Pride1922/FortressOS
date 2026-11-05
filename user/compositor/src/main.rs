@@ -675,6 +675,21 @@ fn dispatch_key_event(
     is_test: bool,
 ) -> bool {
     if windows.intercept_key(ev, scene) {
+        if let Some(act) = windows.take_pending_action() {
+            match act {
+                window::Action::SpawnTerminal => open_terminal(clients, scene),
+                window::Action::SpawnFileManager => open_files(clients, scene),
+                window::Action::SpawnNotepad => open_notepad(clients, None, scene),
+                window::Action::SpawnCalc => open_calc(clients, scene),
+                window::Action::SpawnVault => open_vault(clients, scene),
+                window::Action::OpenDesktopApp(id) => desktop.open(id, windows, scene),
+                window::Action::Exit => return true,
+                window::Action::Restart => {
+                    RESTART_REQUESTED.store(true, core::sync::atomic::Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
         return false;
     }
     // Global shortcut: Ctrl + Alt + T launches Terminal from anywhere

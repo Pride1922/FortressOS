@@ -86,17 +86,6 @@ pub fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
 #[allow(dead_code)]
 pub const APP_CATALOG: &[AppManifest] = &[
     AppManifest {
-        id: AppId::Files,
-        name: "Files",
-        exec_packaged: c"/usr/bin/files",
-        exec_fallback: c"/bin/files",
-        icon_kind: 0,
-        category: "Productivity",
-        keywords: "folder explorer browse directory disk storage files",
-        is_builtin: false,
-        builtin_id: None,
-    },
-    AppManifest {
         id: AppId::Terminal,
         name: "Terminal",
         exec_packaged: c"/usr/bin/gterm",
@@ -104,6 +93,17 @@ pub const APP_CATALOG: &[AppManifest] = &[
         icon_kind: 1,
         category: "Utilities",
         keywords: "console shell bash command prompt cli sh terminal gterm",
+        is_builtin: false,
+        builtin_id: None,
+    },
+    AppManifest {
+        id: AppId::Files,
+        name: "Files",
+        exec_packaged: c"/usr/bin/files",
+        exec_fallback: c"/bin/files",
+        icon_kind: 0,
+        category: "Productivity",
+        keywords: "folder explorer browse directory disk storage files",
         is_builtin: false,
         builtin_id: None,
     },
