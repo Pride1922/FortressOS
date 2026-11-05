@@ -23,7 +23,7 @@ DOOM_FREESTANDING_FLAGS := -ffreestanding -fno-builtin -nostdlib -Os -mno-red-zo
                            -fno-stack-protector -fno-pie -fno-asynchronous-unwind-tables \
                            -Wall -Wno-unused-result -Wno-stringop-truncation -Wno-format-overflow \
                            -Wno-pointer-to-int-cast -Wno-dangling-pointer \
-                           -I$(DOOM_DIR)/include -I$(DOOM_UPSTREAM) \
+                           -I$(DOOM_DIR)/include -I$(DOOM_UPSTREAM) -I. \
                            -DNORMALUNIX -DLINUX -DSNDSERV -D_DEFAULT_SOURCE
 
 $(DOOM_BUILD):
