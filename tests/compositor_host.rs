@@ -3575,3 +3575,90 @@ users:x:100:fabio,alice\n\
     assert_eq!(def.initial.as_str(), "O");
     assert_eq!(def.role.as_str(), "Administrator");
 }
+
+#[test]
+fn app_registry_manifests_and_window_lifecycle() {
+    use window::app_registry::{
+        find_manifest, resolve_from_path, AppId, APP_CATALOG,
+    };
+    use surface::Rect;
+
+    // 1. App Catalog metadata verification
+    assert!(APP_CATALOG.len() >= 7);
+    let term = find_manifest(AppId::Terminal).expect("Terminal manifest");
+    assert_eq!(term.name, "Terminal");
+    assert!(term.matches_query("term"));
+    assert!(term.matches_query("SHELL"));
+    assert!(term.matches_query("cli"));
+    assert!(!term.matches_query("spreadsheet"));
+
+    let files = find_manifest(AppId::Files).expect("Files manifest");
+    assert_eq!(files.name, "Files");
+    assert!(files.matches_query("folder"));
+    assert!(files.matches_query("disk"));
+
+    let settings = find_manifest(AppId::Settings).expect("Settings manifest");
+    assert!(settings.is_builtin);
+    assert!(settings.is_available());
+    assert!(settings.matches_query("theme"));
+
+    // 2. Path resolution
+    assert_eq!(resolve_from_path(c"/usr/bin/files"), Some(AppId::Files));
+    assert_eq!(resolve_from_path(c"/bin/files"), Some(AppId::Files));
+    assert_eq!(resolve_from_path(c"/usr/bin/gterm"), Some(AppId::Terminal));
+    assert_eq!(resolve_from_path(c"/bin/terminal"), Some(AppId::Terminal));
+    assert_eq!(resolve_from_path(c"/usr/bin/notepad"), Some(AppId::Notepad));
+    assert_eq!(resolve_from_path(c"/usr/bin/calc"), Some(AppId::Calc));
+    assert_eq!(resolve_from_path(c"/bin/desktop-vault"), Some(AppId::Vault));
+    assert_eq!(resolve_from_path(c"/bin/cat"), None);
+
+    // 3. Window and WindowManager app association
+    let mut wm = WindowManager::demo().unwrap();
+    let mut s = Surface::new(1280, 800).unwrap();
+
+    // Initial state from demo: Window 1 (Sysinfo, id 1), Window 2 (Clock/Sys, id 2)
+    assert!(wm.app_is_running(AppId::SysInfo));
+    assert!(!wm.app_is_running(AppId::Terminal));
+    assert_eq!(wm.app_window_count(AppId::Terminal), 0);
+
+    // Create a terminal window tagged with AppId::Terminal
+    let r1 = Rect { x: 50, y: 50, w: 400, h: 300 };
+    let w1 = window::Window::new(101, "Terminal: /home/fabio", r1).unwrap()
+        .with_app_id(AppId::Terminal);
+    wm.windows.push(w1);
+    assert!(wm.app_is_running(AppId::Terminal));
+    assert_eq!(wm.app_window_count(AppId::Terminal), 1);
+
+    // Create a second terminal window (multi-window)
+    let r2 = Rect { x: 80, y: 80, w: 400, h: 300 };
+    let w2 = window::Window::new(102, "Terminal: /tmp", r2).unwrap()
+        .with_app_id(AppId::Terminal);
+    wm.windows.push(w2);
+    assert_eq!(wm.app_window_count(AppId::Terminal), 2);
+
+    // Focus terminal app
+    assert!(wm.focus_app(AppId::Terminal, &mut s));
+    assert!(wm.app_is_focused(AppId::Terminal));
+    let front = wm.app_frontmost_window(AppId::Terminal).expect("frontmost window");
+    assert_eq!(front.id, 102);
+
+    // Cycle between the two terminal windows
+    assert!(wm.cycle_app_windows(AppId::Terminal, &mut s));
+    let front_cycled = wm.app_frontmost_window(AppId::Terminal).expect("frontmost window");
+    assert_eq!(front_cycled.id, 101);
+
+    // Minimize frontmost terminal and verify focus_app restores it
+    if let Some(w) = wm.windows.iter_mut().find(|w| w.id == 101) {
+        w.is_minimized = true;
+    }
+    assert!(wm.app_frontmost_window(AppId::Terminal).unwrap().is_minimized);
+    assert!(wm.focus_app(AppId::Terminal, &mut s));
+    assert!(!wm.app_frontmost_window(AppId::Terminal).unwrap().is_minimized);
+
+    // Mutate window title (e.g. user opens vim) and prove app association is preserved
+    if let Some(w) = wm.windows.iter_mut().find(|w| w.id == 101) {
+        w.title = alloc::string::String::from("Editing main.c - VIM");
+    }
+    assert_eq!(wm.app_window_count(AppId::Terminal), 2);
+    assert_eq!(window::window_icon_kind(&wm.windows.iter().find(|w| w.id == 101).unwrap()), 1);
+}

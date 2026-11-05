@@ -54,6 +54,7 @@ pub fn app_path() -> &'static core::ffi::CStr {
 
 struct Client {
     window_id: u32,
+    app_id: Option<crate::window::AppId>,
     pid: isize,
     requests: i32,
     events: i32,
@@ -176,8 +177,10 @@ impl Clients {
             }
             return Err(if pid < 0 { pid } else { sys::EINVAL });
         }
+        let app_id = crate::window::app_registry::resolve_from_path(path);
         self.slots[slot] = Some(Client {
             window_id: 0,
+            app_id,
             pid,
             requests: req[0],
             events: ev[1],
@@ -279,10 +282,13 @@ impl Clients {
                     w,
                     h,
                 };
-                let Some(win) = Window::new(next_id, msg.title().unwrap_or("Application"), rect)
+                let Some(mut win) = Window::new(next_id, msg.title().unwrap_or("Application"), rect)
                 else {
                     return false;
                 };
+                if let Some(app) = client.app_id {
+                    win.app_id = Some(app);
+                }
                 client.window_id = next_id;
                 client.created = true;
                 self.next_window_id = next_id.wrapping_add(1).max(FIRST_WINDOW_ID);
@@ -687,7 +693,7 @@ mod restart_tests {
     fn restart_waits_for_client_teardown() {
         let mut clients=Clients::default();
         assert!(clients.restart_ready());
-        clients.slots[0]=Some(Client{window_id:100,pid:42,requests:-1,events:-1,pixels:0,
+        clients.slots[0]=Some(Client{window_id:100,app_id:None,pid:42,requests:-1,events:-1,pixels:0,
             stride:0,rows:0,created:false,rx:[0;MSG_SIZE],rx_len:0,
             open:proto::OpenRequest::default(),last_open_ns:None});
         assert!(!clients.restart_ready());

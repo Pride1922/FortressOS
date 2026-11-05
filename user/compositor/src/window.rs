@@ -1,6 +1,9 @@
 //! Single-process window server. Stack order is back to front; no client IPC yet.
 #[path = "theme.rs"]
 pub mod theme;
+#[path = "app_registry.rs"]
+pub mod app_registry;
+pub use app_registry::AppId;
 
 use crate::{
     font::GLYPHS,
@@ -115,6 +118,7 @@ pub enum Hit {
 
 pub struct Window {
     pub id: u32,
+    pub app_id: Option<AppId>,
     pub title: String,
     /// Outer bounds. Content starts at (1,25), excluding the titlebar and border.
     pub rect: Rect,
@@ -176,8 +180,20 @@ impl Window {
         let mut name = String::new();
         name.try_reserve_exact(title.len()).ok()?;
         name.push_str(title);
+        let app_id = match id {
+            3 => Some(AppId::Terminal),
+            4 => Some(AppId::Notepad),
+            5 => Some(AppId::Files),
+            1 | 6 => Some(AppId::SysInfo),
+            7 => Some(AppId::Settings),
+            8 => Some(AppId::Network),
+            9 => Some(AppId::DateTime),
+            10 => Some(AppId::Power),
+            _ => None,
+        };
         Some(Self {
             id,
+            app_id,
             title: name,
             rect,
             content,
@@ -192,6 +208,12 @@ impl Window {
             panel_ready: false,
             title_cache: core::cell::RefCell::new(TitleCache::default()),
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn with_app_id(mut self, app_id: AppId) -> Self {
+        self.app_id = Some(app_id);
+        self
     }
 
     /// Runs `f` with the title bar rows, re-rendering them through `pixel()`
@@ -1213,7 +1235,18 @@ fn render_dock_icon_scaled(item: usize, dx: usize, dy: usize, size: usize, dock_
     theme::blend_coverage(color, dock_bg, cov)
 }
 
-fn window_icon_kind(w: &Window) -> usize {
+pub fn window_icon_kind(w: &Window) -> usize {
+    if let Some(app) = w.app_id {
+        return match app {
+            AppId::Files => 0,
+            AppId::Terminal => 1,
+            AppId::Notepad => 2,
+            AppId::Calc => 3,
+            AppId::Vault => 4,
+            AppId::Settings | AppId::Network | AppId::DateTime | AppId::Power => 4,
+            AppId::SysInfo => 3,
+        };
+    }
     if w.id == 5 || w.title.starts_with("Files") {
         0
     } else if w.id == 3 || w.title.starts_with("Terminal") {
@@ -1985,6 +2018,74 @@ pub fn verify_unlock_password(pass: &str) -> bool {
             .rev()
             .find(|w| w.is_focused && !w.is_minimized)
             .map(|w| w.id)
+    }
+
+    /// Returns the number of open windows for this application.
+    #[allow(dead_code)]
+    pub fn app_window_count(&self, app: AppId) -> usize {
+        self.windows.iter().filter(|w| w.app_id == Some(app)).count()
+    }
+
+    /// Returns true if at least one window of this application is open.
+    #[allow(dead_code)]
+    pub fn app_is_running(&self, app: AppId) -> bool {
+        self.windows.iter().any(|w| w.app_id == Some(app))
+    }
+
+    /// Returns true if the currently focused window belongs to this application.
+    #[allow(dead_code)]
+    pub fn app_is_focused(&self, app: AppId) -> bool {
+        self.focused_window_id().and_then(|id| {
+            self.windows.iter().find(|w| w.id == id).and_then(|w| w.app_id)
+        }) == Some(app)
+    }
+
+    /// Returns the frontmost window for this application (highest in stacking order).
+    #[allow(dead_code)]
+    pub fn app_frontmost_window(&self, app: AppId) -> Option<&Window> {
+        self.windows.iter().rev().find(|w| w.app_id == Some(app))
+    }
+
+    /// Focuses or unminimizes the frontmost window of this application.
+    #[allow(dead_code)]
+    pub fn focus_app(&mut self, app: AppId, s: &mut Surface) -> bool {
+        if let Some(id) = self.app_frontmost_window(app).map(|w| w.id) {
+            self.unminimize_and_raise(id, s);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cycles focus to the next window of this application.
+    #[allow(dead_code)]
+    pub fn cycle_app_windows(&mut self, app: AppId, s: &mut Surface) -> bool {
+        let matching: Vec<u32> = self
+            .windows
+            .iter()
+            .filter(|w| w.app_id == Some(app))
+            .map(|w| w.id)
+            .collect();
+        if matching.len() <= 1 {
+            return false;
+        }
+        if let Some(top) = self.windows.last() {
+            if top.app_id == Some(app) {
+                let next_id = matching
+                    .iter()
+                    .find(|&&id| id != top.id)
+                    .copied()
+                    .unwrap_or(matching[0]);
+                self.unminimize_and_raise(next_id, s);
+                return true;
+            }
+        }
+        if let Some(&first) = matching.first() {
+            self.unminimize_and_raise(first, s);
+            true
+        } else {
+            false
+        }
     }
 
     fn tooltip_rect(width: usize, height: usize) -> Rect {
