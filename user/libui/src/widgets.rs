@@ -29,28 +29,48 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// Anti-aliased proportional UI text in theme font.
+    /// Anti-aliased proportional UI text in theme font (Body 14 px).
     pub fn text(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
-        let w = font::text_width(text).min(self.width.saturating_sub(x));
-        let h = font::LINE_HEIGHT.min(self.height.saturating_sub(y));
+        self.text_sized(font::FontSize::Body, x, y, text, fg, bg);
+    }
+
+    /// Anti-aliased synthetic bold UI text in theme font (Body 14 px).
+    pub fn text_bold(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
+        self.text_bold_sized(font::FontSize::Body, x, y, text, fg, bg);
+    }
+
+    /// Anti-aliased proportional UI text in specified `FontSize`.
+    pub fn text_sized(&mut self, size: font::FontSize, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
+        let w = font::text_width_sized(size, text).min(self.width.saturating_sub(x));
+        let h = font::line_height(size).min(self.height.saturating_sub(y));
         for dy in 0..h {
             for dx in 0..w {
-                let p = font::text_pixel(text, dx, dy, fg, bg);
+                let p = font::text_pixel_sized(size, text, dx, dy, fg, bg);
                 self.put(x + dx, y + dy, p);
             }
         }
     }
 
-    /// Anti-aliased synthetic bold UI text in theme font.
-    pub fn text_bold(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
-        let w = font::text_width(text).min(self.width.saturating_sub(x));
-        let h = font::LINE_HEIGHT.min(self.height.saturating_sub(y));
+    /// Anti-aliased synthetic bold UI text in specified `FontSize`.
+    pub fn text_bold_sized(&mut self, size: font::FontSize, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
+        let w = font::text_width_sized(size, text).min(self.width.saturating_sub(x));
+        let h = font::line_height(size).min(self.height.saturating_sub(y));
         for dy in 0..h {
             for dx in 0..w {
-                let p = font::text_pixel_bold(text, dx, dy, fg, bg);
+                let p = font::text_pixel_bold_sized(size, text, dx, dy, fg, bg);
                 self.put(x + dx, y + dy, p);
             }
         }
+    }
+
+    /// Title text (18 px proportional font, 22 px line height).
+    pub fn title(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
+        self.text_sized(font::FontSize::Title, x, y, text, fg, bg);
+    }
+
+    /// Caption text (12 px proportional font, 16 px line height).
+    pub fn caption(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32) {
+        self.text_sized(font::FontSize::Caption, x, y, text, fg, bg);
     }
 
     /// Single-line standard label on panel background.

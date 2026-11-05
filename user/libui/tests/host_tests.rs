@@ -207,3 +207,57 @@ fn test_card_shadow_redraw_cost_benchmark() {
     assert!(us_elev2 > 0.0);
     assert!(us_elev3 > 0.0);
 }
+
+#[test]
+fn test_multi_size_typography() {
+    use libui::font::{
+        line_height, text_pixel, text_pixel_bold, text_pixel_bold_sized, text_pixel_sized,
+        text_width, text_width_sized, FontSize, BODY_LINE_HEIGHT, CAPTION_LINE_HEIGHT,
+        TITLE_LINE_HEIGHT,
+    };
+
+    assert_eq!(line_height(FontSize::Title), 22);
+    assert_eq!(line_height(FontSize::Body), 18);
+    assert_eq!(line_height(FontSize::Caption), 16);
+    assert_eq!(TITLE_LINE_HEIGHT, 22);
+    assert_eq!(BODY_LINE_HEIGHT, 18);
+    assert_eq!(CAPTION_LINE_HEIGHT, 16);
+
+    let sample = "FortressOS Settings & Typography";
+    let w_title = text_width_sized(FontSize::Title, sample);
+    let w_body = text_width_sized(FontSize::Body, sample);
+    let w_caption = text_width_sized(FontSize::Caption, sample);
+
+    // Title 18px must be wider than Body 14px, which must be wider than Caption 12px
+    assert!(w_title > w_body, "w_title ({}) > w_body ({})", w_title, w_body);
+    assert!(w_body > w_caption, "w_body ({}) > w_caption ({})", w_body, w_caption);
+
+    // Backward compatibility: legacy text_width matches Body exactly
+    assert_eq!(text_width(sample), w_body);
+
+    // Empty text width is 0
+    assert_eq!(text_width_sized(FontSize::Title, ""), 0);
+    assert_eq!(text_width_sized(FontSize::Body, ""), 0);
+    assert_eq!(text_width_sized(FontSize::Caption, ""), 0);
+
+    // Out-of-bounds y returns background
+    let bg = 0xff1e1e1e;
+    let fg = 0xffffffff;
+    assert_eq!(text_pixel_sized(FontSize::Title, sample, 0, 22, fg, bg), bg);
+    assert_eq!(text_pixel_sized(FontSize::Body, sample, 0, 18, fg, bg), bg);
+    assert_eq!(text_pixel_sized(FontSize::Caption, sample, 0, 16, fg, bg), bg);
+
+    // Backward compatibility: text_pixel matches Body exactly
+    for y in 0..18 {
+        for x in 0..15 {
+            assert_eq!(
+                text_pixel(sample, x, y, fg, bg),
+                text_pixel_sized(FontSize::Body, sample, x, y, fg, bg)
+            );
+            assert_eq!(
+                text_pixel_bold(sample, x, y, fg, bg),
+                text_pixel_bold_sized(FontSize::Body, sample, x, y, fg, bg)
+            );
+        }
+    }
+}

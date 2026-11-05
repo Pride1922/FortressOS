@@ -173,6 +173,58 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+    #[allow(dead_code)]
+    pub fn title(&mut self, x: usize, y: usize, text: &str, color: u32, bg: u32) {
+        let tw = crate::font::text_width_sized(crate::font::FontSize::Title, text);
+        let r = self.adj(Rect { x, y, w: tw, h: crate::font::TITLE_LINE_HEIGHT });
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(w) = r.w.checked_mul(self.scale) else { return; };
+        let Some(h) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = w.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(h);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(h);
+        for py in first_y..last_y {
+            for px in 0..draw_width {
+                let lx = px / self.scale;
+                let ly = py / self.scale;
+                let p = crate::font::text_pixel_sized(crate::font::FontSize::Title, text, lx, ly, color, bg);
+                if top + py >= scroll {
+                    self.pixel(left + px, top + py - scroll, p);
+                }
+            }
+        }
+    }
+    #[allow(dead_code)]
+    pub fn caption(&mut self, x: usize, y: usize, text: &str, color: u32, bg: u32) {
+        let tw = crate::font::text_width_sized(crate::font::FontSize::Caption, text);
+        let r = self.adj(Rect { x, y, w: tw, h: crate::font::CAPTION_LINE_HEIGHT });
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(w) = r.w.checked_mul(self.scale) else { return; };
+        let Some(h) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = w.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(h);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(h);
+        for py in first_y..last_y {
+            for px in 0..draw_width {
+                let lx = px / self.scale;
+                let ly = py / self.scale;
+                let p = crate::font::text_pixel_sized(crate::font::FontSize::Caption, text, lx, ly, color, bg);
+                if top + py >= scroll {
+                    self.pixel(left + px, top + py - scroll, p);
+                }
+            }
+        }
+    }
     #[inline]
     fn rounded_frame_pixel(
         lx: usize,

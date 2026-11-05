@@ -12,6 +12,10 @@ bin/
 # Checked-in font atlas; ordinary builds need no font rasterizer.
 !user/libui/assets/ui-alpha.bin
 !user/libui/assets/ui-advances.bin
+!user/libui/assets/ui-title-alpha.bin
+!user/libui/assets/ui-title-advances.bin
+!user/libui/assets/ui-caption-alpha.bin
+!user/libui/assets/ui-caption-advances.bin
 *.iso
 *.img
 target/
