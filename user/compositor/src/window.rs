@@ -457,15 +457,15 @@ impl Window {
                             return 0xff1d4ed8; // active bottom rim
                         }
                     } else if y == 0 || y < 8 {
-                        return 0xff3b404c; // muted inactive top rim
+                        return 0xff334155; // muted inactive top rim
                     } else if x == 0 {
-                        return 0xff2b303b;
+                        return 0xff1e293b;
                     } else if y == self.rect.h - 1 {
-                        return 0xff14171d;
+                        return 0xff0f172a;
                     } else if x == self.rect.w - 1 {
-                        return 0xff232730;
+                        return 0xff1e293b;
                     } else {
-                        return 0xff181b22;
+                        return 0xff111620;
                     }
                 }
 
@@ -491,13 +491,13 @@ impl Window {
                         return 0xff1d4ed8;
                     }
                 } else if y == 0 {
-                    return 0xff3b404c;
+                    return 0xff334155;
                 } else if x == 0 {
-                    return 0xff2b303b;
+                    return 0xff1e293b;
                 } else if y == self.rect.h - 1 {
-                    return 0xff14171d;
+                    return 0xff0f172a;
                 } else if x == self.rect.w - 1 {
-                    return 0xff232730;
+                    return 0xff1e293b;
                 }
             }
 
@@ -506,9 +506,9 @@ impl Window {
             }
 
             let title_bg = if self.is_focused {
-                0xff222b3a // rich sapphire-tinted active titlebar
+                0xff161d2a // Direction A: OBSIDIAN_SURFACE
             } else {
-                0xff1c1f26 // muted inactive titlebar
+                0xff111620 // Direction A: OBSIDIAN_PANEL
             };
 
             // Modern top-right traffic-light window controls (Close, Maximize/Restore, Minimize)
@@ -597,14 +597,14 @@ impl Window {
 
             // Titlebar top 1px subtle glass highlight for non-button title area
             if y == 1 {
-                return if self.is_focused { 0xff33435c } else { 0xff282c36 };
+                return if self.is_focused { 0xff38bdf8 } else { 0xff222d3d };
             }
 
             // Left-aligned clean title with Windows styling
             let title_len = theme::text_width(&self.title);
             let title_max_x = self.rect.w.saturating_sub(116);
             if x >= 12 && x < (12 + title_len).min(title_max_x) && (3..21).contains(&y) {
-                let title_fg = if self.is_focused { 0xffffffff } else { 0xff8b949e };
+                let title_fg = if self.is_focused { 0xfff0f6fc } else { 0xff64748b };
                 return theme::text_pixel(&self.title, x - 12, y - 3, title_fg, title_bg);
             }
 
@@ -984,9 +984,9 @@ impl Panel {
 
                 let under = s.pixels[y * s.width + x];
                 let bg = if ly == 27 {
-                    blend_color(0x384152, under, 160)
+                    blend_color(theme::BORDER, under, 220)
                 } else {
-                    blend_color(0x101318, under, 204)
+                    blend_color(theme::OBSIDIAN_PANEL, under, 220)
                 };
 
                 // Activities Pill (Left)
@@ -997,9 +997,9 @@ impl Panel {
                 };
                 let act_bg = if act_cov > 0 {
                     if wm.start_open {
-                        blend_color(0x2d3748, bg, (act_cov * 255) / 16)
+                        blend_color(theme::OBSIDIAN_SURFACE, bg, (act_cov * 255) / 16)
                     } else {
-                        blend_color(0xffffff, bg, (act_cov * 22) / 16)
+                        blend_color(0xffffffff, bg, (act_cov * 18) / 16)
                     }
                 } else {
                     bg
@@ -1012,7 +1012,7 @@ impl Panel {
                     0
                 };
                 let clk_bg = if clk_cov > 0 {
-                    blend_color(0xffffff, bg, (clk_cov * 20) / 16)
+                    blend_color(0xffffffff, bg, (clk_cov * 18) / 16)
                 } else {
                     bg
                 };
@@ -1024,19 +1024,19 @@ impl Panel {
                     0
                 };
                 let tray_bg = if tray_cov > 0 {
-                    blend_color(0xffffff, bg, (tray_cov * 22) / 16)
+                    blend_color(0xffffffff, bg, (tray_cov * 18) / 16)
                 } else {
                     bg
                 };
 
                 let p = if (15..=23).contains(&lx) && (8..=19).contains(&ly) && fortress_tower_pixel(lx - 15, ly - 8) {
-                    0xff38bdf8
+                    theme::ACCENT_CYAN
                 } else if (5..23).contains(&ly) && (28..96).contains(&lx) {
-                    theme::text_pixel("Activities", lx - 28, ly - 5, 0xfff8fafc, act_bg)
+                    theme::text_pixel("Activities", lx - 28, ly - 5, theme::TEXT_PRIMARY, act_bg)
                 } else if act_cov > 0 {
                     act_bg
                 } else if (5..23).contains(&ly) && (clock_x..clock_x + clock_tw).contains(&lx) {
-                    theme::text_pixel(clock_str, lx - clock_x, ly - 5, 0xfff8fafc, clk_bg)
+                    theme::text_pixel(clock_str, lx - clock_x, ly - 5, theme::TEXT_PRIMARY, clk_bg)
                 } else if clk_cov > 0 {
                     clk_bg
                 } else if (9..18).contains(&ly) && (tray_x + 12..tray_x + 24).contains(&lx) {
@@ -1198,6 +1198,27 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
             0xff0d1117
         }
         4 => {
+            // Calculator: Slate tile with arithmetic display and keypad
+            if iy == 0 {
+                return 0xff30363d;
+            }
+            if (3..=8).contains(&iy) && (4..=23).contains(&ix) {
+                if (5..=7).contains(&iy) && (19..=21).contains(&ix) {
+                    return 0xff38bdf8;
+                }
+                return 0xff090d14;
+            }
+            let is_key = ((11..=14).contains(&iy) || (16..=19).contains(&iy) || (21..=24).contains(&iy))
+                && ((4..=8).contains(&ix) || (11..=15).contains(&ix) || (18..=22).contains(&ix));
+            if is_key {
+                if (21..=24).contains(&iy) && (18..=22).contains(&ix) {
+                    return 0xff38bdf8;
+                }
+                return 0xff1e293b;
+            }
+            0xff111620
+        }
+        5 => {
             // Settings: Slate blue tile with precision gear icon
             if iy == 0 {
                 return 0xff3b82f6;
@@ -1216,6 +1237,29 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
                 return if iy < 14 { 0xff93c5fd } else { 0xff60a5fa };
             }
             0xff172030
+        }
+        6 => {
+            // Vault: Obsidian tile with metallic golden padlock and silver shackle
+            if iy == 0 {
+                return 0xff30363d;
+            }
+            let dx = (ix as i32 - 14).abs();
+            if (4..=12).contains(&iy) && (dx >= 4 && dx <= 6) {
+                return 0xffcbd5e1;
+            }
+            if (4..=6).contains(&iy) && dx <= 6 {
+                return 0xffcbd5e1;
+            }
+            if (12..=23).contains(&iy) && (6..=22).contains(&ix) {
+                if (16..=19).contains(&iy) && (13..=15).contains(&ix) {
+                    return 0xff090d14;
+                }
+                if iy == 12 {
+                    return 0xfffcd34d;
+                }
+                return 0xffe3b341;
+            }
+            0xff0d1117
         }
         _ => dock_bg,
     }
@@ -1241,10 +1285,10 @@ pub fn window_icon_kind(w: &Window) -> usize {
             AppId::Files => 0,
             AppId::Terminal => 1,
             AppId::Notepad => 2,
-            AppId::Calc => 3,
-            AppId::Vault => 4,
-            AppId::Settings | AppId::Network | AppId::DateTime | AppId::Power => 4,
             AppId::SysInfo => 3,
+            AppId::Calc => 4,
+            AppId::Settings | AppId::Network | AppId::DateTime | AppId::Power => 5,
+            AppId::Vault => 6,
         };
     }
     if w.id == 5 || w.title.starts_with("Files") {
@@ -1256,7 +1300,7 @@ pub fn window_icon_kind(w: &Window) -> usize {
     } else if w.id == 1 || w.id == 6 || w.title.starts_with("System") {
         3
     } else {
-        4
+        5
     }
 }
 
@@ -3434,9 +3478,9 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                             s.pixels[y * s.width + x] = if is_tip_border {
                                 theme::BORDER
                             } else if lx >= 10 && (4..20).contains(&ly) {
-                                theme::text_pixel(label, lx - 10, ly - 4, 0xffffffff, 0xff282828)
+                                theme::text_pixel(label, lx - 10, ly - 4, theme::TEXT_PRIMARY, theme::OBSIDIAN_PANEL)
                             } else {
-                                0xff282828
+                                theme::OBSIDIAN_PANEL
                             };
                         }
                     }
@@ -3502,7 +3546,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                             theme::BORDER
                                         }
                                     } else if is_search_box {
-                                        let box_bg = 0xff161b22;
+                                        let box_bg = theme::OBSIDIAN_WELL;
                                         let gx = px.saturating_sub(12);
                                         let gy = py.saturating_sub(8);
                                         let in_glass = px >= 12 && px < 20 && (8..16).contains(&py)
@@ -3511,7 +3555,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 || (gx == 5 && gy == 5)
                                                 || (gx == 6 && gy == 6));
                                         if in_glass {
-                                            0xff8b949e
+                                            theme::MUTED
                                         } else if q_str.is_empty() {
                                             if px >= 24 && px < bw - 12 && (4..20).contains(&py) {
                                                 theme::text_pixel("Search...", px - 24, py - 4, theme::MUTED, box_bg)
@@ -3524,23 +3568,23 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                             if px == cursor_x && (6..18).contains(&py) {
                                                 theme::ACCENT
                                             } else if px >= 24 && px < bw - 12 && (4..20).contains(&py) {
-                                                theme::text_pixel(q_str, px - 24, py - 4, theme::TEXT, box_bg)
+                                                theme::text_pixel(q_str, px - 24, py - 4, theme::TEXT_PRIMARY, box_bg)
                                             } else {
                                                 box_bg
                                             }
                                         }
                                     } else {
-                                        0xff202022
+                                        theme::OBSIDIAN_PANEL
                                     }
                                 }
                             } else if count == 0 {
                                 // Empty state when query matches no apps
                                 if (48..64).contains(&py) && px >= 16 && px < bw - 16 {
-                                    theme::text_pixel("No applications found", px - 16, py - 48, theme::TEXT, 0xff202022)
+                                    theme::text_pixel("No applications found", px - 16, py - 48, theme::TEXT_PRIMARY, theme::OBSIDIAN_PANEL)
                                 } else if (68..84).contains(&py) && px >= 16 && px < bw - 16 {
-                                    theme::text_pixel("Check spelling or search terms", px - 16, py - 68, theme::MUTED, 0xff202022)
+                                    theme::text_pixel("Check spelling or search terms", px - 16, py - 68, theme::MUTED, theme::OBSIDIAN_PANEL)
                                 } else {
-                                    0xff202022
+                                    theme::OBSIDIAN_PANEL
                                 }
                             } else {
                                 let item_idx = (py - 24) / 22;
@@ -3549,9 +3593,9 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                     let is_hover = self.menu_hover == Some(item_idx)
                                         || (self.menu_hover.is_none() && self.launcher_selected == item_idx);
                                     let item_bg = if is_hover && px >= 4 && px < bw - 4 {
-                                        0xff3a3a3a
+                                        theme::OBSIDIAN_ELEVATED
                                     } else {
-                                        0xff282828
+                                        theme::OBSIDIAN_PANEL
                                     };
 
                                     // Divider line above session actions (when showing full menu)
@@ -3729,11 +3773,11 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 None => ("", false),
                                             };
                                             let fg = if is_hover {
-                                                0xffffffff
+                                                theme::TEXT_PRIMARY
                                             } else if is_danger {
-                                                0xffff7b72
+                                                theme::TEXT_DANGER
                                             } else {
-                                                theme::TEXT
+                                                theme::TEXT_PRIMARY
                                             };
                                             if !label.is_empty() && px >= 28 && px < bw - 8 && (3..19).contains(&item_y) {
                                                 theme::text_pixel(label, px - 28, item_y - 3, fg, item_bg)
@@ -3743,7 +3787,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                         }
                                     }
                                 } else {
-                                    0xff202022
+                                    theme::OBSIDIAN_PANEL
                                 }
                             };
                         }
@@ -3768,15 +3812,15 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                 if px >= 8 && px < bw - 8 {
                                     theme::BORDER
                                 } else {
-                                    0xff282828
+                                    theme::OBSIDIAN_PANEL
                                 }
                             } else {
                                 let item = Self::context_item_at(px, py);
                                 let is_hover = item.is_some() && item == self.context_hover;
                                 let item_bg = if is_hover && px >= 4 && px < bw - 4 {
-                                    0xff3a3a3a
+                                    theme::OBSIDIAN_ELEVATED
                                 } else {
-                                    0xff282828
+                                    theme::OBSIDIAN_PANEL
                                 };
 
                                 let (item_idx, item_y) = match item {
@@ -3880,7 +3924,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                         4 => "Personalize",
                                         _ => "",
                                     };
-                                    let fg = if is_hover { 0xffffffff } else { theme::TEXT };
+                                    let fg = if is_hover { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
                                     if !label.is_empty() && px >= 28 && px < bw - 6 && (2..18).contains(&item_y) {
                                         theme::text_pixel(label, px - 28, item_y - 2, fg, item_bg)
                                     } else {
@@ -3988,17 +4032,17 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                         glass_base
                                     } else {
                                         let tile_border = tx <= 1 || tx >= 126 || ty <= 1 || ty >= 114;
-                                        let tile_bg = if is_sel { 0xff1e3a5f } else { 0xff1d2330 };
+                                        let tile_bg = if is_sel { 0xff162234 } else { theme::OBSIDIAN_PANEL };
                                         let icon_kind = self
                                             .windows
                                             .iter()
                                             .find(|w| w.id == wid)
                                             .map(window_icon_kind)
-                                            .unwrap_or(4);
+                                            .unwrap_or(5);
                                         let inner = if ty == 0 {
-                                            if is_sel { 0xff7dd3fc } else { 0xff3b475c }
+                                            if is_sel { theme::ACCENT_HOVER } else { 0xff334155 }
                                         } else if tile_border {
-                                            if is_sel { 0xff38bdf8 } else { 0xff2d3646 }
+                                            if is_sel { theme::ACCENT_CYAN } else { theme::BORDER }
                                         } else if (36..92).contains(&tx) && (12..68).contains(&ty) {
                                             render_dock_icon_scaled(
                                                 icon_kind,
@@ -4013,6 +4057,8 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 1 => "Terminal",
                                                 2 => "Notepad",
                                                 3 => "System Info",
+                                                4 => "Calculator",
+                                                6 => "Vault",
                                                 _ => "Settings",
                                             };
                                             let sw = theme::text_width(app_label);

@@ -602,7 +602,7 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
-        self.box_text_centered(r, text, 0xffffffff, theme::ACCENT, true, focused);
+        self.box_text_centered(r, text, theme::TEXT_ON_ACCENT, theme::ACCENT, true, focused);
     }
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
         let outer_bg = theme::BG_SIDEBAR;
@@ -620,6 +620,8 @@ impl<'a> Canvas<'a> {
             0u8
         } else if text.starts_with("Network") {
             1u8
+        } else if text.starts_with("Power") {
+            3u8
         } else {
             2u8
         };
@@ -674,12 +676,22 @@ impl<'a> Canvas<'a> {
                             let cone = wy <= 0 && ix.abs() <= (-wy + 1);
                             d2 <= 1 || (cone && ((12..=22).contains(&d2) || (42..=58).contains(&d2)))
                         }
-                        _ => {
+                        2 => {
                             // Mini clock icon
                             let d2 = ix * ix + iy * iy;
                             (20..=34).contains(&d2)
                                 || (ix == 0 && (-3..=0).contains(&iy))
                                 || (iy == 0 && (0..=3).contains(&ix))
+                        }
+                        _ => {
+                            // Mini battery icon: 10x6 body with 1x2 nub
+                            let bx = ix;
+                            let by = iy;
+                            let is_nub = bx == 5 && (-1..=1).contains(&by);
+                            let is_body = (-5..=4).contains(&bx) && (-3..=3).contains(&by);
+                            let is_border = is_body && (bx == -5 || bx == 4 || by == -3 || by == 3);
+                            let is_fill = (-4..=1).contains(&bx) && (-2..=2).contains(&by);
+                            is_nub || is_border || is_fill
                         }
                     }
                 } else {
