@@ -63,6 +63,9 @@ $(HOST_DOOM_BIN): tests/doom_host.c $(DOOM_DIR)/doom_runtime.c $(DOOM_DIR)/doomg
 	       $(addprefix $(DOOM_UPSTREAM)/,$(DOOM_SRC_CORE)) \
 	       -lm -o $@
 
-.PHONY: test-doom-host
+.PHONY: test-doom-host test-doom-qemu
 test-doom-host: $(HOST_DOOM_BIN)
 	@$(HOST_DOOM_BIN)
+
+test-doom-qemu: $(BUILD_DIR)/doom.elf $(BOOTABLE_IMG)
+	@python3 scripts/test_doom_qemu.py
