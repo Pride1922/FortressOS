@@ -261,3 +261,79 @@ fn test_multi_size_typography() {
         }
     }
 }
+
+#[test]
+fn test_glass_blur_vs_tint_cost_benchmark() {
+    let surfaces = [
+        ("Taskbar/Dock", 1024, 48),
+        ("Start Menu", 280, 300),
+        ("Panel/Modal", 500, 350),
+    ];
+
+    std::println!("\n=== Glass & Blur Performance Benchmark ===");
+    for &(name, w, h) in &surfaces {
+        let stride = 1920;
+        let bg_buf = vec![0xff202430u32; stride * 1080];
+        let mut out_buf = vec![0u32; stride * 1080];
+
+        // 1. Translucent Tint (Alpha Blend: read under, blend tint, write)
+        let t0 = std::time::Instant::now();
+        let iters = 50;
+        let tint = 0xff1e293b;
+        for _ in 0..iters {
+            for y in 0..h {
+                let row_offset = y * stride;
+                for x in 0..w {
+                    let under = bg_buf[row_offset + x];
+                    out_buf[row_offset + x] = blend_coverage(tint, under, 12);
+                }
+            }
+        }
+        let elapsed_tint = t0.elapsed();
+        let us_tint = elapsed_tint.as_micros() as f64 / iters as f64;
+
+        // 2. 3x3 Box Blur + Tint (sample 9 neighbors, average, blend tint, write)
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            for y in 1..(h - 1) {
+                let row_offset = y * stride;
+                for x in 1..(w - 1) {
+                    let mut r_acc = 0u32;
+                    let mut g_acc = 0u32;
+                    let mut b_acc = 0u32;
+                    for dy in 0..3 {
+                        let sample_row = (y + dy - 1) * stride;
+                        for dx in 0..3 {
+                            let p = bg_buf[sample_row + (x + dx - 1)];
+                            r_acc += (p >> 16) & 0xff;
+                            g_acc += (p >> 8) & 0xff;
+                            b_acc += p & 0xff;
+                        }
+                    }
+                    let blurred = 0xff000000
+                        | (((r_acc / 9) & 0xff) << 16)
+                        | (((g_acc / 9) & 0xff) << 8)
+                        | ((b_acc / 9) & 0xff);
+                    out_buf[row_offset + x] = blend_coverage(tint, blurred, 12);
+                }
+            }
+        }
+        let elapsed_blur3 = t0.elapsed();
+        let us_blur3 = elapsed_blur3.as_micros() as f64 / iters as f64;
+
+        std::println!(
+            "{:<14} ({}x{} = {} px): Tint: {:>8.2} us | 3x3 Blur: {:>9.2} us (+{:.1}%)",
+            name,
+            w,
+            h,
+            w * h,
+            us_tint,
+            us_blur3,
+            ((us_blur3 - us_tint) / us_tint) * 100.0
+        );
+
+        assert!(us_tint > 0.0);
+        assert!(us_blur3 > 0.0);
+    }
+}
+
