@@ -1453,9 +1453,9 @@ impl AppHost {
             theme::BG_SIDEBAR,
         );
         c.label_bold(52, 9, 120, 18, self.user.name.as_str(), theme::TEXT_PRIMARY, theme::BG_SIDEBAR);
-        c.label_h(52, 26, 120, 18, self.user.role.as_str(), theme::SUBTEXT, theme::BG_SIDEBAR);
+        c.caption(52, 28, self.user.role.as_str(), theme::TEXT_SUBTEXT, theme::BG_SIDEBAR);
 
-        c.fill_rect(Rect { x: 14, y: 48, w: 152, h: 1 }, theme::BORDER_PROFILE_DIVIDER);
+        c.divider_h(14, 48, 152, theme::BORDER_PROFILE_DIVIDER);
 
         let nav_items = [
             "Personalization",
@@ -1473,8 +1473,8 @@ impl AppHost {
         }
 
         if h >= 400 {
-            c.fill_rect(Rect { x: 14, y: h.saturating_sub(36), w: 152, h: 1 }, theme::BORDER_DIVIDER_DARK);
-            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", theme::TEXT_SLATE, theme::BG_SIDEBAR);
+            c.divider_h(14, h.saturating_sub(36), 152, theme::BORDER_DIVIDER_DARK);
+            c.caption(14, h.saturating_sub(26), "FortressOS v0.2.0", theme::TEXT_SLATE, theme::BG_SIDEBAR);
         }
     }
     fn draw(&self, index: usize, c: &mut Canvas) {
@@ -1484,11 +1484,11 @@ impl AppHost {
         let mut text = Text::<112>::default();
         match kind {
             0 => {
-                c.label_h(196, 12, 520, 18, "Personalization", theme::TEXT, theme::PANEL);
-                c.label_h(196, 32, 520, 18, "Display scaling, wallpaper artwork, and clock format", theme::SUBTEXT, theme::PANEL);
+                c.title(196, 12, "Personalization", theme::TEXT_PRIMARY, theme::PANEL);
+                c.caption(196, 36, "Display scaling, wallpaper artwork, and clock format", theme::TEXT_MUTED, theme::PANEL);
 
                 c.label_bold(196, 56, 520, 18, "Interface Scale", theme::TEXT_PRIMARY, theme::PANEL);
-                c.label_h(196, 74, 520, 18, "Scale windows and desktop elements for screen density", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 76, "Scale windows and desktop elements for screen density", theme::TEXT_SUBTEXT, theme::PANEL);
                 for i in 0..3 {
                     c.button(
                         APPEARANCE[i].rect,
@@ -1497,10 +1497,10 @@ impl AppHost {
                         focus == i,
                     );
                 }
-                c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+                c.divider_h(196, 130, 540, theme::BORDER_SUBTLE);
 
                 c.label_bold(196, 138, 520, 18, "Desktop Background", theme::TEXT_PRIMARY, theme::PANEL);
-                c.label_h(196, 156, 520, 18, "Choose wallpaper artwork or ambient radial glow", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 158, "Choose wallpaper artwork or ambient radial glow", theme::TEXT_SUBTEXT, theme::PANEL);
                 c.wallpaper_card(
                     APPEARANCE[3].rect,
                     "Hello World",
@@ -1515,10 +1515,10 @@ impl AppHost {
                     !self.draft.wallpaper,
                     focus == 4,
                 );
-                c.fill_rect(Rect { x: 196, y: 214, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+                c.divider_h(196, 214, 540, theme::BORDER_SUBTLE);
 
                 c.label_bold(196, 222, 520, 18, "Taskbar Clock", theme::TEXT_PRIMARY, theme::PANEL);
-                c.label_h(196, 240, 520, 18, "Choose between 24-hour and 12-hour clock format", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 242, "Choose between 24-hour and 12-hour clock format", theme::TEXT_SUBTEXT, theme::PANEL);
                 c.button(
                     APPEARANCE[5].rect,
                     "24-Hour",
@@ -1531,19 +1531,19 @@ impl AppHost {
                     !self.draft.clock_24h,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 298, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+                c.divider_h(196, 298, 540, theme::BORDER_SUBTLE);
 
                 c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
                 c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
 
-                c.label_h(196, 350, 540, 18, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
+                c.caption(196, 350, self.messages[kind].as_str(), theme::TEXT_MUTED, theme::PANEL);
             }
             1 => self.draw_network(c, focus),
             2 => {
-                c.label_h(196, 12, 520, 18, "Time & Language", theme::TEXT, theme::PANEL);
-                c.label_h(196, 32, 520, 18, "System clock, time synchronization, and regional timezone", theme::SUBTEXT, theme::PANEL);
+                c.title(196, 12, "Time & Language", theme::TEXT_PRIMARY, theme::PANEL);
+                c.caption(196, 36, "System clock, time synchronization, and regional timezone", theme::TEXT_MUTED, theme::PANEL);
 
-                c.card(Rect { x: 196, y: 52, w: 540, h: 52 }, theme::BG_CARD, theme::BORDER);
+                c.card_elevated(Rect { x: 196, y: 52, w: 540, h: 52 }, theme::BG_CARD, theme::BORDER, 2, theme::PANEL);
                 c.icon_badge(
                     Rect { x: 204, y: 64, w: 32, h: 28 },
                     2,
@@ -1569,7 +1569,7 @@ impl AppHost {
                 } else {
                     ("Hardware RTC clock synchronized", theme::SUBTEXT)
                 };
-                c.label_h(246, 78, 360, 18, sublabel, subcolor, theme::BG_CARD);
+                c.caption(246, 78, sublabel, subcolor, theme::BG_CARD);
                 if self.clock_sync_in_progress {
                     c.button(CLOCK[7].rect, "Syncing...", true, focus == 7);
                 } else if self.clock_synced {
@@ -1586,17 +1586,17 @@ impl AppHost {
                 }
 
                 c.label_bold(196, 114, 520, 18, "System Timezone", theme::TEXT_PRIMARY, theme::PANEL);
-                c.label_h(196, 132, 520, 18, "Enter an installed IANA Region/City name", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 134, "Enter an installed IANA Region/City name", theme::TEXT_SUBTEXT, theme::PANEL);
                 c.entry_on(CLOCK[0].rect, self.zone.as_str(), focus == 0, theme::PANEL);
                 c.button_accent(CLOCK[1].rect, "Save Timezone", focus == 1);
-                c.label_h(196, 186, 520, 18, "Quick Presets", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 186, "Quick Presets", theme::TEXT_SUBTEXT, theme::PANEL);
                 for (i, label) in ["UTC", "Brussels", "New York", "Tokyo"].iter().enumerate() {
                     c.button(CLOCK[i + 2].rect, label, false, focus == i + 2);
                 }
-                c.fill_rect(Rect { x: 196, y: 238, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+                c.divider_h(196, 238, 540, theme::BORDER_SUBTLE);
 
                 c.label_bold(196, 246, 520, 18, "Taskbar Clock Format", theme::TEXT_PRIMARY, theme::PANEL);
-                c.label_h(196, 264, 520, 18, "Toggle between 12-hour and 24-hour display format", theme::SUBTEXT, theme::PANEL);
+                c.caption(196, 266, "Toggle between 12-hour and 24-hour display format", theme::TEXT_SUBTEXT, theme::PANEL);
                 c.button(
                     CLOCK[6].rect,
                     if self.preferences.clock_24h {
@@ -1607,19 +1607,19 @@ impl AppHost {
                     true,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 322, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+                c.divider_h(196, 322, 540, theme::BORDER_SUBTLE);
 
-                c.label(196, 330, 520, self.messages[kind].as_str(), theme::MUTED);
+                c.caption(196, 330, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
             }
             _ => self.draw_power(c, focus),
         }
     }
     fn draw_power(&self, c: &mut Canvas, focus: usize) {
-        c.label_h(196, 12, 520, 18, "Power & Battery", theme::TEXT, theme::PANEL);
-        c.label_h(196, 32, 520, 18, "Energy modes, battery charge status, and power efficiency", theme::SUBTEXT, theme::PANEL);
+        c.title(196, 12, "Power & Battery", theme::TEXT_PRIMARY, theme::PANEL);
+        c.caption(196, 36, "Energy modes, battery charge status, and power efficiency", theme::TEXT_MUTED, theme::PANEL);
 
         // Power Status Hero Card (x: 196, y: 56, w: 540, h: 96)
-        c.card(Rect { x: 196, y: 56, w: 540, h: 96 }, theme::BG_CARD, theme::BORDER);
+        c.card_elevated(Rect { x: 196, y: 56, w: 540, h: 96 }, theme::BG_CARD, theme::BORDER, 2, theme::PANEL);
 
         if let Some(ref bat) = self.battery {
             c.battery_icon(212, 70, bat);
@@ -1655,7 +1655,7 @@ impl AppHost {
             if bat.temperature_c > 0 {
                 let _ = write!(sub, "   Thermal: {} C", bat.temperature_c);
             }
-            c.label_h(212, 106, 508, 18, sub.as_str(), theme::MUTED, theme::BG_CARD);
+            c.caption(212, 106, sub.as_str(), theme::TEXT_MUTED, theme::BG_CARD);
         } else {
             c.icon_badge(
                 Rect { x: 204, y: 64, w: 32, h: 28 },
@@ -1666,14 +1666,14 @@ impl AppHost {
                 theme::BG_CARD,
             );
             c.label_bold(246, 64, 480, 18, "No Battery Detected", theme::TEXT_PRIMARY, theme::BG_CARD);
-            c.label_h(246, 84, 480, 18, "Desktop Mode: No battery detected or ACPI probe pending.", theme::MUTED, theme::BG_CARD);
-            c.label_h(246, 106, 480, 18, "Hardware power states and thermal limits managed by ACPI.", theme::SUBTEXT, theme::BG_CARD);
+            c.caption(246, 84, "Desktop Mode: No battery detected or ACPI probe pending.", theme::TEXT_MUTED, theme::BG_CARD);
+            c.caption(246, 104, "Hardware power states and thermal limits managed by ACPI.", theme::TEXT_SUBTEXT, theme::BG_CARD);
         }
 
         // Power Profile Section
-        c.fill_rect(Rect { x: 196, y: 168, w: 540, h: 1 }, theme::BORDER_SUBTLE);
+        c.divider_h(196, 168, 540, theme::BORDER_SUBTLE);
         c.label_bold(196, 178, 520, 18, "Power Profile", theme::TEXT_PRIMARY, theme::PANEL);
-        c.label_h(196, 196, 520, 18, "Balance system responsiveness and processor energy efficiency", theme::SUBTEXT, theme::PANEL);
+        c.caption(196, 198, "Balance system responsiveness and processor energy efficiency", theme::TEXT_SUBTEXT, theme::PANEL);
 
         c.button(
             POWER[0].rect,
@@ -1688,8 +1688,8 @@ impl AppHost {
             focus == 1,
         );
 
-        c.fill_rect(Rect { x: 196, y: 260, w: 540, h: 1 }, theme::BORDER_SUBTLE);
-        c.label(196, 270, 520, self.messages[3].as_str(), theme::MUTED);
+        c.divider_h(196, 260, 540, theme::BORDER_SUBTLE);
+        c.caption(196, 270, self.messages[3].as_str(), theme::TEXT_MUTED, theme::PANEL);
     }
     fn draw_network(&self, c: &mut Canvas, focus: usize) {
         let mut text = Text::<112>::default();
