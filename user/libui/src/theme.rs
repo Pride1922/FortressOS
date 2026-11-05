@@ -1,73 +1,92 @@
 //! The FortressOS desktop palette and design system tokens (0xAARRGGBB, always opaque).
+//! Direction A: "Obsidian Slate" — deep obsidian foundation, electric cyan accents,
+//! crisp white typography, and subtle slate depth.
+
+// --- Direction A: Obsidian Slate Canonical Tokens ---
+pub const OBSIDIAN_BASE: u32 = 0xff090d14;    // Deep midnight slate / desktop background
+pub const OBSIDIAN_SLATE: u32 = 0xff0d1117;   // Window frame / sidebar background
+pub const OBSIDIAN_PANEL: u32 = 0xff111620;   // Primary container card / panel
+pub const OBSIDIAN_SURFACE: u32 = 0xff161d2a; // Elevated card / active surface
+pub const OBSIDIAN_ELEVATED: u32 = 0xff1a2230;// Header row / control well
+pub const OBSIDIAN_WELL: u32 = 0xff0b0f17;    // Recessed text input well
+
+// --- Direction A Accent & Elevation ---
+pub const ACCENT_CYAN: u32 = 0xff38bdf8;      // Electric Sky Blue / Primary Cyan Accent
+pub const ACCENT_SAPPHIRE: u32 = 0xff2563eb;  // Active Window Elevation / Sapphire Halo
+pub const ACCENT_HOVER: u32 = 0xff7dd3fc;     // Cyan hover
+pub const ACCENT_MUTED: u32 = 0xff0284c7;     // Cyan pressed / dark
+pub const TEXT_ON_ACCENT: u32 = 0xff090d14;   // High-contrast dark text on cyan buttons
 
 // --- Core Palette (Canonical Tokens) ---
-pub const PANEL: u32 = 0xff1e1e1e;
-pub const SURFACE: u32 = 0xff2d2d2d;
-pub const BORDER: u32 = 0xff3e3e3e;
-pub const TEXT: u32 = 0xffe0e0e0;
-pub const MUTED: u32 = 0xff989898;
-pub const SUBTEXT: u32 = 0xff7e8796;
-pub const ACCENT: u32 = 0xff007aff;
+pub const PANEL: u32 = OBSIDIAN_PANEL;
+pub const SURFACE: u32 = OBSIDIAN_SURFACE;
+pub const BORDER: u32 = 0xff1e293b;
+pub const TEXT: u32 = 0xfff0f6fc;
+pub const MUTED: u32 = 0xff94a3b8;
+pub const SUBTEXT: u32 = 0xff94a3b8;
+pub const ACCENT: u32 = ACCENT_CYAN;
 pub const ACCENT_BLUE: u32 = 0xff007aff;
-pub const AMBER: u32 = 0xfff59e0b;
-pub const RED: u32 = 0xffef4444;
-pub const YELLOW: u32 = 0xffeab308;
+pub const AMBER: u32 = 0xfffbbf24;
+pub const RED: u32 = 0xfff87171;
+pub const YELLOW: u32 = 0xfffbbf24;
 pub const WHITE: u32 = 0xffffffff;
 
 /// Background behind recessed text inputs created with `entry()`.
-pub const INPUT_OUTER: u32 = 0xff282828;
+pub const INPUT_OUTER: u32 = OBSIDIAN_PANEL;
 /// Selected-button fill.
-pub const SELECTED: u32 = 0xff244b6e;
+pub const SELECTED: u32 = 0xff1d3557;
 
 // --- Semantic Background Surfaces ---
 pub const BG_APP: u32 = PANEL;
 pub const BG_SURFACE: u32 = SURFACE;
-pub const BG_SIDEBAR: u32 = 0xff111620;
-pub const BG_CARD: u32 = 0xff282828;
-pub const BG_CARD_HOVER: u32 = 0xff323232;
-pub const BG_INPUT_WELL: u32 = 0xff12151c;
+pub const BG_SIDEBAR: u32 = OBSIDIAN_SLATE;
+pub const BG_CARD: u32 = OBSIDIAN_PANEL;
+pub const BG_CARD_HOVER: u32 = OBSIDIAN_SURFACE;
+pub const BG_INPUT_WELL: u32 = OBSIDIAN_WELL;
 pub const BG_NAV_ROW: u32 = 0xff1e293b;
-pub const BG_NAV_SELECTED: u32 = 0xff334155;
-pub const BG_BADGE_SUCCESS: u32 = 0xff133223;
-pub const BG_BADGE_WARNING: u32 = 0xff332b14;
-pub const BG_BADGE_DANGER: u32 = 0xff361818;
-pub const BG_BADGE_INFO: u32 = 0xff1e2d40;
-pub const BG_BADGE_MUTED: u32 = 0xff1f2733;
+pub const BG_NAV_SELECTED: u32 = 0xff1d3557;
+pub const BG_BADGE_SUCCESS: u32 = 0xff064e3b;
+pub const BG_BADGE_WARNING: u32 = 0xff451a03;
+pub const BG_BADGE_DANGER: u32 = 0xff4c0519;
+pub const BG_BADGE_INFO: u32 = 0xff0c4a6e;
+pub const BG_BADGE_MUTED: u32 = 0xff1e293b;
 
 // --- Semantic Borders & Dividers ---
 pub const BORDER_CARD: u32 = BORDER;
-pub const BORDER_SUBTLE: u32 = 0xff2c313c;
-pub const BORDER_DIVIDER: u32 = 0xff263040;
-pub const BORDER_DIVIDER_DARK: u32 = 0xff1c2533;
-pub const BORDER_PROFILE_DIVIDER: u32 = 0xff222d3d;
-pub const BORDER_FOCUS: u32 = ACCENT;
+pub const BORDER_SUBTLE: u32 = 0xff1e293b;
+pub const BORDER_DIVIDER: u32 = 0xff1e293b;
+pub const BORDER_DIVIDER_DARK: u32 = 0xff131b26;
+pub const BORDER_PROFILE_DIVIDER: u32 = 0xff1e293b;
+pub const BORDER_FOCUS: u32 = ACCENT_CYAN;
+pub const BORDER_HOVER: u32 = 0xff334155;
 pub const BORDER_ACCENT_LIGHT: u32 = 0xff38bdf8;
-pub const BORDER_ACCENT_BLUE: u32 = 0xff3b82f6;
-pub const BORDER_BADGE_SUCCESS: u32 = 0xff22c55e;
-pub const BORDER_BADGE_WARNING: u32 = 0xffeab308;
-pub const BORDER_BADGE_DANGER: u32 = 0xffef4444;
-pub const BORDER_BADGE_MUTED: u32 = 0xff3a485c;
+pub const BORDER_ACCENT_BLUE: u32 = 0xff2563eb;
+pub const BORDER_BADGE_SUCCESS: u32 = 0xff34d399;
+pub const BORDER_BADGE_WARNING: u32 = 0xfffbbf24;
+pub const BORDER_BADGE_DANGER: u32 = 0xfff87171;
+pub const BORDER_BADGE_MUTED: u32 = 0xff334155;
 
 // --- Semantic Typography Colors ---
-pub const TEXT_PRIMARY: u32 = WHITE;
+pub const TEXT_PRIMARY: u32 = 0xfff0f6fc;
 pub const TEXT_BODY: u32 = TEXT;
-pub const TEXT_MUTED: u32 = MUTED;
-pub const TEXT_SUBTEXT: u32 = SUBTEXT;
-pub const TEXT_NAV_UNSELECTED: u32 = 0xff9fb0c7;
-pub const TEXT_SLATE: u32 = 0xff64748b;
-pub const TEXT_SUCCESS: u32 = 0xff4ade80;
-pub const TEXT_WARNING: u32 = 0xfffacc15;
+pub const TEXT_SECONDARY: u32 = 0xff94a3b8;
+pub const TEXT_MUTED: u32 = 0xff64748b;
+pub const TEXT_SUBTEXT: u32 = 0xff94a3b8;
+pub const TEXT_NAV_UNSELECTED: u32 = 0xff94a3b8;
+pub const TEXT_SLATE: u32 = 0xff94a3b8;
+pub const TEXT_SUCCESS: u32 = 0xff34d399;
+pub const TEXT_WARNING: u32 = 0xfffbbf24;
 pub const TEXT_DANGER: u32 = 0xfff87171;
 
 // --- Elevation & Bevel Highlights ---
-pub const TOP_HIGHLIGHT_DEFAULT: u32 = 0xff4c4c52;
-pub const TOP_HIGHLIGHT_ACCENT: u32 = 0xff5cc8ff;
-pub const TOP_HIGHLIGHT_SELECTED: u32 = 0xff4f94f8;
-pub const TOP_HIGHLIGHT_SURFACE: u32 = 0xff4a4a4a;
-pub const TOP_HIGHLIGHT_NAV: u32 = 0xff475973;
-pub const TOP_HIGHLIGHT_NAV_FOCUSED: u32 = 0xff60a5fa;
-pub const SHADOW_AMBIENT: u32 = 0xff08090c;
-pub const SHADOW_CORE: u32 = 0xff0b0d12;
+pub const TOP_HIGHLIGHT_DEFAULT: u32 = 0xff334155;
+pub const TOP_HIGHLIGHT_ACCENT: u32 = 0xff7dd3fc;
+pub const TOP_HIGHLIGHT_SELECTED: u32 = 0xff38bdf8;
+pub const TOP_HIGHLIGHT_SURFACE: u32 = 0xff222d3d;
+pub const TOP_HIGHLIGHT_NAV: u32 = 0xff334155;
+pub const TOP_HIGHLIGHT_NAV_FOCUSED: u32 = 0xff38bdf8;
+pub const SHADOW_AMBIENT: u32 = 0xff04070b;
+pub const SHADOW_CORE: u32 = 0xff06090e;
 
 // --- Visual Geometry & Layout Metrics (logical pixels) ---
 pub const RADIUS_CARD: usize = 8;

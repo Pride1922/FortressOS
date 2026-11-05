@@ -122,15 +122,16 @@ fn test_theme_tokens() {
     assert_eq!(BG_APP, PANEL);
     assert_eq!(BG_SURFACE, SURFACE);
     assert_eq!(BORDER_CARD, BORDER);
-    assert_eq!(TEXT_PRIMARY, WHITE);
     assert_eq!(TEXT_BODY, TEXT);
     assert_eq!(BORDER_FOCUS, ACCENT);
+    assert_eq!(ACCENT, ACCENT_CYAN);
+    assert_eq!(PANEL, OBSIDIAN_PANEL);
     assert_eq!(RADIUS_CARD, 8);
     assert_eq!(RADIUS_BUTTON, 6);
     assert_eq!(WIDTH_SIDEBAR, 180);
-    assert_eq!(BG_SIDEBAR, 0xff111620);
-    assert_eq!(BORDER_DIVIDER, 0xff263040);
-    assert_eq!(BORDER_SUBTLE, 0xff2c313c);
+    assert_eq!(BG_SIDEBAR, 0xff0d1117);
+    assert_eq!(BORDER_DIVIDER, 0xff1e293b);
+    assert_eq!(BORDER_SUBTLE, 0xff1e293b);
 }
 
 #[test]
