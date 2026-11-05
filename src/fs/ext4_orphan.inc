@@ -91,6 +91,10 @@ static int e4_orphan_validate_profiled(ext4_engine_t *e,boot_timing_t *timing) {
         if (e4_bit(owned,block)) { r=-VFS_EIO;goto done; }e4_set_bit(owned,block,true);
     }
     e4_open_profile_mark(timing,"inode-and-directory-validation");
+    /* Readdir validates the whole directory for every returned entry.
+     * Reuse clean blocks during this exclusive scan; every use still checks
+     * its checksum and records. Discard these copies before admission. */
+    fs->ownership_directory_cache=true;
     for (uint32_t g=0;g<fs->groups;g++) {
         if (e4_u16(fs->gd[g].raw+18)&1) {
             if (e4_u16(fs->gd[g].raw+14)!=fs->ipg || e4_u16(fs->gd[g].raw+16)) { r=-VFS_EIO;goto done; }
@@ -161,6 +165,8 @@ static int e4_orphan_validate_profiled(ext4_engine_t *e,boot_timing_t *timing) {
         }
         if (group_dirs!=e4_u16(fs->gd[g].raw+16)) { r=-VFS_EIO;goto done; }
     }
+    fs->ownership_directory_cache=false;
+    e4_cache_drop(fs,false);
     e4_open_profile_mark(timing,"namespace-reference-validation");
     if (refs[2].mode!=0x4000 || refs[2].parent!=2 || refs[2].incoming) { r=-VFS_EIO;goto done; }
     for (ino=2;ino<=fs->inodes;ino++) if (refs[ino].mode) {
@@ -218,6 +224,10 @@ static int e4_orphan_validate_profiled(ext4_engine_t *e,boot_timing_t *timing) {
         if (free!=e4_u16(fs->gd[g].raw+12)) { r=-VFS_EIO;goto done; }
     }
 done:
+    if (fs->ownership_directory_cache) {
+        fs->ownership_directory_cache=false;
+        e4_cache_drop(fs,false);
+    }
     e4_open_profile_mark(timing,"ownership-cleanup");
     fs->orphan_access=0;kfree(refs);kfree(owned);return r;
 }

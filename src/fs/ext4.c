@@ -75,6 +75,7 @@ struct ext4_mount {
     struct { uint32_t block; bool valid; uint8_t bytes[4096]; } metadata[8];
     unsigned metadata_next;
     bool metadata_enabled;
+    bool ownership_directory_cache; /* Private, read-only mount validation. */
     uint8_t sector[4096], scratch[4096];
     uint8_t tree[2][4096], validation_bitmap[4096];
     uint32_t validation_group;
@@ -249,7 +250,9 @@ static void e4_cache_committed(ext4_mount_t *fs,uint32_t block,const uint8_t *by
 static bool e4_cached_bytes(ext4_mount_t *fs,uint64_t off,void *out,size_t len,unsigned kind) {
     uint64_t cap=(uint64_t)fs->blocks*fs->bs;
     if (off>cap || len>cap-off) return false;
-    if (!fs->metadata_enabled || kind>E4_PR_INODE || !len || len>fs->bs-off%fs->bs)
+    if (!fs->metadata_enabled ||
+        (kind>E4_PR_INODE && !(fs->ownership_directory_cache && kind==E4_PR_DIRECTORY)) ||
+        !len || len>fs->bs-off%fs->bs)
         return e4_bytes_impl(fs,off,out,len,kind);
     uint32_t block=(uint32_t)(off/fs->bs);
     for (unsigned i=0;i<8;i++) if (fs->metadata[i].valid && fs->metadata[i].block==block) {

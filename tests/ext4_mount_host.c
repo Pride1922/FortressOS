@@ -277,6 +277,22 @@ static void cache_check(vfs_node_t *node) {
 static void directory_cache(block_dev_t *dev,const uint8_t *initial,const char *prefix) {
     ext4_fault_disk_t *d=dev->priv;reset(d,initial);ext4_mount_t *fs=NULL;
     assert(!ext4_mount_journal_fixture(dev,"/mnt",admitted,&fs));
+    assert(!fs->ownership_directory_cache);
+    e4_inode_t root;uint32_t found,physical;
+    assert(!e4_inode(fs,2,&root));
+    assert(!e4_dir_block(&root,0,&physical));
+    fs->ownership_directory_cache=true;
+    assert(e4_scan(&root,NULL,0,NULL,&found)==1);
+    uint64_t requests=e4_read_profile[E4_PR_DIRECTORY].requests;
+    assert(e4_scan(&root,NULL,0,NULL,&found)==1);
+    assert(e4_read_profile[E4_PR_DIRECTORY].requests==requests);
+    bool corrupted=false;
+    for (unsigned i=0;i<8;i++) if (fs->metadata[i].valid && fs->metadata[i].block==physical) {
+        fs->metadata[i].bytes[0]^=1;corrupted=true;break;
+    }
+    assert(corrupted && e4_scan(&root,NULL,0,NULL,&found)==-VFS_EIO);
+    fs->ownership_directory_cache=false;e4_cache_drop(fs,false);
+    assert(e4_scan(&root,NULL,0,NULL,&found)==1);
     assert(!vfs_mkdir("/mnt/growth",0));vfs_node_t *directory=vfs_lookup("/mnt/growth");assert(directory);
     cache_check(vfs_lookup("/mnt"));
     char name[61],path[96];memset(name,'x',60);name[60]=0;
