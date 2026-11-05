@@ -30,12 +30,36 @@ static void unchanged_denial(ext4_fault_disk_t *d,const char *a,const char *b,co
     assert(vfs_replace_creds(a,b,who)==expected);
     assert(!d->events && !memcmp(copy,d->stable,d->bytes) && !memcmp(copy,d->volatile_bytes,d->bytes));free(copy);
 }
+static void settings_in_account_directory(block_dev_t *dev,const uint8_t *initial) {
+    ext4_fault_disk_t *d=dev->priv;reset(d,initial);
+    ext4_mount_t *fs=NULL;assert(!ext4_mount_journal_fixture(dev,"/mnt",admitted,&fs));
+    assert(!vfs_mkdir("/mnt/etc",0755));
+    put_file("/mnt/etc/desktop.conf",'O',8);
+    put_file("/mnt/etc/.desktop.conf.new",'N',8);
+    put_file("/mnt/etc/passwd",'P',8);
+    vfs_node_t *parent=vfs_lookup("/mnt/etc");assert(parent);
+    fs->accounts_mutable=true;
+    fs->account_inodes[0]=((e4_inode_t *)parent->fs_private)->ino;
+    file_t *credentials=vfs_open("/mnt/etc/passwd",VFS_O_RDONLY);assert(credentials);
+    fs->account_inodes[1]=((e4_inode_t *)credentials->node->fs_private)->ino;
+    assert(!vfs_close(credentials));
+    unchanged_denial(d,"/mnt/etc/.desktop.conf.new","/mnt/etc/passwd",&root,-VFS_EROFS);
+    unchanged_denial(d,"/mnt/etc/passwd","/mnt/etc/desktop.conf",&root,-VFS_EROFS);
+    assert(!vfs_replace_creds("/mnt/etc/.desktop.conf.new","/mnt/etc/desktop.conf",&root));
+    file_t *setting=vfs_open("/mnt/etc/desktop.conf",VFS_O_RDONLY);assert(setting);
+    check_file(setting,'N',8);assert(!vfs_close(setting));
+    assert(!vfs_lookup("/mnt/etc/.desktop.conf.new"));
+    assert(!ext4_freeze_and_sync(fs));
+    teardown();
+    puts("PASS settings replacement in account directory; credential replacements remain read-only");
+}
 int main(int argc,char **argv) {
     assert(argc>=4&&argc<=6);bool wrap=argc>=5&&!strcmp(argv[4],"wrap"),quick=argc==6;
     creds_init_root(&root);user=(creds_t){.uid=1001,.euid=1001,.suid=1001,.gid=1001,.egid=1001,.sgid=1001};
     size_t n;uint8_t *initial=load(argv[1],&n);unsigned ss=(unsigned)strtoul(argv[2],NULL,10);
     ext4_fault_disk_t d={.stable=malloc(n),.volatile_bytes=malloc(n),.bytes=n,.cut=-1};assert(d.stable&&d.volatile_bytes);
     block_dev_t dev={.sector_size=ss,.sector_count=n/ss,.read_sector=ext4_fault_read,.write_sector=ext4_fault_write,.flush=ext4_fault_flush,.priv=&d};
+    settings_in_account_directory(&dev,initial);
     reset(&d,initial);ext4_mount_t *fs=NULL;assert(!ext4_mount_journal_fixture(&dev,"/mnt",admitted,&fs));
     assert(!vfs_mkdir("/mnt/a",0755) && !vfs_mkdir("/mnt/b",0755));
     put_file(source,'N',2051);if(wrap)put_file("/mnt/pad",'P',1);put_file(target,'O',1031);

@@ -482,7 +482,9 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8], mode: usize) -> R
         return Err(if closed < 0 { closed } else { sync });
     }
     let mut renamed = path_call(84, temporary, Some(path), 0);
-    if renamed < 0 {
+    // A missing destination permits first publication. Other replacement
+    // failures must retain their original error and cannot be retried safely.
+    if renamed == -5 {
         renamed = path_call(13, temporary, Some(path), 0);
     }
     if renamed < 0 {

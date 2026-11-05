@@ -71,8 +71,9 @@ static int e4_jreplace(vfs_node_t *old,const char *name,vfs_node_t *dest,const c
     if(dest->replace!=e4_jreplace)return -VFS_EOPNOTSUPP;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     ext4_mount_t *fs=((e4_inode_t *)old->fs_private)->fs;
-    int r=fs!=((e4_inode_t *)dest->fs_private)->fs ? -VFS_EOPNOTSUPP : e4_state(old);
-    if(!r)r=e4_state(dest);
+    int r=fs!=((e4_inode_t *)dest->fs_private)->fs ? -VFS_EOPNOTSUPP :
+        e4_state_account(old,e4_account_directory(old));
+    if(!r)r=e4_state_account(dest,e4_account_directory(dest));
     if(!r && (e4_account_name(old,name)||e4_account_name(dest,next)))r=-VFS_EROFS;
     if(!r && strlen(dest->path)+strlen(next)+1>=VFS_MAX_PATH)r=-VFS_EFBIG;
     uint32_t source=0,victim=0;e4_inode_t src={0},dst={0};

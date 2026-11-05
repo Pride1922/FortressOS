@@ -609,9 +609,10 @@ impl AppHost {
             -12 => "file is too large",
             -13 => "no free storage space",
             -14 => "operation unavailable",
-            -15 => "temporary settings file already exists",
+            -15 => "file already exists",
             -22 => "operation interrupted",
             -24 => "permission denied",
+            -32 => "permission denied",
             _ => "system operation failed",
         };
         let _ = write!(self.status, "{}: {}", message, reason);
