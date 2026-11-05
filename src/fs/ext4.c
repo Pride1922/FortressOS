@@ -283,9 +283,11 @@ static bool e4_power(uint32_t n,uint32_t base) {
 static bool e4_backup(uint32_t g) {
     return g==0 || g==1 || e4_power(g,3) || e4_power(g,5) || e4_power(g,7);
 }
-static bool e4_reserve(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
+/* Admission confines every reservation to its current block group.
+ * Earlier groups are disjoint, so only this group's entries can overlap. */
+static bool e4_reserve(ext4_mount_t *fs,uint32_t lo,uint32_t len,unsigned first) {
     if (!len || lo<fs->first || lo>=fs->blocks || len>fs->blocks-lo) return false;
-    for (unsigned i=0;i<fs->ranges;i++) {
+    for (unsigned i=first;i<fs->ranges;i++) {
         e4_range_t r=fs->reserved[i];
         if (lo<r.lo+r.len && r.lo<lo+len) return false;
     }
@@ -874,11 +876,12 @@ static int e4_admit(ext4_mount_t *fs) {
             e4_u16(d+14)>fs->ipg || e4_u16(d+16)>fs->ipg || e4_u16(d+28)>fs->ipg) return -VFS_EIO;
         if ((e4_u16(d+18)&1) && (e4_u16(d+14)!=fs->ipg || e4_u16(d+16))) return -VFS_EIO;
         free_blocks+=e4_u16(d+12); free_inodes+=e4_u16(d+14);
-        if (e4_backup(g) && !e4_reserve(fs,start,1+fs->gdt_blocks)) return -VFS_EIO;
+        if (e4_backup(g) && (1+fs->gdt_blocks>end ||
+            !e4_reserve(fs,start,1+fs->gdt_blocks,group_ranges))) return -VFS_EIO;
         uint32_t b=e4_u32(d), i=e4_u32(d+4), t=e4_u32(d+8);
         if (b<start || b>=start+end || i<start || i>=start+end || t<start ||
-            t>=start+end || itable>start+end-t || !e4_reserve(fs,b,1) ||
-            !e4_reserve(fs,i,1) || !e4_reserve(fs,t,itable)) return -VFS_EIO;
+            t>=start+end || itable>start+end-t || !e4_reserve(fs,b,1,group_ranges) ||
+            !e4_reserve(fs,i,1,group_ranges) || !e4_reserve(fs,t,itable,group_ranges)) return -VFS_EIO;
         /* UNINIT bitmaps have no valid on-disk contents. They cannot contain
          * accessible inodes/data; skip their checksum until initialized later. */
         if (!fs->journal_bootstrap && !(e4_u16(d+18)&2)) {
