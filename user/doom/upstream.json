@@ -1,0 +1,42 @@
+{
+  "engine": {
+    "name": "doomgeneric",
+    "repository": "https://github.com/ozkl/doomgeneric",
+    "commit": "e257a09527062bfb986b6e5e0780839b6cbd5b71",
+    "archive_url": "https://github.com/ozkl/doomgeneric/archive/e257a09527062bfb986b6e5e0780839b6cbd5b71.tar.gz",
+    "archive_sha256": "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7",
+    "license": "GPL-2.0-only"
+  },
+  "data": {
+    "name": "Freedoom",
+    "release": "v0.13.0",
+    "release_date": "2024-01-29",
+    "repository": "https://github.com/freedoom/freedoom",
+    "release_url": "https://github.com/freedoom/freedoom/releases/tag/v0.13.0",
+    "archives": {
+      "freedm-0.13.0.zip": {
+        "url": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedm-0.13.0.zip",
+        "sha256": "b420f13508ef745d7b38e83d15e55e0fc0b09d9a503c96741cddd9773d43f7c9"
+      },
+      "freedoom-0.13.0.zip": {
+        "url": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+        "sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59"
+      }
+    },
+    "wads": {
+      "freedm.wad": {
+        "size_bytes": 22218796,
+        "sha256": "d9adc4d792627e7fc47b09067b15486da724010c71dd12831e1cf8e0755b68ad"
+      },
+      "freedoom1.wad": {
+        "size_bytes": 28795076,
+        "sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d"
+      },
+      "freedoom2.wad": {
+        "size_bytes": 28787748,
+        "sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+      }
+    },
+    "license": "BSD-3-Clause"
+  }
+}
