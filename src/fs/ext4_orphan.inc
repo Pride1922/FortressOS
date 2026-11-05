@@ -198,22 +198,23 @@ static int e4_orphan_validate_profiled(ext4_engine_t *e,boot_timing_t *timing) {
             continue;
         }
         if (!e4_bitmap(fs,g,false)) { r=-VFS_EIO;goto done; }
-        unsigned free=0;
-        for (uint32_t byte=0;byte<count/8;byte++) {
-            uint8_t value=fs->scratch[byte];
-            /* Group bitmap bit zero is absolute block 'start'. For 1 KiB
-             * filesystems s_first_data_block is one, not byte-aligned. */
-            size_t index=start/8+byte;unsigned shift=start%8;
-            uint8_t expected=owned[index]>>shift;
-            if (shift) expected|=(uint8_t)(owned[index+1]<<(8-shift));
-            if (value!=expected) {r=-VFS_EIO;goto done;}
-            free+=8-e4_bitmap_used_byte(value);
+        if (!(start%8)) {
+            if (!e4_bitmap_equal_bytes(fs->scratch,owned+start/8,count/8)) { r=-VFS_EIO;goto done; }
+        } else {
+            for (uint32_t byte=0;byte<count/8;byte++) {
+                /* Group bitmap bit zero is absolute block 'start'. For 1 KiB
+                 * filesystems s_first_data_block is one, not byte-aligned. */
+                size_t index=start/8+byte;unsigned shift=start%8;
+                uint8_t expected=owned[index]>>shift;
+                if (shift) expected|=(uint8_t)(owned[index+1]<<(8-shift));
+                if (fs->scratch[byte]!=expected) {r=-VFS_EIO;goto done;}
+            }
         }
         for (uint32_t bit=count-count%8;bit<count;bit++) {
             bool allocated=e4_bit(fs->scratch,bit);
             if (allocated!=e4_bit(owned,start+bit)) {r=-VFS_EIO;goto done;}
-            free+=!allocated;
         }
+        unsigned free=e4_bitmap_free_count(fs->scratch,count);
         if (free!=e4_u16(fs->gd[g].raw+12)) { r=-VFS_EIO;goto done; }
     }
 done:

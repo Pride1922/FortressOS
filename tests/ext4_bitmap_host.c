@@ -18,6 +18,14 @@ int main(void) {
   size_t bytes=(bits+7)/8;uint8_t *allocation=malloc(bytes+1);assert(allocation);uint8_t *map=allocation+1;
   for(size_t b=0;b<bytes;b++){state=state*1664525u+1013904223u;map[b]=(uint8_t)(state>>24);}
   assert(e4_bitmap_free_count(map,bits)==reference(map,bits));
+  uint8_t *copy=malloc(bytes ? bytes : 1);assert(copy);
+  memcpy(copy,map,bytes);
+  assert(e4_bitmap_equal_bytes(map,copy,bytes));
+  if(bytes){
+   size_t at=state%bytes;copy[at]^=1u<<(state%8);
+   assert(!e4_bitmap_equal_bytes(map,copy,bytes));
+  }
+  free(copy);
   if(bits%8){uint32_t before=e4_bitmap_free_count(map,bits);map[bytes-1]^=(uint8_t)(0xffu<<(bits%8));assert(e4_bitmap_free_count(map,bits)==before);}
   free(allocation);
  }
