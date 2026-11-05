@@ -73,21 +73,36 @@ impl<'a> Painter<'a> {
         self.text_sized(font::FontSize::Caption, x, y, text, fg, bg);
     }
 
-    /// Single-line standard label on panel background.
+    /// Draws text transparently over the underlying destination pixels at (x, y),
+    /// bounded by max_width. When glyph alpha is 0, pixels are untouched (no background box).
+    pub fn draw_text_transparent_sized(
+        &mut self,
+        size: font::FontSize,
+        x: usize,
+        y: usize,
+        max_width: usize,
+        text: &str,
+        fg: u32,
+        bold: bool,
+    ) {
+        let tw = font::text_width_sized(size, text).min(max_width);
+        let th = font::line_height(size);
+        let r = Rect::new(x, y, tw, th);
+        self.shade_blend(r, |lx, ly| {
+            let alpha = if bold {
+                font::glyph_alpha_bold_sized(size, text, lx, ly)
+            } else {
+                font::glyph_alpha_sized(size, text, lx, ly)
+            };
+            (fg, alpha)
+        });
+    }
+
+    /// Single-line standard label blended transparently over destination pixels.
+    /// Pixels outside glyph coverage remain untouched (no dark rectangular patch);
+    /// anti-aliased glyph edges blend against the actual underlying surface.
     pub fn label(&mut self, x: usize, y: usize, width: usize, text: &str, color: u32) {
-        self.box_text(
-            Rect {
-                x,
-                y,
-                w: width,
-                h: 22,
-            },
-            text,
-            color,
-            theme::PANEL,
-            false,
-            false,
-        );
+        self.draw_text_transparent_sized(font::FontSize::Body, x, y + 2, width, text, color, false);
     }
 
     /// Single-line standard label on custom background.
@@ -133,7 +148,7 @@ impl<'a> Painter<'a> {
         );
     }
 
-    /// Bold label with custom height.
+    /// Bold label with custom height, vertically centered and blended transparently.
     pub fn label_bold(
         &mut self,
         x: usize,
@@ -142,22 +157,10 @@ impl<'a> Painter<'a> {
         height: usize,
         text: &str,
         color: u32,
-        bg: u32,
+        _bg: u32,
     ) {
-        let r = Rect {
-            x,
-            y,
-            w: width,
-            h: height,
-        };
-        let text_y = r.h.saturating_sub(18) / 2;
-        self.shade(r, |lx, ly| {
-            if ly >= text_y && ly < text_y + 18 {
-                font::text_pixel_bold(text, lx, ly - text_y, color, bg)
-            } else {
-                bg
-            }
-        });
+        let text_y = height.saturating_sub(font::BODY_LINE_HEIGHT) / 2;
+        self.draw_text_transparent_sized(font::FontSize::Body, x, y + text_y, width, text, color, true);
     }
 
     /// Internal left-aligned boxed text with optional border.
@@ -475,7 +478,8 @@ impl<'a> Painter<'a> {
         let rh = r.h + pad + 3;
         let radius = 8.min(r.h / 2);
         let top_hi = if active { 0xff38bdf8 } else { 0xff4c4c52 };
-        self.shade(
+        let halo_col = if active { 0xff0055cc } else { 0xff000000 };
+        self.shade_blend(
             Rect {
                 x: rx,
                 y: ry,
@@ -484,9 +488,8 @@ impl<'a> Painter<'a> {
             },
             |lx, ly| {
                 let shadow_cov = gfx::rounded_coverage(lx, ly, rw, rh, radius + 3);
-                let halo_col = if active { 0xff0055cc } else { 0xff080a0f };
-                let halo_alpha = shadow_cov * 6 / 16;
-                let outer_bg = gfx::blend_coverage(halo_col, theme::PANEL, halo_alpha);
+                let shadow_alpha = (shadow_cov * 6 / 16 * 255 / 16) as u8;
+
                 if lx >= pad && lx < pad + r.w && ly >= 2 && ly < 2 + r.h {
                     let cx = lx - pad;
                     let cy = ly - 2;
@@ -497,16 +500,37 @@ impl<'a> Painter<'a> {
                     } else {
                         bg
                     };
-                    SurfaceStyle {
-                        radius,
-                        outer_bg,
-                        fill: row_bg,
-                        border,
-                        top_highlight: top_hi,
+                    let outer_cov = gfx::rounded_coverage(cx, cy, r.w, r.h, radius);
+                    if outer_cov == 0 {
+                        // In the corner cutout of the card: outside the card, only shadow
+                        (halo_col, shadow_alpha)
+                    } else if outer_cov == 16 {
+                        // Fully inside the card fill
+                        let inner_cov = if cx >= 1 && cx + 1 < r.w && cy >= 1 && cy + 1 < r.h {
+                            gfx::rounded_coverage(cx - 1, cy - 1, r.w - 2, r.h - 2, radius.saturating_sub(1))
+                        } else {
+                            0
+                        };
+                        if inner_cov == 16 {
+                            let col = if cy == 1 && top_hi != 0 { top_hi } else { row_bg };
+                            (col, 255)
+                        } else {
+                            let edge_col = if cy <= 1 && top_hi != 0 { top_hi } else { border };
+                            let col = gfx::blend_coverage(row_bg, edge_col, inner_cov);
+                            (col, 255)
+                        }
+                    } else {
+                        // On the antialiased card edge: blend card edge into destination
+                        let edge_col = if cy <= 1 && top_hi != 0 { top_hi } else { border };
+                        let alpha = (outer_cov * 255 / 16) as u8;
+                        (edge_col, alpha)
                     }
-                    .shade(cx, cy, r.w, r.h)
+                } else if shadow_alpha > 0 {
+                    // In the outer shadow fringe
+                    (halo_col, shadow_alpha)
                 } else {
-                    outer_bg
+                    // Completely outside card and shadow: do not touch destination pixel
+                    (0, 0)
                 }
             },
         );

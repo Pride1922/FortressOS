@@ -337,3 +337,181 @@ fn test_glass_blur_vs_tint_cost_benchmark() {
     }
 }
 
+#[test]
+fn test_greeter_date_metrics_no_clipping() {
+    use libui::font::{text_width_sized, FontSize};
+
+    let sample_date = "Wednesday, September 24";
+    let dlen = sample_date.len();
+    let old_flawed_w = dlen * 8; // 23 * 8 = 184 px
+    let real_w = text_width_sized(FontSize::Body, sample_date); // proportional font: 215 px!
+
+    // Verify the old flawed calculation was smaller than real width (clipped by 31 px!)
+    assert_eq!(old_flawed_w, 184);
+    assert_eq!(real_w, 215);
+    assert!(real_w > old_flawed_w, "Proportional text must be wider than 8px-monospace assumption");
+
+    // Dynamic clock/date pill calculation
+    let time_view = "12:34";
+    let time_w = text_width_sized(FontSize::Body, time_view);
+    let needed_w = real_w.max(time_w) + 40;
+    let pill_w = needed_w.max(260);
+
+    assert!(pill_w >= 260);
+    assert!(pill_w > real_w + 32, "Pill must fully contain the date without clipping");
+}
+
+#[test]
+fn test_label_transparent_rendering_no_background_patch() {
+    use libui::painter::Painter;
+    use libui::theme;
+    use libui::font::{glyph_alpha_sized, FontSize};
+
+    let width = 300;
+    let height = 100;
+    let mut pixels = vec![0u32; width * height];
+
+    // Fill with a non-panel gradient (e.g. blue/cyan gradient: 0xff203050..0xff305080)
+    for y in 0..height {
+        for x in 0..width {
+            let r = 0x20 + (x * 16 / width) as u32;
+            let g = 0x30 + (y * 32 / height) as u32;
+            let b = 0x50 + ((x + y) * 24 / (width + height)) as u32;
+            pixels[y * width + x] = 0xff000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+    let original = pixels.clone();
+
+    let mut p = Painter::new(&mut pixels, width, height, width).unwrap();
+    let text = "Sign in to FortressOS";
+    p.label(20, 20, 250, text, 0xffffffff);
+
+    // Verify that pixels where glyph_alpha == 0 are IDENTICAL to original gradient
+    let text_w = libui::font::text_width(text);
+    for dy in 0..22 {
+        for dx in 0..250 {
+            let px = 20 + dx;
+            let py = 20 + dy;
+            let idx = py * width + px;
+
+            // In our label(), text is at dy in 2..20 (since line_height is 18 and offset is 2)
+            let alpha = if (2..20).contains(&dy) && dx < text_w {
+                glyph_alpha_sized(FontSize::Body, text, dx, dy - 2)
+            } else {
+                0
+            };
+
+            if alpha == 0 {
+                // MUST NOT have been overwritten with theme::PANEL or any background rectangle!
+                assert_eq!(
+                    pixels[idx], original[idx],
+                    "Pixel at ({}, {}) outside glyph must match original gradient without background patch",
+                    px, py
+                );
+                assert_ne!(
+                    pixels[idx], theme::PANEL,
+                    "Pixel at ({}, {}) must not be corrupted by theme::PANEL",
+                    px, py
+                );
+            } else if alpha == 255 {
+                // Solid glyph interior is white
+                assert_eq!(pixels[idx], 0xffffffff);
+            } else {
+                // Antialiased edge is blended over original, not over theme::PANEL
+                assert_ne!(pixels[idx], original[idx]);
+                assert_ne!(pixels[idx], 0xffffffff);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_sheet_card_no_dark_halos_and_repeated_redraw_idempotence() {
+    use libui::painter::Painter;
+    use libui::theme;
+
+    let width = 320;
+    let height = 200;
+    let mut bg = vec![0u32; width * height];
+
+    let make_wallpaper = |buf: &mut [u32]| {
+        for y in 0..height {
+            for x in 0..width {
+                let r = 14 + (x * 20 / width) as u32;
+                let g = 18 + (y * 30 / height) as u32;
+                let b = 38 + ((x + y) * 50 / (width + height)) as u32;
+                buf[y * width + x] = 0xff000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+    };
+    make_wallpaper(&mut bg);
+
+    let mut pixels = bg.clone();
+    let card_r = rect(50, 50, 200, 80);
+
+    // Frame 1
+    {
+        let mut p = Painter::new(&mut pixels, width, height, width).unwrap();
+        p.sheet_card(card_r, 0xff161b22, 0xff30363d, true);
+    }
+    let frame1 = pixels.clone();
+
+    // Verify outer corners outside card and shadow are untouched (NOT theme::PANEL)
+    // sheet_card bounding rect is rx = 46..254, ry = 48..137
+    // Top-left corner of expanded bounding rect: (46, 48)
+    assert_eq!(
+        pixels[48 * width + 46], bg[48 * width + 46],
+        "Corner pixel (46, 48) must match wallpaper (no dark halo patch)"
+    );
+    assert_ne!(pixels[48 * width + 46], theme::PANEL);
+
+    // Bottom-right corner of expanded bounding rect: (253, 136)
+    assert_eq!(
+        pixels[136 * width + 253], bg[136 * width + 253],
+        "Corner pixel (253, 136) must match wallpaper (no dark halo patch)"
+    );
+
+    // Center of card is solid card_bg
+    assert_eq!(pixels[90 * width + 150], 0xff161b22);
+
+    // Repeated redraw test: Simulate 10 frames where background is restored and card is redrawn
+    for _ in 2..=10 {
+        make_wallpaper(&mut pixels);
+        let mut p = Painter::new(&mut pixels, width, height, width).unwrap();
+        p.sheet_card(card_r, 0xff161b22, 0xff30363d, true);
+    }
+
+    // Frame 10 must be 100% bit-identical to Frame 1 (no accumulated darkening)
+    assert_eq!(pixels, frame1, "10 consecutive frames must be bit-identical without accumulated darkening");
+}
+
+#[test]
+fn test_painter_scale_and_clipping() {
+    use libui::painter::Painter;
+
+    let width = 400;
+    let height = 300;
+    let mut pixels = vec![0xff000000u32; width * height];
+
+    // Test Scale 1 (1080p native)
+    {
+        let mut p = Painter::new(&mut pixels, width, height, width).unwrap().with_scale(1);
+        p.sheet_card(rect(10, 10, 100, 60), 0xff161b22, 0xff30363d, false);
+        p.label(15, 15, 90, "Scale 1", 0xffffffff);
+    }
+
+    // Test Scale 2 (2x UHD)
+    {
+        let mut p = Painter::new(&mut pixels, width, height, width).unwrap().with_scale(2);
+        p.sheet_card(rect(70, 70, 100, 60), 0xff161b22, 0xff30363d, false);
+        p.label(75, 75, 90, "Scale 2", 0xffffffff);
+    }
+
+    // Extreme coordinate clipping test: must not panic or cause memory error
+    {
+        let mut p = Painter::new(&mut pixels, width, height, width).unwrap();
+        p.sheet_card(rect(380, 280, 200, 100), 0xff161b22, 0xff30363d, true);
+        p.label(390, 290, 100, "Clipped", 0xffffffff);
+    }
+}
+

@@ -108,6 +108,15 @@ impl<'a> Painter<'a> {
         self.dirty = Some(self.dirty.map(|d| d.union(r)).unwrap_or(r));
     }
 
+    /// Gets one device pixel (clipped; returns 0 if out of bounds).
+    #[inline]
+    pub fn get(&self, x: usize, y: usize) -> u32 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.pixels[y * self.stride + x]
+    }
+
     /// Core raster loop: paints logical rectangle `r` with `f(lx, ly)`, where
     /// (`lx`, `ly`) are logical coordinates relative to `r`'s origin.
     #[inline]
@@ -132,6 +141,47 @@ impl<'a> Painter<'a> {
             for x in 0..draw_width {
                 let p = f(x / scale, y / scale);
                 self.put(left + x, row, p);
+            }
+        }
+    }
+
+    /// Core raster loop with alpha blending: paints logical rectangle `r` with `f(lx, ly) -> (color, alpha)`.
+    /// Coordinates `(lx, ly)` are logical coordinates relative to `r`'s origin.
+    /// If alpha is 0, the destination pixel is completely untouched.
+    /// If alpha is 255, the destination pixel is replaced with color.
+    /// If 0 < alpha < 255, color is blended with the existing pixel at (left + x, row).
+    #[inline]
+    pub fn shade_blend(&mut self, r: Rect, mut f: impl FnMut(usize, usize) -> (u32, u8)) {
+        let scale = self.scale;
+        let Some(left) = r.x.checked_mul(scale) else { return };
+        let Some(top) = r.y.checked_mul(scale) else { return };
+        let Some(width) = r.w.checked_mul(scale) else { return };
+        let Some(height) = r.h.checked_mul(scale) else { return };
+        let draw_width = width.min(self.width.saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.height)
+            .saturating_sub(top)
+            .min(height);
+        for y in first_y..last_y {
+            if top + y < scroll {
+                continue;
+            }
+            let row = top + y - scroll;
+            for x in 0..draw_width {
+                let (color, alpha) = f(x / scale, y / scale);
+                if alpha == 0 {
+                    continue;
+                }
+                let px = left + x;
+                if alpha == 255 {
+                    self.put(px, row, color);
+                } else {
+                    let under = self.get(px, row);
+                    let blended = crate::gfx::blend_alpha(color, under, alpha as u32);
+                    self.put(px, row, blended);
+                }
             }
         }
     }

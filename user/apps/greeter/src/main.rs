@@ -759,20 +759,21 @@ fn render_greeter(
             let date_view = core::str::from_utf8(&date_buf[..dlen]).unwrap_or("");
 
             if cr.y >= 70 {
-                let pill_w = 260.min(screen_w.saturating_sub(20));
+                let time_w = libui::font::text_width(time_view);
+                let date_w = libui::font::text_width(date_view);
+                let needed_w = date_w.max(time_w) + 40;
+                let pill_w = needed_w.max(260).min(screen_w.saturating_sub(20));
                 let pill_h = 58;
                 let pill_x = (screen_w.saturating_sub(pill_w)) / 2;
                 let pill_y = cr.y.saturating_sub(pill_h + 16);
 
                 p.sheet_card(rect(pill_x, pill_y, pill_w, pill_h), 0xdd161b22, 0xff30363d, true);
 
-                let time_w = 5 * 10;
                 let tx = pill_x + (pill_w.saturating_sub(time_w)) / 2;
                 p.label_bold(tx, pill_y + 8, time_w, 20, time_view, 0xffffffff, 0xdd161b22);
 
-                let date_w = dlen * 8;
                 let dx = pill_x + (pill_w.saturating_sub(date_w)) / 2;
-                p.label_bg(dx, pill_y + 30, date_w, date_view, theme::MUTED, 0xdd161b22);
+                p.label(dx, pill_y + 30, date_w, date_view, theme::MUTED);
             }
         }
     }

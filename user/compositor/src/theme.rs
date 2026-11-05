@@ -1,8 +1,11 @@
 //! Shared desktop styling. Integer-only, allocation-free raster operations.
 #[allow(unused_imports)]
-pub use libui::font::{text_pixel, text_pixel_bold, text_width};
+pub use libui::font::{
+    glyph_alpha, glyph_alpha_bold, glyph_alpha_bold_sized, glyph_alpha_sized, text_pixel,
+    text_pixel_bold, text_width,
+};
 #[allow(unused_imports)]
-pub use libui::gfx::{blend_coverage, rounded_coverage};
+pub use libui::gfx::{blend_alpha, blend_coverage, rounded_coverage};
 #[allow(unused_imports)]
 pub use libui::theme::*;
 

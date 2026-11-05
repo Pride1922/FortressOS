@@ -138,3 +138,61 @@ pub fn text_pixel_bold_sized(size: FontSize, text: &str, mut x: usize, y: usize,
 pub fn text_pixel_bold(text: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
     text_pixel_bold_sized(FontSize::Body, text, x, y, fg, bg)
 }
+
+/// Returns the 8-bit glyph alpha (0..=255) for pixel (`x`, `y`) of `text` at `size`.
+/// Returns 0 if (`x`, `y`) is outside glyph bounds or on empty background.
+pub fn glyph_alpha_sized(size: FontSize, text: &str, mut x: usize, y: usize) -> u8 {
+    let (alpha, advances, cell_w, cell_h) = match size {
+        FontSize::Title => (ALPHA_TITLE.as_slice(), ADVANCES_TITLE, 20usize, 22usize),
+        FontSize::Body => (ALPHA_BODY.as_slice(), ADVANCES_BODY, 16usize, 18usize),
+        FontSize::Caption => (ALPHA_CAPTION.as_slice(), ADVANCES_CAPTION, 14usize, 16usize),
+    };
+    if y >= cell_h {
+        return 0;
+    }
+    for c in text.chars() {
+        let index = glyph(c);
+        let advance = advances[index] as usize;
+        if x < advance {
+            return alpha[index * cell_w * cell_h + y * cell_w + x];
+        }
+        x -= advance;
+    }
+    0
+}
+
+/// Returns the 8-bit glyph alpha (0..=255) for synthetic bold pixel (`x`, `y`) of `text` at `size`.
+pub fn glyph_alpha_bold_sized(size: FontSize, text: &str, mut x: usize, y: usize) -> u8 {
+    let (alpha, advances, cell_w, cell_h) = match size {
+        FontSize::Title => (ALPHA_TITLE.as_slice(), ADVANCES_TITLE, 20usize, 22usize),
+        FontSize::Body => (ALPHA_BODY.as_slice(), ADVANCES_BODY, 16usize, 18usize),
+        FontSize::Caption => (ALPHA_CAPTION.as_slice(), ADVANCES_CAPTION, 14usize, 16usize),
+    };
+    if y >= cell_h {
+        return 0;
+    }
+    for c in text.chars() {
+        let index = glyph(c);
+        let advance = advances[index] as usize;
+        if x < advance {
+            let base = index * cell_w * cell_h + y * cell_w;
+            let a0 = alpha[base + x] as u32;
+            let a_prev = if x > 0 { alpha[base + x - 1] as u32 } else { 0 };
+            return ((a0 + ((255 - a0) * (a_prev * 5 / 8)) / 255).min(255)) as u8;
+        }
+        x -= advance;
+    }
+    0
+}
+
+/// Returns the 8-bit glyph alpha for pixel (`x`, `y`) in the default Body font.
+#[inline]
+pub fn glyph_alpha(text: &str, x: usize, y: usize) -> u8 {
+    glyph_alpha_sized(FontSize::Body, text, x, y)
+}
+
+/// Returns the 8-bit glyph alpha for synthetic bold pixel (`x`, `y`) in the default Body font.
+#[inline]
+pub fn glyph_alpha_bold(text: &str, x: usize, y: usize) -> u8 {
+    glyph_alpha_bold_sized(FontSize::Body, text, x, y)
+}

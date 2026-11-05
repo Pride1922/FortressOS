@@ -147,3 +147,22 @@ pub fn blend_coverage(fg: u32, bg: u32, coverage: u32) -> u32 {
     }
     result
 }
+
+/// Blends `fg` over `bg` with an 8-bit alpha (0..=255); the result is opaque (0xff000000 | rgb).
+#[inline]
+pub fn blend_alpha(fg: u32, bg: u32, alpha: u32) -> u32 {
+    let a = alpha.min(255);
+    if a == 0 {
+        return bg;
+    }
+    if a == 255 {
+        return fg;
+    }
+    let mut result = 0xff000000;
+    for shift in [0, 8, 16] {
+        let f = (fg >> shift) & 255;
+        let b = (bg >> shift) & 255;
+        result |= ((f * a + b * (255 - a) + 127) / 255) << shift;
+    }
+    result
+}
