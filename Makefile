@@ -240,6 +240,7 @@ include user/pkg/pkg.mk
 $(BUILD_DIR)/kernel/base_system.o $(BUILD_DIR)/lib/kernel_update.o $(BUILD_DIR)/fs/pkg_base.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 $(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 include src/lib/tls/tls.mk
+include user/doom/doom.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
 .PHONY: test-s8-process-host test-s8-process
