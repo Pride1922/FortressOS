@@ -52,7 +52,11 @@ static bool e4_unowned_gap(const uint8_t *owned,uint32_t start,uint32_t end) {
     while (start<end) if (e4_bit(owned,start++)) return false;
     return true;
 }
-static int e4_orphan_validate(ext4_engine_t *e) {
+static void e4_open_profile_mark(boot_timing_t *timing,const char *phase) {
+    if (timing) boot_timing_mark(timing,phase);
+}
+static int e4_orphan_validate_profiled(ext4_engine_t *e,boot_timing_t *timing) {
+    e4_open_profile_mark(timing,"orphan-chain");
     ext4_mount_t *fs=e->fs;uint8_t sb[1024];
     if (!e4_bytes(fs,1024,sb,sizeof(sb))) return -VFS_EIO;
     uint32_t ino=e4_u32(sb+232);e->orphan_count=0;
@@ -71,6 +75,7 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         e->orphans[e->orphan_count++]=ino;ino=next;
     }
     if (fs->blocks>268435456 || fs->inodes>1048576) return -VFS_EFBIG;
+    e4_open_profile_mark(timing,"ownership-workspace");
     size_t owned_bytes=((size_t)fs->blocks+7)/8;
     uint8_t *owned=kmalloc_large(owned_bytes);if (!owned) return -VFS_ENOMEM;
     memset(owned,0,owned_bytes);
@@ -78,12 +83,14 @@ static int e4_orphan_validate(ext4_engine_t *e) {
     if (!refs) { kfree(owned);return -VFS_ENOMEM; }
     memset(refs,0,((size_t)fs->inodes+1)*sizeof(*refs));
     int r=0;unsigned directories=0;
+    e4_open_profile_mark(timing,"fixed-reservations");
     for (unsigned i=0;i<fs->ranges;i++) for (uint32_t k=0;k<fs->reserved[i].len;k++)
         e4_set_bit(owned,fs->reserved[i].lo+k,true);
     for (unsigned i=0;i<fs->journal_ranges;i++) for (uint32_t k=0;k<fs->journal_reserved[i].len;k++) {
         uint32_t block=fs->journal_reserved[i].lo+k;
         if (e4_bit(owned,block)) { r=-VFS_EIO;goto done; }e4_set_bit(owned,block,true);
     }
+    e4_open_profile_mark(timing,"inode-and-directory-validation");
     for (uint32_t g=0;g<fs->groups;g++) {
         if (e4_u16(fs->gd[g].raw+18)&1) {
             if (e4_u16(fs->gd[g].raw+14)!=fs->ipg || e4_u16(fs->gd[g].raw+16)) { r=-VFS_EIO;goto done; }
@@ -154,6 +161,7 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         }
         if (group_dirs!=e4_u16(fs->gd[g].raw+16)) { r=-VFS_EIO;goto done; }
     }
+    e4_open_profile_mark(timing,"namespace-reference-validation");
     if (refs[2].mode!=0x4000 || refs[2].parent!=2 || refs[2].incoming) { r=-VFS_EIO;goto done; }
     for (ino=2;ino<=fs->inodes;ino++) if (refs[ino].mode) {
         if (!refs[ino].links) {
@@ -172,6 +180,7 @@ static int e4_orphan_validate(ext4_engine_t *e) {
             }
         }
     }
+    e4_open_profile_mark(timing,"block-bitmap-validation");
     for (uint32_t g=0;g<fs->groups;g++) {
         uint32_t start=fs->first+g*fs->bpg,count=fs->blocks-start;if (count>fs->bpg) count=fs->bpg;
         if (e4_u16(fs->gd[g].raw+18)&2) {
@@ -208,18 +217,37 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         if (free!=e4_u16(fs->gd[g].raw+12)) { r=-VFS_EIO;goto done; }
     }
 done:
+    e4_open_profile_mark(timing,"ownership-cleanup");
     fs->orphan_access=0;kfree(refs);kfree(owned);return r;
 }
+#if defined(HOST_TEST) || defined(__linux__)
+static int __attribute__((unused)) e4_orphan_validate(ext4_engine_t *e) {
+    return e4_orphan_validate_profiled(e,NULL);
+}
+#endif
 static int e4_open_journal_orphans_owned(block_dev_t *dev,bool admitted,ext4_engine_t **out,bool reserved,bool lifecycle) {
-    int r=e4_open_journal_files_owned(dev,admitted,true,out,reserved,lifecycle);if (r) return r;
+    /* Optional heap-owned observations avoid growing the guarded boot stack.
+     * Lifecycle opens run in the mount owner before publication. */
+    boot_timing_t *timing=lifecycle && BOOT_TIMING_HZ() ? kmalloc(sizeof(*timing)) : NULL;
+    if (timing) boot_timing_begin(timing,"metadata-and-journal");
+    int r=e4_open_journal_files_owned(dev,admitted,true,out,reserved,lifecycle);
+    if (r) goto done;
     ext4_engine_t *e=*out;e->namespace_enabled=e->orphan_enabled=true;
     /* A truncate intent must not strand cleanup on a journal too small for
      * the engine's bounded metadata/revoke class. Reserve and abort without
      * I/O before admitting any semantic mutation. Ordered data uses no log. */
+    e4_open_profile_mark(timing,"writer-credit-check");
     r=jbd2_writer_begin(e->writer,(jbd2_credits_t){64,0,64});
-    if (!r) { jbd2_writer_abort(e->writer);r=e4_orphan_validate(e); }
-    if (r) { if (reserved) e4_engine_dispose(e);else ext4_engine_close(e);*out=NULL;return r; }
-    e->orphan_recovery_required=e->orphan_count!=0;return 0;
+    if (!r) { jbd2_writer_abort(e->writer);r=e4_orphan_validate_profiled(e,timing); }
+    if (r) { if (reserved) e4_engine_dispose(e);else ext4_engine_close(e);*out=NULL; }
+    else e->orphan_recovery_required=e->orphan_count!=0;
+done:
+    if (timing) {
+        boot_timing_mark(timing,NULL);
+        boot_timing_emit(timing,"EXT4-OPEN");
+        kfree(timing);
+    }
+    return r;
 }
 int ext4_engine_open_journal_orphans(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
     return e4_open_journal_orphans_owned(dev,admitted,out,false,false);
