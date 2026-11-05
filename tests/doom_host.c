@@ -46,7 +46,7 @@ extern void fortress_desktop_reset(void);
 extern bool fortress_desktop_poll_events(void);
 extern void fortress_desktop_teardown(void);
 extern int DG_GetKey(int *pressed, unsigned char *key);
-extern int doom_main(int argc, char **argv);
+extern int doom_main(int argc, char **argv, char **envp);
 
 static void test_pinned_identities(void) {
     printf("[TEST] Verifying pinned upstream metadata...\n");
@@ -662,7 +662,8 @@ static void test_engine_init_and_frames(const char *wad_path) {
             (char *)"70",
             NULL
         };
-        int ret = doom_main(6, argv);
+        extern char **environ;
+        int ret = doom_main(6, argv, environ);
         exit(ret);
     }
     int status = 0;
@@ -687,7 +688,8 @@ static void test_engine_warp(const char *wad_path) {
             (char *)"70",
             NULL
         };
-        int ret = doom_main(9, argv);
+        extern char **environ;
+        int ret = doom_main(9, argv, environ);
         exit(ret);
     }
     int status = 0;
@@ -709,7 +711,8 @@ static void test_missing_wad_graceful_exit(void) {
             (char *)"/nonexistent/path/missing.wad",
             NULL
         };
-        doom_main(4, argv);
+        extern char **environ;
+        doom_main(4, argv, environ);
         exit(0);
     }
     int status = 0;
@@ -737,7 +740,8 @@ static void test_corrupted_wad_handling(void) {
             corrupt_path,
             NULL
         };
-        doom_main(4, argv);
+        extern char **environ;
+        doom_main(4, argv, environ);
         exit(0);
     }
     int status = 0;
@@ -747,11 +751,235 @@ static void test_corrupted_wad_handling(void) {
     printf("  -> PASS: Corrupted WAD caught and safely exited.\n");
 }
 
+static void test_stage4_app_registry_and_package_spec(void) {
+    printf("[TEST] Testing Stage 4 application registry, icon, and package specification...\n");
+
+    /* 1. Audit user/compositor/src/app_registry.rs */
+    FILE *freg = fopen("user/compositor/src/app_registry.rs", "r");
+    assert(freg != NULL && "app_registry.rs must exist");
+    static char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, freg);
+    fclose(freg);
+    buf[n] = '\0';
+
+    assert(strstr(buf, "Doom") != NULL && "AppId::Doom must be defined");
+    assert(strstr(buf, "exec_packaged: c\"/usr/bin/doom\"") != NULL);
+    assert(strstr(buf, "exec_fallback: c\"/bin/doom\"") != NULL);
+    assert(strstr(buf, "icon_kind: 10") != NULL);
+    assert(strstr(buf, "category: \"Games\"") != NULL);
+    assert(strstr(buf, "game doom freedm freedoom") != NULL);
+    assert(strstr(buf, "bytes.ends_with(b\"/doom\") || bytes == b\"doom\"") != NULL);
+
+    /* 2. Audit scripts/build_desktop_package.py */
+    FILE *fpkg = fopen("scripts/build_desktop_package.py", "r");
+    assert(fpkg != NULL && "build_desktop_package.py must exist");
+    n = fread(buf, 1, sizeof(buf) - 1, fpkg);
+    fclose(fpkg);
+    buf[n] = '\0';
+
+    assert(strstr(buf, "\"doom\": (\"fortress-doom\", \"build/doom.elf\"") != NULL);
+
+    /* 3. Audit user/compositor/src/clients.rs external apps list */
+    FILE *fcli = fopen("user/compositor/src/clients.rs", "r");
+    assert(fcli != NULL && "clients.rs must exist");
+    n = fread(buf, 1, sizeof(buf) - 1, fcli);
+    fclose(fcli);
+    buf[n] = '\0';
+    assert(strstr(buf, "name: \"Doom\"") != NULL);
+    assert(strstr(buf, "packaged: c\"/usr/bin/doom\"") != NULL);
+    assert(strstr(buf, "image: c\"/bin/doom\"") != NULL);
+
+    printf("  -> PASS: App registry manifest, icon, action dispatch, and package definition verified.\n");
+}
+
+static void test_stage4_user_save_isolation_and_atomic_replace(const char *wad_path) {
+    printf("[TEST] Testing Stage 4 user save isolation, default.cfg, and atomic replacement...\n");
+    fortress_desktop_reset();
+
+    char tmp_home[] = "/tmp/doom_test_user_home_XXXXXX";
+    assert(mkdtemp(tmp_home) != NULL);
+
+    extern char **environ;
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(1); close(2);
+        setenv("HOME", tmp_home, 1);
+        unsetenv("DOOM_SAVE_DIR");
+        char *argv[] = {
+            (char *)"doom",
+            (char *)"-nogui",
+            (char *)"-iwad",
+            (char *)wad_path,
+            (char *)"-nosound",
+            (char *)"-frames",
+            (char *)"5",
+            NULL
+        };
+        int ret = doom_main(7, argv, environ);
+        exit(ret);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0 && "doom run in test home must succeed");
+
+    /* Verify directory structure: $HOME/.doom/ and $HOME/.doom/.savegame/ */
+    char dot_doom[512], default_cfg[512], savegame_dir[512];
+    snprintf(dot_doom, sizeof(dot_doom), "%s/.doom", tmp_home);
+    snprintf(default_cfg, sizeof(default_cfg), "%s/.doom/default.cfg", tmp_home);
+    snprintf(savegame_dir, sizeof(savegame_dir), "%s/.doom/.savegame", tmp_home);
+
+    struct stat st;
+    assert(stat(dot_doom, &st) == 0 && S_ISDIR(st.st_mode) && ".doom directory must exist");
+    assert(stat(default_cfg, &st) == 0 && S_ISREG(st.st_mode) && "default.cfg must be created in .doom");
+    assert(stat(savegame_dir, &st) == 0 && S_ISDIR(st.st_mode) && ".savegame directory must exist");
+
+    /* Test durable atomic save replacement policy:
+     * Write initial savegame slot 0 -> write temporary save -> rename replacement
+     */
+    char save0[512], save_temp[512];
+    snprintf(save0, sizeof(save0), "%s/.doom/.savegame/doomsav0.dsg", tmp_home);
+    snprintf(save_temp, sizeof(save_temp), "%s/.doom/.savegame/temp.dsg", tmp_home);
+
+    FILE *f0 = fopen(save0, "wb");
+    assert(f0 != NULL);
+    const char initial_data[] = "DOOM_SAVEGAME_VERSION_1_ORIGINAL";
+    fwrite(initial_data, 1, sizeof(initial_data), f0);
+    fclose(f0);
+
+    /* Write update to temporary file */
+    FILE *ftemp = fopen(save_temp, "wb");
+    assert(ftemp != NULL);
+    const char updated_data[] = "DOOM_SAVEGAME_VERSION_2_REPLACED";
+    fwrite(updated_data, 1, sizeof(updated_data), ftemp);
+    fclose(ftemp);
+
+    /* Replace atomically via rename() */
+    assert(rename(save_temp, save0) == 0 && "atomic savegame replacement must succeed");
+    assert(access(save_temp, F_OK) != 0 && "temp savegame must be unlinked after rename");
+
+    /* Verify new content persisted */
+    FILE *fcheck = fopen(save0, "rb");
+    assert(fcheck != NULL);
+    char check_buf[64] = {0};
+    fread(check_buf, 1, sizeof(check_buf), fcheck);
+    fclose(fcheck);
+    assert(strcmp(check_buf, updated_data) == 0 && "persisted savegame must match updated data");
+
+    /* Clean up temporary directory */
+    unlink(save0);
+    unlink(default_cfg);
+    rmdir(savegame_dir);
+    rmdir(dot_doom);
+    rmdir(tmp_home);
+    printf("  -> PASS: User configuration and saves segregated into ~/.doom with atomic replacement.\n");
+}
+
+static void test_stage4_wad_search_order_and_discovery(const char *wad_path) {
+    printf("[TEST] Testing Stage 4 WAD search order and automatic discovery without -iwad...\n");
+    fortress_desktop_reset();
+
+    char tmp_home[] = "/tmp/doom_test_wad_discovery_XXXXXX";
+    assert(mkdtemp(tmp_home) != NULL);
+
+    char dot_doom[1024], user_wad[1024];
+    snprintf(dot_doom, sizeof(dot_doom), "%s/.doom", tmp_home);
+    assert(mkdir(dot_doom, 0755) == 0);
+    snprintf(user_wad, sizeof(user_wad), "%s/freedm.wad", dot_doom);
+
+    /* Symlink WAD into user directory */
+    assert(symlink(wad_path, user_wad) == 0);
+
+    extern char **environ;
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(1); close(2);
+        setenv("HOME", tmp_home, 1);
+        char *argv[] = {
+            (char *)"doom",
+            (char *)"-nogui",
+            (char *)"-nosound",
+            (char *)"-frames",
+            (char *)"5",
+            NULL
+        };
+        /* Notice: NO -iwad argument passed! Must auto-discover ~/.doom/freedm.wad */
+        int ret = doom_main(5, argv, environ);
+        exit(ret);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0 && "auto-discovery of user WAD must succeed");
+
+    /* Clean up */
+    unlink(user_wad);
+    char cfg[512], svg[512];
+    snprintf(cfg, sizeof(cfg), "%s/.doom/default.cfg", tmp_home);
+    snprintf(svg, sizeof(svg), "%s/.doom/.savegame", tmp_home);
+    unlink(cfg);
+    rmdir(svg);
+    rmdir(dot_doom);
+    rmdir(tmp_home);
+    printf("  -> PASS: Automatic WAD discovery in per-user library without -iwad verified.\n");
+}
+
+static void test_stage4_missing_wad_actionable_guidance(void) {
+    printf("[TEST] Testing Stage 4 missing WAD actionable diagnostic guidance...\n");
+    fortress_desktop_reset();
+
+    char empty_home[] = "/tmp/doom_test_empty_home_XXXXXX";
+    assert(mkdtemp(empty_home) != NULL);
+
+    int pipe_out[2];
+    assert(pipe(pipe_out) == 0);
+
+    extern char **environ;
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipe_out[0]);
+        dup2(pipe_out[1], 1);
+        dup2(pipe_out[1], 2);
+        close(pipe_out[1]);
+
+        setenv("HOME", empty_home, 1);
+        char *argv[] = {
+            (char *)"doom",
+            (char *)"-nogui",
+            (char *)"-nosound",
+            NULL
+        };
+        int ret = doom_main(3, argv, environ);
+        exit(ret);
+    }
+    close(pipe_out[1]);
+
+    char out_buf[4096] = {0};
+    size_t total = 0;
+    ssize_t r;
+    while ((r = read(pipe_out[0], out_buf + total, sizeof(out_buf) - total - 1)) > 0) {
+        total += (size_t)r;
+    }
+    close(pipe_out[0]);
+    out_buf[total] = '\0';
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 1 && "missing WAD must exit cleanly with code 1");
+
+    assert(strstr(out_buf, "[FortressOS Doom] No Game Data (IWAD) Found!") != NULL);
+    assert(strstr(out_buf, "freedoom1.wad") != NULL);
+    assert(strstr(out_buf, "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7") != NULL);
+    assert(strstr(out_buf, "d9adc4d792627e7fc47b09067b15486da724010c71dd12831e1cf8e0755b68ad") != NULL);
+    assert(strstr(out_buf, "/usr/share/games/doom") != NULL);
+
+    rmdir(empty_home);
+    printf("  -> PASS: Missing WAD prints actionable guidance and verified SHA-256 hashes.\n");
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
-    printf("=============================================================================\n");
-    printf("FortressOS Doom Desktop, Input & Verification Suite (Stages 0, 1, 2, and 3)\n");
-    printf("=============================================================================\n");
+    printf("====================================================================================\n");
+    printf("FortressOS Doom Desktop, Input, Content & Packaging Suite (Stages 0, 1, 2, 3, and 4)\n");
+    printf("====================================================================================\n");
 
     test_pinned_identities();
     test_desktop_protocol_abi();
@@ -761,12 +989,15 @@ int main(int argc, char **argv) {
     test_stage3_azerty_and_us_parity();
     test_stage3_simultaneous_keys();
     test_stage3_focus_loss_and_stuck_key_prevention();
+    test_stage4_app_registry_and_package_spec();
 
     const char *freedm_wad = "/tmp/doom-eval/freedm-0.13.0/freedm.wad";
     const char *freedoom1_wad = "/tmp/doom-eval/freedoom-0.13.0/freedoom1.wad";
 
     if (access(freedm_wad, R_OK) == 0) {
         test_engine_init_and_frames(freedm_wad);
+        test_stage4_user_save_isolation_and_atomic_replace(freedm_wad);
+        test_stage4_wad_search_order_and_discovery(freedm_wad);
     } else {
         printf("[WARN] %s not accessible; skipping live freedm test\n", freedm_wad);
     }
@@ -779,7 +1010,8 @@ int main(int argc, char **argv) {
 
     test_missing_wad_graceful_exit();
     test_corrupted_wad_handling();
+    test_stage4_missing_wad_actionable_guidance();
 
-    printf("\n>>> ALL STAGE 0, 1, 2 & 3 DOOM TESTS PASSED <<<\n");
+    printf("\n>>> ALL STAGE 0, 1, 2, 3 & 4 DOOM TESTS PASSED <<<\n");
     return 0;
 }

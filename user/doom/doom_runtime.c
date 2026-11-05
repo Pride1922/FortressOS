@@ -35,6 +35,7 @@
 #define SYS_CLOCK_GETTIME  74
 #define SYS_NANOSLEEP      75
 #define SYS_FSTAT          78
+#define SYS_RENAME_REPLACE 84
 #define SYS_MMAP           99
 
 #define CLOCK_MONOTONIC    1
@@ -253,13 +254,14 @@ struct doom_file {
     bool is_open;
     bool is_write;
     bool is_eof;
+    int unget;
     char path[FILE_PATH_MAX];
 };
 
 static struct doom_file g_files[MAX_OPEN_FILES];
-static struct doom_file g_stdio_in  = {.fd = 0, .is_open = true};
-static struct doom_file g_stdio_out = {.fd = 1, .is_open = true, .is_write = true};
-static struct doom_file g_stdio_err = {.fd = 2, .is_open = true, .is_write = true};
+static struct doom_file g_stdio_in  = {.fd = 0, .is_open = true, .unget = -1};
+static struct doom_file g_stdio_out = {.fd = 1, .is_open = true, .is_write = true, .unget = -1};
+static struct doom_file g_stdio_err = {.fd = 2, .is_open = true, .is_write = true, .unget = -1};
 
 FILE *stdin  = &g_stdio_in;
 FILE *stdout = &g_stdio_out;
@@ -326,6 +328,7 @@ FILE *fopen(const char *path, const char *mode) {
     f->is_open = true;
     f->is_write = write_mode;
     f->is_eof = false;
+    f->unget = -1;
 
     size_t plen = strlen(path);
     if (plen >= FILE_PATH_MAX) plen = FILE_PATH_MAX - 1;
@@ -338,6 +341,7 @@ FILE *fopen(const char *path, const char *mode) {
 
 int fclose(FILE *stream) {
     if (!stream || !stream->is_open) return EOF;
+    stream->unget = -1;
     if (stream == stdin || stream == stdout || stream == stderr) return 0;
 
     sys1(SYS_CLOSE, (uintptr_t)stream->fd);
@@ -352,6 +356,12 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     size_t bytes_to_read = size * nmemb;
     size_t total_read = 0;
     uint8_t *buf = (uint8_t *)ptr;
+
+    if (stream->unget >= 0 && bytes_to_read > 0) {
+        buf[total_read++] = (uint8_t)stream->unget;
+        stream->unget = -1;
+        stream->offset++;
+    }
 
     while (total_read < bytes_to_read) {
         long n = sys3(SYS_READ, (uintptr_t)stream->fd, (uintptr_t)(buf + total_read),
@@ -392,6 +402,7 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
 int fseek(FILE *stream, long offset, int whence) {
     if (!stream || !stream->is_open) return -1;
 
+    stream->unget = -1;
     g_stats.file_seek_count++;
 
     long target = 0;
@@ -459,6 +470,131 @@ int fflush(FILE *stream) {
     return 0;
 }
 
+int feof(FILE *stream) {
+    if (!stream) return 1;
+    return stream->is_eof ? 1 : 0;
+}
+
+int fgetc(FILE *stream) {
+    if (!stream || !stream->is_open) return EOF;
+    if (stream->unget >= 0) {
+        int c = stream->unget;
+        stream->unget = -1;
+        return c;
+    }
+    unsigned char ch = 0;
+    size_t r = fread(&ch, 1, 1, stream);
+    if (r != 1) return EOF;
+    return (int)ch;
+}
+
+int ungetc(int c, FILE *stream) {
+    if (!stream || !stream->is_open || c == EOF) return EOF;
+    stream->unget = (unsigned char)c;
+    stream->is_eof = false;
+    return (unsigned char)c;
+}
+
+char *fgets(char *s, int size, FILE *stream) {
+    if (!s || size <= 1 || !stream || !stream->is_open) return NULL;
+    int idx = 0;
+    while (idx < size - 1) {
+        int c = fgetc(stream);
+        if (c == EOF) {
+            if (idx == 0) return NULL;
+            break;
+        }
+        s[idx++] = (char)c;
+        if (c == '\n') break;
+    }
+    s[idx] = '\0';
+    return s;
+}
+
+int fscanf(FILE *stream, const char *format, ...) {
+    if (!stream || !format) return EOF;
+    va_list ap;
+    va_start(ap, format);
+
+    int c = fgetc(stream);
+    if (c == EOF) {
+        va_end(ap);
+        return EOF;
+    }
+
+    int matched = 0;
+    const char *f = format;
+
+    while (*f && c != EOF) {
+        if (*f == ' ') {
+            while (c != EOF && (c == ' ' || c == '\t')) {
+                c = fgetc(stream);
+            }
+            f++;
+            continue;
+        }
+        if (*f == '\n') {
+            while (c != EOF && (c == '\r' || c == '\n')) {
+                c = fgetc(stream);
+            }
+            f++;
+            continue;
+        }
+        if (*f != '%') {
+            if (c == *f) {
+                f++;
+                c = fgetc(stream);
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        f++; /* skip '%' */
+        int width = 0;
+        while (*f >= '0' && *f <= '9') {
+            width = width * 10 + (*f - '0');
+            f++;
+        }
+        if (width <= 0) width = 4096;
+
+        if (*f == 's') {
+            while (c != EOF && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
+                c = fgetc(stream);
+            }
+            if (c == EOF) break;
+            char *out = va_arg(ap, char *);
+            int len = 0;
+            while (c != EOF && c != ' ' && c != '\t' && c != '\r' && c != '\n' && len < width) {
+                if (out) out[len++] = (char)c;
+                c = fgetc(stream);
+            }
+            if (out) out[len] = '\0';
+            if (len > 0) matched++;
+            f++;
+        } else if (*f == '[' && f[1] == '^' && f[2] == '\n' && f[3] == ']') {
+            char *out = va_arg(ap, char *);
+            int len = 0;
+            while (c != EOF && c != '\n' && c != '\r' && len < width) {
+                if (out) out[len++] = (char)c;
+                c = fgetc(stream);
+            }
+            if (out) out[len] = '\0';
+            if (len > 0) matched++;
+            f += 4;
+        } else {
+            break;
+        }
+    }
+
+    if (c != EOF) {
+        ungetc(c, stream);
+    }
+
+    va_end(ap);
+    return matched;
+}
+
 int remove(const char *pathname) {
     if (!pathname) return -1;
     long r = sys1(SYS_UNLINK, (uintptr_t)pathname);
@@ -467,7 +603,12 @@ int remove(const char *pathname) {
 
 int rename(const char *oldpath, const char *newpath) {
     if (!oldpath || !newpath) return -1;
-    long r = sys3(SYS_RENAME, (uintptr_t)oldpath, (uintptr_t)newpath, 0);
+    /* Try atomic replacing rename first (Hardening EH-2) */
+    long r = sys3(SYS_RENAME_REPLACE, (uintptr_t)oldpath, (uintptr_t)newpath, 0);
+    if (r < 0) {
+        /* Fall back to standard non-replacing rename */
+        r = sys3(SYS_RENAME, (uintptr_t)oldpath, (uintptr_t)newpath, 0);
+    }
     return r >= 0 ? 0 : -1;
 }
 
@@ -511,8 +652,20 @@ int system(const char *command) {
     return -1;
 }
 
+static char **s_envp = NULL;
+
+void fortress_set_envp(char **envp) {
+    s_envp = envp;
+}
+
 char *getenv(const char *name) {
-    (void)name;
+    if (!name || !s_envp) return NULL;
+    size_t nlen = strlen(name);
+    for (char **ep = s_envp; *ep != NULL; ep++) {
+        if (strncmp(*ep, name, nlen) == 0 && (*ep)[nlen] == '=') {
+            return *ep + nlen + 1;
+        }
+    }
     return NULL;
 }
 

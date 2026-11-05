@@ -17,6 +17,7 @@ pub enum AppId {
     Network,
     DateTime,
     Power,
+    Doom,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +196,17 @@ pub const APP_CATALOG: &[AppManifest] = &[
         is_builtin: true,
         builtin_id: Some(10),
     },
+    AppManifest {
+        id: AppId::Doom,
+        name: "Doom",
+        exec_packaged: c"/usr/bin/doom",
+        exec_fallback: c"/bin/doom",
+        icon_kind: 10,
+        category: "Games",
+        keywords: "game doom freedm freedoom fps shooter action idgames",
+        is_builtin: false,
+        builtin_id: None,
+    },
 ];
 
 /// Returns the manifest for a given AppId.
@@ -217,6 +229,8 @@ pub fn resolve_from_path(path: &core::ffi::CStr) -> Option<AppId> {
         Some(AppId::Calc)
     } else if bytes.ends_with(b"/desktop-vault") || bytes == b"desktop-vault" {
         Some(AppId::Vault)
+    } else if bytes.ends_with(b"/doom") || bytes == b"doom" {
+        Some(AppId::Doom)
     } else {
         None
     }

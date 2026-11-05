@@ -35,6 +35,11 @@ int vfprintf(FILE *stream, const char *format, va_list ap);
 int puts(const char *s);
 int putchar(int c);
 int fputs(const char *s, FILE *stream);
+int fgetc(FILE *stream);
+int ungetc(int c, FILE *stream);
+char *fgets(char *s, int size, FILE *stream);
+int feof(FILE *stream);
+int fscanf(FILE *stream, const char *format, ...);
 
 int sscanf(const char *str, const char *format, ...);
 

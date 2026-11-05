@@ -25,6 +25,7 @@ typedef struct {
 
 void doom_runtime_init(void);
 void doom_runtime_get_stats(doom_runtime_stats_t *out);
+void fortress_set_envp(char **envp);
 
 /* Syscall invoker for freestanding FortressOS */
 long doom_syscall(long num, uintptr_t a1, uintptr_t a2, uintptr_t a3,

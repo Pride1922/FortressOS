@@ -27,6 +27,8 @@ APPS = {
                  "FortressOS desktop terminal; app API v1"),
     "calc": ("fortress-calc", "build/calc.elf",
              "FortressOS desktop calculator; app API v1"),
+    "doom": ("fortress-doom", "build/doom.elf",
+             "FortressOS Doom classic first-person shooter running Freedoom; app API v1"),
 }
 
 

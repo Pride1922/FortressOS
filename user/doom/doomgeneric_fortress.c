@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+int mkdir(const char *pathname, unsigned int mode);
 #else
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sys/stat.h>
 #endif
 
 #include "src/include/types.h"
@@ -699,22 +701,149 @@ void fortress_desktop_reset(void) {
 }
 #endif
 
-int doom_main(int argc, char **argv) {
+static bool fortress_file_exists(const char *path) {
+    if (!path || !path[0]) return false;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fclose(f);
+        return true;
+    }
+    return false;
+}
+
+static const char *s_iwad_names[] = {
+    "freedoom1.wad",
+    "freedm.wad",
+    "freedoom2.wad",
+    "doom1.wad",
+    "doom.wad",
+    "doom2.wad"
+};
+
+static char s_discovered_iwad[256];
+
+static const char *fortress_discover_iwad(const char *home_dir) {
+    char path[256];
+    const char *search_dirs[4];
+    int num_dirs = 0;
+
+    search_dirs[num_dirs++] = "/usr/share/games/doom";
+    char user_doom[256];
+    if (home_dir && home_dir[0]) {
+        snprintf(user_doom, sizeof(user_doom), "%s/.doom", home_dir);
+        search_dirs[num_dirs++] = user_doom;
+    } else {
+        search_dirs[num_dirs++] = "/home/operator/.doom";
+    }
+    search_dirs[num_dirs++] = "/mnt/.fortress/doom";
+    search_dirs[num_dirs++] = ".";
+
+    for (int d = 0; d < num_dirs; d++) {
+        for (size_t i = 0; i < sizeof(s_iwad_names)/sizeof(s_iwad_names[0]); i++) {
+            snprintf(path, sizeof(path), "%s/%s", search_dirs[d], s_iwad_names[i]);
+            if (fortress_file_exists(path)) {
+                strncpy(s_discovered_iwad, path, sizeof(s_discovered_iwad) - 1);
+                s_discovered_iwad[sizeof(s_discovered_iwad) - 1] = '\0';
+                return s_discovered_iwad;
+            }
+        }
+    }
+    return NULL;
+}
+
+static void print_missing_wad_guidance(const char *home_dir) {
+    const char *user_path = (home_dir && home_dir[0]) ? home_dir : "/home/operator";
+    printf("\n"
+           "===========================================================================\n"
+           "[FortressOS Doom] No Game Data (IWAD) Found!\n"
+           "===========================================================================\n"
+           "Doom requires a game data IWAD to run. The following locations were checked:\n"
+           "  - System game library:  /usr/share/games/doom/{freedoom1,freedm,freedoom2,doom1,doom2}.wad\n"
+           "  - User game directory:  %s/.doom/{freedoom1,freedm,freedoom2,doom1,doom2}.wad\n"
+           "  - Persistent volume:    /mnt/.fortress/doom/{freedoom1,freedm,freedoom2,doom1,doom2}.wad\n"
+           "  - Current directory:    ./{freedoom1,freedm,freedoom2,doom1,doom2}.wad\n"
+           "\n"
+           "To install Freedoom v0.13.0:\n"
+           "  1. Copy freedoom1.wad, freedm.wad, or freedoom2.wad into /usr/share/games/doom/\n"
+           "     or into your user directory: %s/.doom/\n"
+           "  2. Or launch explicitly with an absolute path:\n"
+           "     /bin/doom -iwad /path/to/game.wad\n"
+           "\n"
+           "Verified Upstream Freedoom Hashes (SHA-256):\n"
+           "  freedm.wad:    26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7\n"
+           "  freedoom1.wad: d9adc4d792627e7fc47b09067b15486da724010c71dd12831e1cf8e0755b68ad\n"
+           "  freedoom2.wad: 7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d\n"
+           "===========================================================================\n\n",
+           user_path, user_path);
+}
+
+static void fortress_ensure_save_directories(const char *home_dir) {
+    const char *save_env = getenv("DOOM_SAVE_DIR");
+    if (save_env && save_env[0]) {
+        mkdir(save_env, 0755);
+        char sub[256];
+        snprintf(sub, sizeof(sub), "%s/.savegame", save_env);
+        mkdir(sub, 0755);
+        return;
+    }
+    const char *user_path = (home_dir && home_dir[0]) ? home_dir : "/home/operator";
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s/.doom", user_path);
+    mkdir(dir, 0755);
+    snprintf(dir, sizeof(dir), "%s/.doom/.savegame", user_path);
+    mkdir(dir, 0755);
+}
+
+int doom_main(int argc, char **argv, char **envp) {
     printf("Starting Doom on FortressOS...\n");
     doom_runtime_init();
+#ifndef DOOM_HOST_TEST
+    if (envp) {
+        fortress_set_envp(envp);
+    }
+#else
+    (void)envp;
+#endif
+
+    const char *home = getenv("HOME");
+    fortress_ensure_save_directories(home);
 
     /* Check for explicit -frames limit (for headless/testing runs) */
     s_target_frames = -1;
+    bool has_iwad = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-frames") == 0 && i + 1 < argc) {
             s_target_frames = atoi(argv[i + 1]);
             printf("[FortressOS Doom] Target frames limit: %d\n", s_target_frames);
+        } else if (strcmp(argv[i], "-iwad") == 0 && i + 1 < argc) {
+            has_iwad = true;
         }
     }
 
+    /* If no IWAD parameter was supplied, discover in system and user paths */
+    char *new_argv[36];
+    int new_argc = 0;
+    for (int i = 0; i < argc && new_argc < 30; i++) {
+        new_argv[new_argc++] = argv[i];
+    }
+
+    if (!has_iwad) {
+        const char *discovered = fortress_discover_iwad(home);
+        if (discovered) {
+            printf("[FortressOS Doom] Discovered IWAD: %s\n", discovered);
+            new_argv[new_argc++] = (char *)"-iwad";
+            new_argv[new_argc++] = (char *)discovered;
+        } else {
+            print_missing_wad_guidance(home);
+            /* Exit gracefully if no IWAD found */
+            return 1;
+        }
+    }
+    new_argv[new_argc] = NULL;
+
     fortress_desktop_init();
 
-    doomgeneric_Create(argc, argv);
+    doomgeneric_Create(new_argc, new_argv);
 
     /* Main execution loop */
     while (!s_shutdown_requested) {

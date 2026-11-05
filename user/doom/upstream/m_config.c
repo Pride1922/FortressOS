@@ -1608,7 +1608,7 @@ static const int scantokey[128] =
 
 static void SaveDefaultCollection(default_collection_t *collection)
 {
-#if ORIGCODE
+#if 1
     default_t *defaults;
     int i, v;
     FILE *f;
@@ -1770,7 +1770,7 @@ static void SetVariable(default_t *def, char *value)
 
 static void LoadDefaultCollection(default_collection_t *collection)
 {
-#if ORIGCODE
+#if 1
     FILE *f;
     default_t *def;
     char defname[80];
@@ -2042,6 +2042,21 @@ float M_GetFloatVariable(char *name)
 
 static char *GetDefaultConfigDir(void)
 {
+    char *save_env = getenv("DOOM_SAVE_DIR");
+    if (save_env != NULL && save_env[0] != '\0')
+    {
+        size_t len = strlen(save_env);
+        if (save_env[len - 1] == DIR_SEPARATOR)
+            return strdup(save_env);
+        return M_StringJoin(save_env, DIR_SEPARATOR_S, NULL);
+    }
+
+    char *home = getenv("HOME");
+    if (home != NULL && home[0] != '\0')
+    {
+        return M_StringJoin(home, DIR_SEPARATOR_S, ".doom", DIR_SEPARATOR_S, NULL);
+    }
+
     char *result = (char *)malloc(2);
     result[0] = '.';
     result[1] = '\0';

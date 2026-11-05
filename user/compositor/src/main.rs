@@ -684,6 +684,7 @@ fn dispatch_key_event(
                 window::Action::SpawnNotepad => open_notepad(clients, None, scene),
                 window::Action::SpawnCalc => open_calc(clients, scene),
                 window::Action::SpawnVault => open_vault(clients, scene),
+                window::Action::SpawnDoom => open_doom(clients, scene),
                 window::Action::OpenDesktopApp(id) => desktop.open(id, windows, scene),
                 window::Action::Exit => return true,
                 window::Action::Restart => {
@@ -803,6 +804,15 @@ fn open_vault(clients: &mut clients::Clients, scene: &Surface) {
     }
 }
 
+/// Starts Doom (/usr/bin/doom when packaged, else /bin/doom).
+fn open_doom(clients: &mut clients::Clients, scene: &Surface) {
+    let app = clients::installed(c"/usr/bin/doom", c"/bin/doom");
+    match clients.launch(app, &[], scene) {
+        Ok(pid) => privilege::report(1, "[OK]", "Doom started", Some(pid)),
+        Err(e) => privilege::report(2, "[WARN]", "Doom launch failed", Some(e)),
+    }
+}
+
 #[inline(never)]
 fn handle_key(
     b: u8,
@@ -884,6 +894,9 @@ fn handle_action(
         }
         window::Action::SpawnVault => {
             open_vault(clients, scene);
+        }
+        window::Action::SpawnDoom => {
+            open_doom(clients, scene);
         }
         window::Action::WindowResized(id) => {
             if id == 6 {

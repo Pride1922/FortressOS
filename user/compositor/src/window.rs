@@ -1261,6 +1261,20 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
             }
             0xff0d1117
         }
+        10 => {
+            // Doom: Dark obsidian tile with fiery crimson and gold 'D'
+            if (6..=21).contains(&ix) && (6..=21).contains(&iy) {
+                if (iy == 8 || iy == 19) && (8..=17).contains(&ix) {
+                    return 0xffffd700;
+                } else if (8..=19).contains(&iy) && (ix == 8 || ix == 9 || ix == 16 || ix == 17) {
+                    return 0xffffa500;
+                } else if ix == 6 || ix == 21 || iy == 6 || iy == 21 {
+                    return 0xff800000;
+                }
+                return 0xffd73a49;
+            }
+            0xff0d1117
+        }
         _ => dock_bg,
     }
 }
@@ -1289,6 +1303,7 @@ pub fn window_icon_kind(w: &Window) -> usize {
             AppId::Calc => 4,
             AppId::Settings | AppId::Network | AppId::DateTime | AppId::Power => 5,
             AppId::Vault => 6,
+            AppId::Doom => 10,
         };
     }
     if w.id == 5 || w.title.starts_with("Files") {
@@ -1299,6 +1314,8 @@ pub fn window_icon_kind(w: &Window) -> usize {
         2
     } else if w.id == 1 || w.id == 6 || w.title.starts_with("System") {
         3
+    } else if w.title.starts_with("Doom") || w.title.starts_with("Freedoom") || w.title.starts_with("FreeDM") {
+        10
     } else {
         5
     }
@@ -1366,6 +1383,8 @@ pub enum Action {
     SpawnCalc,
     #[allow(dead_code)]
     SpawnVault,
+    #[allow(dead_code)]
+    SpawnDoom,
     OpenDesktopApp(u32),
     WindowResized(u32),
     ClientClick(u32, usize, usize),
@@ -2072,6 +2091,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                 AppId::Notepad => Action::SpawnNotepad,
                 AppId::Calc => Action::SpawnCalc,
                 AppId::Vault => Action::SpawnVault,
+                AppId::Doom => Action::SpawnDoom,
                 AppId::Settings => Action::OpenDesktopApp(7),
                 AppId::SysInfo => {
                     self.ensure_window_1(s);
@@ -3713,6 +3733,22 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                                 None
                                                             }
                                                         }
+                                                        10 => {
+                                                            // Doom: Crimson tile with fiery 'D'
+                                                            if (2..=11).contains(&ix) && (2..=11).contains(&iy) {
+                                                                if (iy == 4 || iy == 9) && (4..=8).contains(&ix) {
+                                                                    Some(0xffffd700)
+                                                                } else if (4..=9).contains(&iy) && (ix == 4 || ix == 5 || ix == 8 || ix == 9) {
+                                                                    Some(0xffffa500)
+                                                                } else if ix == 2 || ix == 11 || iy == 2 || iy == 11 {
+                                                                    Some(0xff800000)
+                                                                } else {
+                                                                    Some(0xffd73a49)
+                                                                }
+                                                            } else {
+                                                                None
+                                                            }
+                                                        }
                                                         _ => None,
                                                     }
                                                 }
@@ -4059,6 +4095,7 @@ pub fn verify_unlock_password(pass: &str) -> bool {
                                                 3 => "System Info",
                                                 4 => "Calculator",
                                                 6 => "Vault",
+                                                10 => "Doom",
                                                 _ => "Settings",
                                             };
                                             let sw = theme::text_width(app_label);
